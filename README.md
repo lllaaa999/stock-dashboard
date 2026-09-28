@@ -1,5 +1,9 @@
 # 股票综合看盘系统 · 七层雷达 + 多主体模拟
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Release](https://img.shields.io/github/v/release/lllaaa999/stock-dashboard)](https://github.com/lllaaa999/stock-dashboard/releases)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+
 A股综合看盘工具，覆盖大盘行情、隔夜外盘、情绪指数、板块资金、两融、快讯、个股体检、K线图、缠论、情绪周期定位、九方势力多主体推演、世界模拟、形态选股。
 
 ---
