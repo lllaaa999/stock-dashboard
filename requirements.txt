@@ -1,0 +1,25 @@
+# 股票综合看盘系统 · 依赖清单
+# 安装：pip install -r requirements.txt
+
+# === Web 仪表盘 ===
+fastapi>=0.100.0
+uvicorn>=0.23.0
+jinja2>=3.1.0
+
+# === 网络层 ===
+# 伪装 Chrome TLS 指纹，突破东方财富等站点的反爬（RemoteDisconnected）
+curl_cffi>=0.6.0
+
+# === 数据补充 ===
+# 个股资金流兜底（东方财富接口失败时回退）
+akshare>=1.10.0
+
+# === K线图渲染 ===
+# 个股 K 线图 PNG 导出（Agg 后端，无需图形界面）
+matplotlib>=3.7.0
+
+# === P2 新增：统一数据层 ===
+# mootdx：通达信协议直连，实时行情+K线（秒级，替代腾讯高频调用）
+mootdx>=0.11.0
+# baostock：官方维护的历史K线+财务数据库（稳定，T+1，前复权）
+baostock>=0.9.0

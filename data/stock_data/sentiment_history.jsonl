@@ -1,0 +1,29 @@
+{"date": "20260804", "score": 77.9, "band": "活跃", "zt": 138, "zb": 15, "dt": 2, "max_lb": 7, "dt_src": "unverified_pool_unavailable"}
+{"date": "20260805", "score": 78.1, "band": "活跃", "zt": 103, "zb": 43, "dt": 1, "max_lb": 8}
+{"date": "20260806", "score": 79.6, "band": "活跃", "zt": 79, "zb": 20, "dt": 1, "max_lb": 10}
+{"date": "20260807", "score": 61.0, "band": "中性", "zt": 74, "zb": 26, "dt": 4, "max_lb": 4}
+{"date": "20260810", "score": 68.1, "band": "中性", "zt": 99, "zb": 14, "dt": 5, "max_lb": 5}
+{"date": "20260811", "score": 65.0, "band": "中性", "zt": 58, "zb": 17, "dt": 1, "max_lb": 6}
+{"date": "20260812", "score": 79.4, "band": "活跃", "zt": 92, "zb": 13, "dt": 0, "max_lb": 7}
+{"date": "20260813", "score": 56.2, "band": "中性", "zt": 59, "zb": 36, "dt": 4, "max_lb": 5}
+{"date": "20260814", "score": 54.6, "band": "中性", "zt": 63, "zb": 19, "dt": 10, "max_lb": 5}
+{"date": "20260817", "score": 69.5, "band": "中性", "zt": 106, "zb": 12, "dt": 1, "max_lb": 4}
+{"date": "20260818", "score": 62.6, "band": "中性", "zt": 79, "zb": 23, "dt": 5, "max_lb": 4}
+{"date": "20260819", "score": 32.9, "band": "退潮/偏冷", "zt": 36, "zb": 12, "dt": 118, "max_lb": 3}
+{"date": "20260820", "score": 52.8, "band": "中性", "zt": 79, "zb": 46, "dt": 12, "max_lb": 4}
+{"date": "20260821", "score": 41.6, "band": "退潮/偏冷", "zt": 54, "zb": 18, "dt": 13, "max_lb": 3}
+{"date": "20260824", "score": 43.6, "band": "退潮/偏冷", "zt": 46, "zb": 16, "dt": 11, "max_lb": 4, "stage": "退潮", "stage_meta": {"trans": "stay", "conf": 3, "raw": "退潮"}}
+{"date": "20260825", "score": 62.9, "band": "中性", "zt": 65, "zb": 22, "dt": 2, "max_lb": 5, "stage": "退潮", "stage_meta": {"trans": "stay", "conf": 3, "raw": "退潮"}}
+{"date": "20260826", "score": 59.6, "band": "中性", "zt": 52, "zb": 20, "dt": 0, "max_lb": 5}
+{"date": "20260827", "score": 71.0, "band": "活跃", "zt": 77, "zb": 17, "dt": 3, "max_lb": 6}
+{"date": "20260828", "score": 77.6, "band": "活跃", "zt": 82, "zb": 16, "dt": 1, "max_lb": 7}
+{"date": "20260831", "score": 62.7, "band": "中性", "zt": 88, "zb": 30, "dt": 11, "max_lb": 6, "stage": "主升", "stage_meta": {"trans": "skip", "conf": 1, "raw": "主升"}}
+{"date": "20260901", "score": 80.5, "band": "活跃", "zt": 83, "zb": 6, "dt": 0, "max_lb": 7, "stage": "主升", "stage_meta": {"trans": "stay", "conf": 3, "raw": "主升"}}
+{"date": "20260902", "score": 49.5, "band": "退潮/偏冷", "zt": 52, "zb": 15, "dt": 8, "max_lb": 4}
+{"date": "20260903", "score": 38.6, "band": "退潮/偏冷", "zt": 44, "zb": 33, "dt": 16, "max_lb": 5}
+{"date": "20260904", "score": 40.2, "band": "退潮/偏冷", "zt": 39, "zb": 48, "dt": 9, "max_lb": 5}
+{"date": "20260905", "score": 40.2, "band": "退潮/偏冷", "zt": 39, "zb": 48, "dt": 9, "max_lb": 5, "stage": "退潮", "stage_meta": {"trans": "skip", "conf": 1, "raw": "退潮"}}
+{"date": "20260906", "score": 40.22, "band": "退潮/偏冷", "zt": 39, "zb": 48, "dt": 9, "max_lb": 5, "stage": "退潮", "stage_meta": {"trans": "stay", "conf": 3, "raw": "退潮"}}
+{"date": "20260911", "score": 36.29, "band": "退潮/偏冷", "zt": 40, "zb": 18, "dt": 21, "max_lb": 4}
+{"date": "20260914", "score": 41.07, "band": "退潮/偏冷", "zt": 55, "zb": 30, "dt": 16, "max_lb": 4, "stage": "退潮", "stage_meta": {"trans": "stay", "conf": 3, "raw": "退潮"}}
+{"date": "20260921", "score": 69.72, "band": "中性", "zt": 103, "zb": 25, "dt": 2, "max_lb": 5, "stage": "主升", "stage_meta": {"trans": "stay", "conf": 3, "raw": "主升"}}
