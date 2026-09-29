@@ -1333,11 +1333,14 @@ def agent_sim(code=None):
         w('  >> 推演路径: ' + path)
         w('  >> 注: 规则引擎基于当日实数据的启发式打分, 是推演不是预测')
     else:
-        w('===== [多主体推演·%s] =====' % code)
         full = ('sh' + code) if code.startswith(('6', '5', '9')) else ('sz' + code)
-        q = tx_realtime([full])[0]
-        pct = q['pct']
-        w('[行情] %s %+.2f%% 额%s' % (q['name'], pct, q['amount']))
+        quotes = tx_realtime([full])
+        if not quotes:
+            w('[行情] 未能获取到股票代码 %s 的行情数据，请核对代码' % code)
+            return
+        q = quotes[0]
+        pct = q.get('pct', 0.0)
+        w('[行情] %s %+.2f%% 额%s' % (q.get('name', code), pct, q.get('amount', '-')))
         prof = lhb_profile(code)
         w(prof if isinstance(prof, str) else '')
         ymd = dt.date.today().strftime('%Y%m%d')
@@ -1360,7 +1363,9 @@ def agent_sim(code=None):
         for name, ww in [x for x in _AGENT_W if x[0] in ag]:
             v = ag[name]
             arrow = '买入/拉抬' if v > 25 else ('做多' if v > 10 else ('观望' if v > -10 else '卖出/出货'))
-            w('  %-8s %+4.0f [%s]' % (name, v, arrow))
+            act = _get_agent_action(name, v)
+            w('  %-8s %+4.0f分 [%s] 动作: %s' % (name, v, arrow, act))
+        w('  ---- 加权合力: %+.0f ----' % net)
         w('  ---- 加权合力: %+.0f (均值%+.1f/±100) ----' % (net, net_pct))
         # 阈值换算自旧裸sum口径(>40,<-20)/权重和3.2 → +12.5/-6.25, 保持判定语义不变
         verdict = ('多头合力: 情绪票接力格局, 注意龙头断板信号' if net_pct >= 12.5 else

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """股票看盘 · 七层雷达 可视化仪表盘 (FastAPI)"""
-import sys, os, json, datetime, time
+import sys, os, json, datetime, time, re
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
@@ -8,6 +8,22 @@ import stock_dashboard as sd
 import strategies_lib as strat_lib
 import auction_radar as ar
 import data_feed as df_feed
+
+def _normalize_stock_code(raw_code: str) -> str:
+    """自动将 sh600519 / 600519.SH / sz000001 / ' 600519 ' 归一化为纯6位数字代码"""
+    if not raw_code:
+        return ""
+    raw = str(raw_code).strip()
+    m = re.search(r'\b(\d{6})\b', raw)
+    if m:
+        return m.group(1)
+    digits = re.findall(r'\d+', raw)
+    if digits:
+        joined = "".join(digits)
+        if len(joined) >= 6:
+            return joined[:6]
+    return raw
+
 
 from fastapi import FastAPI, Request
 from fastapi.templating import Jinja2Templates
@@ -196,7 +212,13 @@ _strat_cache = {
 @app.get("/api/strategies")
 def api_strategies(mode: str = "auto", refresh: bool = False):
     """12策略选股库：按情绪周期自适应(auto) / 全策略(all) / 单策略"""
-    mode = mode.strip() or "auto"
+    valid_strat_keys = {'auto', 'all', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'}
+    mode_clean = (mode or "").strip()
+    if not mode_clean or (mode_clean not in valid_strat_keys and not any(k.strip().upper() in valid_strat_keys for k in mode_clean.split(','))):
+        mode = "auto"
+    else:
+        mode = mode_clean
+
     now_ts = time.time()
     if not refresh and _strat_cache['data'] and _strat_cache['mode'] == mode and (now_ts - _strat_cache['timestamp']) < 120.0:
         cached = dict(_strat_cache['data'])
@@ -219,13 +241,14 @@ def api_strategies(mode: str = "auto", refresh: bool = False):
 @app.get("/api/sim")
 def api_sim(scenario: str = "", code: str = ""):
     """多主体模拟：世界模拟v2 (MiroFish级事件沙盘注入与九方势力博弈推演)"""
-    import io, re
+    import io
     from contextlib import redirect_stdout
+    code = _normalize_stock_code(code)
     buf = io.StringIO()
     try:
         with redirect_stdout(buf):
-            if code.strip():
-                sd.agent_sim(code.strip())
+            if code:
+                sd.agent_sim(code)
                 mode = "agents"
             else:
                 sd.sim_world(scenario.strip() or None)
@@ -235,7 +258,7 @@ def api_sim(scenario: str = "", code: str = ""):
         m_net = re.search(r"加权合力:\s*([+-]?\d+)", text)
         m_meta_domain = re.search(r"【事件智能研判】属性:\s*(.+?)\s*\|", text)
         m_meta_desc = re.search(r"【事件智能研判】.*?逻辑:\s*(.+)", text)
-        m_path = re.search(r">> 推演路径.*?: (.+)", text)
+        m_path = re.search(r">> 推演.*?: (.+)", text)
         m_pos = re.search(r"• 仓位指引:\s*(.+)", text)
         m_atk = re.search(r"• 进攻方向:\s*(.+)", text)
         
@@ -252,19 +275,24 @@ def api_sim(scenario: str = "", code: str = ""):
         rounds = re.findall(r"【传染R\d】.+", text)
 
         net_val = int(m_net.group(1)) if m_net else 0
-        domain_str = m_meta_domain.group(1).strip() if m_meta_domain else ''
+        if mode == "agents":
+            domain_str = f"个股资金博弈 ({code})"
+            desc_str = f"针对个股 {code} 展开的九方多主体博弈合力推演"
+        else:
+            domain_str = m_meta_domain.group(1).strip() if m_meta_domain else ''
+            desc_str = m_meta_desc.group(1).strip() if m_meta_desc else None
         
         beneficiary = None
-        try:
-            beneficiary = sd.get_event_beneficiary_stocks(scenario.strip(), domain_str, net_val)
-        except Exception:
-            pass
-            
         branching = None
-        try:
-            branching = sd.get_branching_scenarios(scenario.strip(), domain_str, net_val)
-        except Exception:
-            pass
+        if mode == "sim":
+            try:
+                beneficiary = sd.get_event_beneficiary_stocks(scenario.strip(), domain_str, net_val)
+            except Exception:
+                pass
+            try:
+                branching = sd.get_branching_scenarios(scenario.strip(), domain_str, net_val)
+            except Exception:
+                pass
             
         history_review = None
         try:
@@ -272,13 +300,15 @@ def api_sim(scenario: str = "", code: str = ""):
         except Exception:
             pass
 
+        stage_val = m_stage.group(1) if m_stage else (m_path.group(1).strip() if m_path else None)
+
         return JSONResponse(dict(
-            status="ok", mode=mode, text=text,
-            stage=m_stage.group(1) if m_stage else None,
+            status="ok", mode=mode, code=code, text=text,
+            stage=stage_val,
             net=("加权合力: " + m_net.group(1)) if m_net else None,
             net_value=net_val,
             domain=domain_str or None,
-            desc=m_meta_desc.group(1).strip() if m_meta_desc else None,
+            desc=desc_str,
             path=m_path.group(1).strip() if m_path else None,
             playbook={'position': m_pos.group(1).strip() if m_pos else None, 'attack': m_atk.group(1).strip() if m_atk else None},
             forces=forces,
@@ -297,7 +327,7 @@ def api_watchlist(codes: str = ""):
     """本地自选股盯盘池：极速批量拉取实时行情"""
     if not codes.strip():
         return JSONResponse([])
-    raw_codes = [c.strip() for c in codes.split(',') if c.strip()]
+    raw_codes = [_normalize_stock_code(c) for c in codes.split(',') if _normalize_stock_code(c)]
     if not raw_codes:
         return JSONResponse([])
     tx_codes = [('sh' if c.startswith(('6', '5', '9')) else 'sz') + c for c in raw_codes[:60]]
@@ -364,7 +394,7 @@ def api_data_status():
 
 @app.get("/api/stock/{code}")
 def api_stock(code: str):
-    code = code.strip()
+    code = _normalize_stock_code(code)
     full = ('sh' + code) if code.startswith(('6', '5', '9')) else ('sz' + code)
     
     # 1. 实时行情 (腾讯 -> 新浪 -> 东财 自动降级与 1.5s 内存缓存)

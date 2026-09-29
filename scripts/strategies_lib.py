@@ -81,6 +81,9 @@ def snapshot(force=False):
 
     rows, seen = [], set()
     hosts = ['https://push2.eastmoney.com', 'https://push2delay.eastmoney.com', 'https://48.push2.eastmoney.com']
+    # 智能熔断快速失败：若东财主机处于熔断冷却中，立即跳过网络轮询，零等待回退
+    if any(sd._cb_is_open(h.replace('https://', '')) for h in hosts):
+        hosts = []
     try:
         for pn in range(1, 60):
             urls = [h + ('/api/qt/clist/get?pn=%d&pz=100&po=1&np=1&fltt=2&fid=f6'
@@ -717,8 +720,12 @@ def run_strategies_structured(mode='auto'):
     stage, advice, allow = regime_gate()
     ymd, zt, zb, dtp = pools_recent()
     run_all = (mode == 'all')
-    target_keys = set(mode.split(',')) if mode not in ('auto', 'all') else set()
-
+    valid_strat_keys = set(s[0] for s in _STRATS)
+    target_keys = set(k.strip().upper() for k in mode.split(',')) if mode not in ('auto', 'all') else set()
+    if mode not in ('auto', 'all') and not (target_keys & valid_strat_keys):
+        # 针对非法或未知模式，自动安全降级为 auto 自适应模式
+        mode = 'auto'
+        target_keys = set()
     univ = None
     strat_results = []
     bc = by_code()

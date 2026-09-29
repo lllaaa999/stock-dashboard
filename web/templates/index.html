@@ -1295,10 +1295,14 @@ function saveBatchHolding(){
   for(const line of lines){
     const parts = line.trim().split(/[\s,，\t]+/);
     if(parts.length >= 3){
-      const code = parts[0].trim();
-      const shares = parseFloat(parts[1]);
-      const cost = parseFloat(parts[2]);
-      const stopLoss = parts[3] ? parseFloat(parts[3]) : Number((cost * 0.95).toFixed(2));
+      const code = parts[0].trim().replace(/[^\d]/g, '');
+      let sIdx = 1;
+      if(isNaN(parseFloat(parts[1])) && parts.length >= 4){
+        sIdx = 2; // parts[1] 是股票名称，如 "600519 贵州茅台 100 1800"
+      }
+      const shares = parseFloat(parts[sIdx]);
+      const cost = parseFloat(parts[sIdx + 1]);
+      const stopLoss = parts[sIdx + 2] ? parseFloat(parts[sIdx + 2]) : Number((cost * 0.95).toFixed(2));
       if(code.length === 6 && !isNaN(shares) && shares > 0 && !isNaN(cost) && cost > 0){
         const idx = list.findIndex(x => x.code === code);
         const item = { code, shares, cost, stop_loss: isNaN(stopLoss)? Number((cost*0.95).toFixed(2)) : stopLoss };
@@ -1426,7 +1430,8 @@ async function renderPortfolio(){
       } else if(curPrice <= stopLoss * 1.025){
         riskCount++;
         isRisk = true;
-        riskTag = `<span style="background:rgba(245,158,11,0.25);color:#f59e0b;border:1px solid #f59e0b;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;">⚠️ 逼近防守线 (${(((curPrice-stopLoss)/stopLoss)*100).toFixed(1)}%)</span>`;
+        const distPct = stopLoss > 0 ? (((curPrice - stopLoss) / stopLoss) * 100).toFixed(1) : '0.0';
+        riskTag = `<span style="background:rgba(245,158,11,0.25);color:#f59e0b;border:1px solid #f59e0b;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;">⚠️ 逼近防守线 (${distPct}%)</span>`;
       } else if(totalPnlPct >= 10){
         riskTag = `<span style="background:rgba(16,185,129,0.25);color:#10b981;border:1px solid #10b981;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;">🎯 盈利饱满·提止损保本</span>`;
       } else {
@@ -1891,7 +1896,7 @@ function renderNews(n){
         ${x.codes ? `<span style="color:var(--gold);font-weight:600;margin-right:6px;">[${x.codes}]</span>` : ''}
         <span style="color:var(--text-primary);font-weight:500;">${x.title}</span>
       </div>
-      <button class="btn btn-sm" style="padding:3px 10px;font-size:12px;background:rgba(56,189,248,0.12);color:#38bdf8;border:1px solid rgba(56,189,248,0.3);border-radius:6px;white-space:nowrap;cursor:pointer;flex-shrink:0;display:flex;align-items:center;gap:4px;" onclick="eventSim('${encodeURIComponent(x.title)}')">
+      <button class="btn btn-sm" style="padding:3px 10px;font-size:12px;background:rgba(56,189,248,0.12);color:#38bdf8;border:1px solid rgba(56,189,248,0.3);border-radius:6px;white-space:nowrap;cursor:pointer;flex-shrink:0;display:flex;align-items:center;gap:4px;" onclick="eventSim('${encodeURIComponent(x.title || '').replace(/'/g, '%27')}')">
         <span>🔮</span><span>推演</span>
       </button>
     </div>`).join('') || '<div style="color:var(--text-muted)">暂无实时快讯</div>';
@@ -2074,8 +2079,11 @@ function renderTrendChart(trends){
 }
 
 async function loadStock(){
-  const code = document.getElementById('stockCode').value.trim();
-  if(!code){ alert('请输入股票代码'); return; }
+  let raw = document.getElementById('stockCode').value.trim();
+  const digitsMatch = raw.match(/\b\d{6}\b/) || raw.match(/\d{6}/);
+  const code = digitsMatch ? digitsMatch[0] : (raw.replace(/[^\d]/g, '').slice(0, 6) || raw);
+  if(!code){ alert('请输入有效的股票代码 (如 600519)'); return; }
+  document.getElementById('stockCode').value = code;
   const panel = document.getElementById('stockPanel');
   panel.style.display = 'block';
   panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2488,7 +2496,7 @@ async function runSim(){
       if(d.net) head += d.net + '\n\n';
       box.textContent = head + d.text;
 
-      if(board && d.mode === 'sim' && d.forces && d.forces.length > 0){
+      if(board && d.forces && d.forces.length > 0){
         renderSimVisualBoard(board, d, sc);
         box.style.display = 'none'; // 优先展示现代化看板，底层日志默认折叠
       }
