@@ -90,6 +90,14 @@ def _get_first_ok(urls, gbk=False, timeout=20, retries=2, referer=None, headers=
                 w('[熔断] %s 连续%d次失败, 暂时冷却60秒' % (host, _CIRCUIT_N))
     raise RuntimeError('全部通道失败: %s' % last)
 
+def _cb_is_open(host):
+    """判断指定 host 当前是否处于熔断冷却期"""
+    import time
+    if not host:
+        return False
+    clean_host = host.replace('https://', '').replace('http://', '').split('/')[0]
+    return _HOST_BLACKOUT.get(clean_host, 0) > time.time()
+
 def w(*a):
     print(*a)
 

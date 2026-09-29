@@ -81,8 +81,19 @@ def snapshot(force=False):
 
     rows, seen = [], set()
     hosts = ['https://push2.eastmoney.com', 'https://push2delay.eastmoney.com', 'https://48.push2.eastmoney.com']
+
+    def _is_cb_open(h):
+        if hasattr(sd, '_cb_is_open'):
+            try:
+                return sd._cb_is_open(h)
+            except Exception:
+                pass
+        blackout = getattr(sd, '_HOST_BLACKOUT', {})
+        clean_h = h.replace('https://', '').replace('http://', '').split('/')[0]
+        return blackout.get(clean_h, 0) > time.time()
+
     # 智能熔断快速失败：若东财主机处于熔断冷却中，立即跳过网络轮询，零等待回退
-    if any(sd._cb_is_open(h.replace('https://', '')) for h in hosts):
+    if any(_is_cb_open(h) for h in hosts):
         hosts = []
     try:
         for pn in range(1, 60):

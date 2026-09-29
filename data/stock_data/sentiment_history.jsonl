@@ -27,3 +27,4 @@
 {"date": "20260911", "score": 36.29, "band": "退潮/偏冷", "zt": 40, "zb": 18, "dt": 21, "max_lb": 4}
 {"date": "20260914", "score": 41.07, "band": "退潮/偏冷", "zt": 55, "zb": 30, "dt": 16, "max_lb": 4, "stage": "退潮", "stage_meta": {"trans": "stay", "conf": 3, "raw": "退潮"}}
 {"date": "20260921", "score": 69.72, "band": "中性", "zt": 103, "zb": 25, "dt": 2, "max_lb": 5, "stage": "主升", "stage_meta": {"trans": "stay", "conf": 3, "raw": "主升"}}
+{"date": "20260929", "score": 57.66, "band": "中性", "zt": 57, "zb": 8, "dt": 10, "max_lb": 6, "stage": "主升", "stage_meta": {"trans": "stay", "conf": 3, "raw": "主升"}}
