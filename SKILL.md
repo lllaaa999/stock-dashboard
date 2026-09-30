@@ -127,7 +127,7 @@ FastAPI+ECharts。页面含：指数卡片/外盘卡/情绪仪表盘+历史曲�
 - 模拟器回测：用历史存档逐日跑 agents/sim，统计「合力>30次日上涨概率」等命中率校准权重
 
 ## 收口更新（2026-09-30 · Hermes）
-- **存档单点化**：`STOCK_DATA_HOME=D:\股票看盘\data` 已固化进两个启动器（桌面 `启动股票看盘.bat` + 项目内 `一键启动股票看盘.bat`，GBK+CRLF 保持），并写入 Hermes `.env`（`hermes config set STOCK_DATA_HOME`）→ 无论从 bat 还是 Hermes 会话/cron 里跑，归档都落 `D:\股票看盘\data\stock_data\`，不再写进 Hermes 目录
+- **存档单点化（含一处认知更正）**：两条静态落点规则原来是"脚本上级 `data/` 存在 → 恒用它；否则 `STOCK_DATA_HOME > HERMES_HOME > ~/.hermes`"（`stock_dashboard.py:28-32`）。所以 **D:\股票看盘 本体从来不会写歪**（bat 也不是元凶）；当年分叉的是**没有同级 `data/` 的副本**（旧 Hermes 技能副本 / cron 里那份脚本），它们回落到 `HERMES_HOME\stock_data`。现存唯一副本已无该风险；为防"再拷一份出去跑"复发，`STOCK_DATA_HOME=D:\股票看盘\data` 已固化进两个启动器（GBK+CRLF）并写入 Hermes `.env` 作为**冗余保险**（回落分支实测有效，见 `scratch/verify_step2.py` 2b 段）
 - **历史分叉已合并**：Hermes 侧旧档（29 条，缺 20260929）与项目侧（30 条）按日期并集合并，同日期冲突 0 条，已原子写回项目侧；旧档冻结为 `sentiment_history.jsonl.legacy-20260930`，快照备份在 `scratch/step2_backup_20260930/`
 - **`sync_check.ps1` 重写为"单点校验"**：旧版治理的 `D:\hermes\...` 硬链副本随 2026-08-17 删除已不存在，旧哨兵只会输出 MISSING（防分叉机制已死）；新版校验①权威存档存在②Hermes 侧不再长出第二份存档③两个启动器均已固化变量，退出码=问题数
 - **`data_feed.py` 两处修正**（验证脚本 `scratch/verify_step1.py`）：① 健康度阈值 `>=3 / elif >=5` 使 `offline` 永不可达 → 改为从高到低判断；② 东财资金流失败时的兜底不再按 55/45 编造"超大单/大单"（改 `null` + `estimated:true` + `source:tencent_inout`），前端显示"数据不可用"并附注"源降级"，不再把编造的数字画进资金结构图
