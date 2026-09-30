@@ -1709,12 +1709,25 @@ function renderEmotion(e){
     }]
   });
 
+  const _eff = e.effect || null;
+  const _effTxt = _eff ? `溢价 ${_eff.premium>0?'+':''}${_eff.premium}% · 1进2 ${_eff.rate_1to2}%`
+                       : (e.effect_available === false ? '取不到(源降级)' : '—');
+  const _effCol = !_eff ? 'var(--text-muted)'
+        : ((_eff.premium < 0 || _eff.rate_1to2 < 25) ? 'var(--down)'
+        : ((_eff.premium > 3 && _eff.rate_1to2 > 50) ? 'var(--up)' : 'var(--text-secondary)'));
+  const _div = e.diverge === 'score_high_effect_weak'
+        ? '<span style="color:var(--down);font-weight:700;">⚠ 分数偏高但接力偏弱（广度在装没事）</span>'
+        : (e.diverge === 'score_low_effect_strong'
+        ? '<span style="color:var(--up);font-weight:700;">⚡ 分数偏低但赚钱效应转强（冰点试错窗口）</span>' : '');
+
   document.getElementById('emoMetrics').innerHTML = `
-    <div class="metric"><div class="l">周期定位</div><div class="v" style="color:var(--accent);">${e.band}</div></div>
+    <div class="metric"><div class="l">周期定位</div><div class="v" style="color:var(--accent);" title="v1 公式对照: ${e.score_v1 ?? '-'}">${e.band}</div></div>
     <div class="metric"><div class="l">涨停数</div><div class="v up">${e.zt}</div></div>
     <div class="metric"><div class="l">炸板率</div><div class="v flat">${(e.zb/(Math.max(e.zt+e.zb,1))*100).toFixed(0)}%</div></div>
     <div class="metric"><div class="l">跌停数</div><div class="v down">${e.dt}</div></div>
-    <div class="metric"><div class="l">最高板</div><div class="v" style="color:var(--gold);">${e.max_lb}板</div></div>`;
+    <div class="metric"><div class="l">最高板</div><div class="v" style="color:var(--gold);">${e.max_lb}板</div></div>
+    <div class="metric"><div class="l">赚钱效应</div><div class="v" style="color:${_effCol};font-size:15px;">${_effTxt}</div></div>
+    ${_div ? `<div class="metric" style="grid-column:1/-1;">${_div}</div>` : ''}`;
 
   const d = document.getElementById('emoDetail');
   let colL = '', colM = '', colR = '';
