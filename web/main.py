@@ -159,7 +159,9 @@ def api_market(refresh: bool = False):
     )
 
     _market_cache['data'] = resp_data
-    _market_cache['timestamp'] = now_ts
+    # 时间戳记"产出完成时刻": 原来记请求开始时刻(now_ts), 一旦本次请求耗时超过 TTL
+    # (慢链路/冷启动/新增的交易日探测), 下一次请求立刻判过期 —— 缓存等于从未命中(2026-09-30 修正)
+    _market_cache['timestamp'] = time.time()
     _market_cache['last_refresh_s'] = elapsed
 
     return JSONResponse(resp_data)
