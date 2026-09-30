@@ -125,3 +125,9 @@ FastAPI+ECharts。页面含：指数卡片/外盘卡/情绪仪表盘+历史曲�
 - 情绪指数历史曲线图导出PNG（web 已有 ECharts 曲线）
 - 可转债溢价率作为投机情绪先行指标
 - 模拟器回测：用历史存档逐日跑 agents/sim，统计「合力>30次日上涨概率」等命中率校准权重
+
+## 收口更新（2026-09-30 · Hermes）
+- **存档单点化**：`STOCK_DATA_HOME=D:\股票看盘\data` 已固化进两个启动器（桌面 `启动股票看盘.bat` + 项目内 `一键启动股票看盘.bat`，GBK+CRLF 保持），并写入 Hermes `.env`（`hermes config set STOCK_DATA_HOME`）→ 无论从 bat 还是 Hermes 会话/cron 里跑，归档都落 `D:\股票看盘\data\stock_data\`，不再写进 Hermes 目录
+- **历史分叉已合并**：Hermes 侧旧档（29 条，缺 20260929）与项目侧（30 条）按日期并集合并，同日期冲突 0 条，已原子写回项目侧；旧档冻结为 `sentiment_history.jsonl.legacy-20260930`，快照备份在 `scratch/step2_backup_20260930/`
+- **`sync_check.ps1` 重写为"单点校验"**：旧版治理的 `D:\hermes\...` 硬链副本随 2026-08-17 删除已不存在，旧哨兵只会输出 MISSING（防分叉机制已死）；新版校验①权威存档存在②Hermes 侧不再长出第二份存档③两个启动器均已固化变量，退出码=问题数
+- **`data_feed.py` 两处修正**（验证脚本 `scratch/verify_step1.py`）：① 健康度阈值 `>=3 / elif >=5` 使 `offline` 永不可达 → 改为从高到低判断；② 东财资金流失败时的兜底不再按 55/45 编造"超大单/大单"（改 `null` + `estimated:true` + `source:tencent_inout`），前端显示"数据不可用"并附注"源降级"，不再把编造的数字画进资金结构图

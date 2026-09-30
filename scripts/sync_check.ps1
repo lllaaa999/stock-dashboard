@@ -1,62 +1,38 @@
-﻿# sync_check.ps1 - 多拷贝哈希哨兵 (硬链治理, 2026-08-25 dsh方案E落地)
-# 用法: powershell -File sync_check.ps1 [-Fix]
-# 默认只读比对+告警; -Fix 时对分叉/缺失的副本自动重建硬链
-param([switch]$Fix)
+﻿# sync_check.ps1 - 单点校验哨兵 (2026-09-30 重写)
+# 旧版职责: 比对 D:\hermes\... 两处硬链副本的 SHA256 —— 但 D:\hermes 已于 2026-08-17 被删除,
+#           副本不存在, 旧哨兵只会输出 MISSING, 等于防分叉机制已死。
+# 新版职责(单点权威):
+#   1) 权威存档存在, 且 Hermes 侧不再长出第二份 sentiment_history.jsonl (已冻结为 .legacy)
+#   2) 两个启动器都固化了 STOCK_DATA_HOME (否则收盘归档会写进 Hermes 目录 -> 分叉)
+#   3) 打印权威存档条数, 便于和上游核对
+# 用法: powershell -File scripts\sync_check.ps1 ; 退出码 = 问题数
+param([switch]$Fix)   # -Fix 参数保留兼容, 新版无需修复动作
 $ErrorActionPreference = 'Continue'
-$base = 'D:\股票看盘\scripts\stock_dashboard.py'
-$links = @(
-  'D:\hermes\Hermes Agent CN Desktop\data\hermes-home\scripts\stock_dashboard.py',
-  'D:\hermes\Hermes Agent CN Desktop\data\hermes-home\skills\finance-stock-dashboard\scripts\stock_dashboard.py'
-)
-if (-not (Test-Path $base)) { Write-Warning "BASE MISSING: $base"; exit 1 }
-$hb = (Get-FileHash $base -Algorithm SHA256).Hash
+$root = 'D:\股票看盘'
 $bad = 0
-foreach ($p in $links) {
-  if (-not (Test-Path $p)) {
-    Write-Warning "MISSING: $p"
-    $bad++
-    if ($Fix) { New-Item -ItemType HardLink -Path $p -Target $base | Out-Null; Write-Output "FIXED(hardlink): $p" }
-    continue
-  }
-  # 硬链健康检查: 同 inode 则 hash 必同; hash 不同说明已断链或被改
-  $hp = (Get-FileHash $p -Algorithm SHA256).Hash
-  if ($hb -ne $hp) {
-    Write-Warning "DIVERGED: $p"
-    $bad++
-    if ($Fix) { Remove-Item $p -Force; New-Item -ItemType HardLink -Path $p -Target $base | Out-Null; Write-Output "FIXED(relinked): $p" }
-  } else {
-    Write-Output "OK: $p"
-  }
-}
-# ---- strategies_lib.py 同样治理 (2026-08-25 策略库会诊新增) ----
-$base = 'D:\股票看盘\scripts\strategies_lib.py'
-$links = @(
-  'D:\hermes\Hermes Agent CN Desktop\data\hermes-home\scripts\strategies_lib.py',
-  'D:\hermes\Hermes Agent CN Desktop\data\hermes-home\skills\finance-stock-dashboard\scripts\strategies_lib.py'
-)
-if (-not (Test-Path $base)) { Write-Warning "BASE MISSING: $base"; $bad++ }
-else {
-  $hb = (Get-FileHash $base -Algorithm SHA256).Hash
-  foreach ($p in $links) {
-    if (-not (Test-Path $p)) { Write-Warning "MISSING: $p"; $bad++; if ($Fix) { New-Item -ItemType HardLink -Path $p -Target $base | Out-Null; Write-Output "FIXED(hardlink): $p" }; continue }
-    $hp = (Get-FileHash $p -Algorithm SHA256).Hash
-    if ($hb -ne $hp) { Write-Warning "DIVERGED: $p"; $bad++; if ($Fix) { Remove-Item $p -Force; New-Item -ItemType HardLink -Path $p -Target $base | Out-Null; Write-Output "FIXED(relinked): $p" } }
-    else { Write-Output "OK: $p" }
-  }
-}
-# 存档一致性(只读比对不修复): 情绪档 + 预判档(可能尚不存在)
-$pairs = @(
-  @('D:\hermes\Hermes Agent CN Desktop\data\hermes-home\stock_data\sentiment_history.jsonl', 'D:\股票看盘\data\stock_data\sentiment_history.jsonl'),
-  @('D:\hermes\Hermes Agent CN Desktop\data\hermes-home\stock_data\pred.jsonl', 'D:\股票看盘\data\stock_data\pred.jsonl')
-)
-foreach ($pair in $pairs) {
-  if ((Test-Path $pair[0]) -and (Test-Path $pair[1])) {
-    if ((Get-FileHash $pair[0]).Hash -ne (Get-FileHash $pair[1]).Hash) {
-      Write-Warning "ARCHIVE DIVERGED: $($pair[0]) vs $($pair[1])"; $bad++
-    } else {
-      Write-Output "ARCHIVE OK: $(Split-Path $pair[0] -Leaf)"
-    }
-  }
-}
-if ($bad -gt 0 -and -not $Fix) { exit 2 } else { exit 0 }
 
+$proj = Join-Path $root 'data\stock_data\sentiment_history.jsonl'
+$herm = Join-Path $env:LOCALAPPDATA 'hermes\stock_data\sentiment_history.jsonl'
+
+if (-not (Test-Path $proj)) {
+    Write-Warning "MISSING 权威存档: $proj"; $bad++
+} else {
+    $n = (Get-Content -LiteralPath $proj -Encoding UTF8 | Where-Object { $_.Trim() -ne '' }).Count
+    Write-Output "OK  权威存档 $n 条: $proj"
+}
+
+if (Test-Path $herm) {
+    Write-Warning "DIVERGED 又出现第二份存档(应已冻结为 .legacy-20260930): $herm"; $bad++
+} else {
+    Write-Output "OK  Hermes 侧无重复存档"
+}
+
+foreach ($b in @((Join-Path $root '一键启动股票看盘.bat'), (Join-Path $env:USERPROFILE 'Desktop\启动股票看盘.bat'))) {
+    if (-not (Test-Path $b)) { Write-Warning "MISSING 启动器: $b"; $bad++; continue }
+    $txt = [System.IO.File]::ReadAllText($b, [System.Text.Encoding]::GetEncoding(936))
+    if ($txt -match 'STOCK_DATA_HOME') { Write-Output ("OK  启动器已固化: " + (Split-Path $b -Leaf)) }
+    else { Write-Warning ("未固化 STOCK_DATA_HOME: " + $b); $bad++ }
+}
+
+Write-Output ("—— 单点校验完成, 问题数: " + $bad)
+exit $bad

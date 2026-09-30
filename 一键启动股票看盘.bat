@@ -1,4 +1,5 @@
 @echo off
+set STOCK_DATA_HOME=D:\股票看盘\data
 title 股票综合看盘系统
 cd /d "D:\股票看盘\web"
 
