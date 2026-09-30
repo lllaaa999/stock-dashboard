@@ -2130,11 +2130,14 @@ async function loadStock(){
         { label: '中单', val: tf.med_net },
         { label: '小单散户', val: tf.small_net }
       ];
+      const fmtCap = v => (v === null || v === undefined)
+        ? '<b style="color:var(--text-muted)">数据不可用</b>'
+        : `<b style="color:${v>=0?upColor:downColor}">${v>0?'+':''}${v}亿</b>`;
       capRow.innerHTML = items.map(it => `
         <span style="font-size:12px;padding:3px 8px;border-radius:4px;background:rgba(255,255,255,0.04);border:1px solid var(--border);color:var(--text-secondary);">
-          ${it.label}: <b style="color:${it.val>=0?upColor:downColor}">${it.val>0?'+':''}${it.val}亿</b>
+          ${it.label}: ${fmtCap(it.val)}
         </span>
-      `).join('');
+      `).join('') + (tf.estimated ? '<span style="font-size:12px;color:var(--text-muted);margin-left:6px;">（源降级：仅内外盘估算，无单笔分层）</span>' : '');
     }
 
     // 主力资金流历史

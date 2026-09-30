@@ -85,10 +85,11 @@ def _record_status(source: str, ok: bool, latency: float):
         st["latency_ms"] = round(latency * 1000, 1)
     else:
         st["failures"] += 1
-        if st["failures"] >= 3:
-            st["status"] = "degraded"
-        elif st["failures"] >= 5:
+        # 阈值必须从高到低判断: 原来的 >=3 / elif >=5 会让 offline 永远不可达(2026-09-30 修正)
+        if st["failures"] >= 5:
             st["status"] = "offline"
+        elif st["failures"] >= 3:
+            st["status"] = "degraded"
 
 def is_market_closed() -> bool:
     """判断是否处于盘后时间 (周一至周五 15:05 之后或周末)"""
@@ -499,11 +500,16 @@ def get_capital_breakdown(code: str) -> Dict[str, Any]:
                 fallback_res['today'] = {
                     'date': dt.date.today().strftime('%Y-%m-%d'),
                     'main_net': net,
-                    'super_net': round(net * 0.55, 2),
-                    'large_net': round(net * 0.45, 2),
-                    'med_net': 0.0,
-                    'small_net': 0.0,
-                    'pct': pct
+                    # 腾讯内外盘只能算出"主动买卖净额", 不是主力单笔结构;
+                    # 单笔分层(超大/大/中/小单)只有东财 fflow 接口才有 —— 所以这里留空,
+                    # 不再按 55/45 比例编造(2026-09-30 修正: 编造的数字会直接画进资金结构图)
+                    'super_net': None,
+                    'large_net': None,
+                    'med_net': None,
+                    'small_net': None,
+                    'pct': pct,
+                    'source': 'tencent_inout',
+                    'estimated': True
                 }
     except Exception:
         pass
