@@ -250,19 +250,38 @@ def api_strategies(mode: str = "auto", refresh: bool = False):
 
 
 @app.get("/api/sim")
-def api_sim(scenario: str = "", code: str = ""):
-    """多主体模拟：世界模拟v2 (MiroFish级事件沙盘注入与九方势力博弈推演)"""
+def api_sim(scenario: str = "", code: str = "", engine: str = "rule"):
+    """多主体模拟：世界模拟v2 + 可选 LLM 消息面推演
+
+    engine=rule（默认，纯规则引擎）| engine=llm（LLM 读当日事件表出九方冲击矩阵,
+    再交给同一个规则引擎做传染与加权 —— LLM 只给判断, 不碰算术）。
+    无密钥/调用失败时自动回落 rule，并在返回里标 engine=rule(fallback)。
+    """
     import io
     from contextlib import redirect_stdout
     code = _normalize_stock_code(code)
     buf = io.StringIO()
+    llm_payload = None
+    llm_impact = None
+    if engine == "llm" and not code:
+        try:
+            import sim_llm as _simllm
+            llm_payload = _simllm.run(dry_run=False, quiet=True)
+        except Exception as e:
+            llm_payload = {"ok": False, "reason": "exception", "hint": f"{type(e).__name__}: {e}"}
+        if llm_payload.get("ok"):
+            llm_impact = dict(llm_payload.get("impact") or {})
+            llm_impact["theme_priority"] = llm_payload.get("theme_priority") or []
+        else:
+            llm_payload = dict(llm_payload, fallback=True)
     try:
         with redirect_stdout(buf):
             if code:
                 sd.agent_sim(code)
                 mode = "agents"
             else:
-                sd.sim_world(scenario.strip() or None)
+                sd.sim_world(scenario.strip() or None, llm_impact=llm_impact,
+                             llm_note="LLM 消息面推演")
                 mode = "sim"
         text = buf.getvalue()
         m_stage = re.search(r"定位: 【(.+?)】", text)
@@ -315,6 +334,9 @@ def api_sim(scenario: str = "", code: str = ""):
 
         return JSONResponse(dict(
             status="ok", mode=mode, code=code, text=text,
+            engine=("llm" if (llm_payload and llm_payload.get("ok")) else
+                    ("rule(fallback)" if llm_payload else "rule")),
+            llm=llm_payload,
             stage=stage_val,
             net=("加权合力: " + m_net.group(1)) if m_net else None,
             net_value=net_val,

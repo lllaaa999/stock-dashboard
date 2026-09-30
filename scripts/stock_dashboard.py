@@ -1738,7 +1738,8 @@ def _mem_load():
 def _mem_save(rec):
     json.dump(rec, open(_AG_ST, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
 
-def _sim_pipeline(ag, scenario=None, use_memory=False, cur_date='', verbose=False):
+def _sim_pipeline(ag, scenario=None, use_memory=False, cur_date='', verbose=False,
+                  impact_override=None, impact_note=''):
     """统一推演管道(dsh方案C): ①势力记忆锚定(use_memory, 惯性0.3) ②情景注入 ③3轮传染(阻尼0.6)。
     势力子集自动适配(_CONT 只作用于存在的势力)。返回 (ag, 轮次快照行列表)。"""
     cl = lambda v, lo, hi: max(lo, min(hi, v))
@@ -1753,10 +1754,29 @@ def _sim_pipeline(ag, scenario=None, use_memory=False, cur_date='', verbose=Fals
                 ag[k] = ag[k] * 0.7 + pv * 0.3
                 if verbose:
                     w('  %-8s %+5.0f -> %+5.0f' % (k, pv, ag[k]))
-    if scenario:
-        meta, impact = parse_event_scenario(scenario)
+    if scenario or impact_override:
+        if impact_override:
+            # LLM(或外部)给出的九方冲击矩阵: 只覆盖"判断"这一层, 后面的传染/加权仍走本引擎
+            meta = {'domain': impact_note or 'LLM 消息面推演',
+                    'desc': '外部冲击矩阵（LLM 依据当日消息面事件表给出），数值聚合仍由本引擎计算'}
+            impact = {}
+            for _k, _v in (impact_override or {}).items():
+                try:
+                    impact[str(_k)] = float(_v)
+                except (TypeError, ValueError):
+                    continue      # 非数值项(如 theme_priority 列表)不进冲击矩阵
+        else:
+            meta, impact = parse_event_scenario(scenario)
         if verbose:
-            w('【上帝视角·事件注入】: %s' % scenario)
+            if scenario:
+                w('【上帝视角·事件注入】: %s' % scenario)
+            if impact_override:
+                w('【事件注入·LLM 冲击矩阵】%s' % ' '.join('%s%+.0f' % (k, v) for k, v in impact.items()))
+                _it = impact_override.get('theme_priority') if isinstance(impact_override, dict) else None
+                if _it:
+                    w('【LLM 板块优先级】%s' % ' '.join('%s%s' % (
+                        '+' if x.get('polarity', 0) > 0 else ('-' if x.get('polarity', 0) < 0 else '·'),
+                        x.get('sector', '')) for x in _it[:6]))
             w('【事件研判】领域: %s | 影响逻辑: %s' % (meta['domain'], meta['desc']))
         ag = {k: cl(v + impact.get(k, 0), -100, 100) for k, v in ag.items()}
     names = list(ag)
@@ -2021,7 +2041,7 @@ def get_historical_review(scenario_text=''):
                 return b
     return None
 
-def sim_world(scenario=None):
+def sim_world(scenario=None, llm_impact=None, llm_note=''):
     w('')
     w('===== [世界模拟v2] 势力记忆+交互传染+情景注入 =====')
     if scenario:
@@ -2104,7 +2124,8 @@ def sim_world(scenario=None):
     ag['产业资本'] = dz_net  # 基线中性, 大宗信号即立场
     # ①②③ 统一管道: 势力记忆锚定 + 情景注入 + 3轮传染
     ag, _ = _sim_pipeline(ag, scenario=scenario, use_memory=True,
-                          cur_date=la.get('date', ''), verbose=True)
+                          cur_date=la.get('date', ''), verbose=True,
+                          impact_override=llm_impact, impact_note=llm_note)
     net, net_pct = _weighted_net(ag)
     w('\n【九方势力博弈动作解析】')
     for n, ww in _AGENT_W:

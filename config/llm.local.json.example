@@ -1,0 +1,13 @@
+{
+  "_说明": "复制本文件为 config/llm.local.json 后填入密钥。llm.local.json 已进 .gitignore，不会进 git；别把密钥发到聊天里。",
+  "base_url": "https://api.deepseek.com/v1",
+  "api_key": "在此填入你的 DeepSeek API Key",
+  "model": "deepseek-chat",
+  "temperature": 0.3,
+  "max_tokens": 2600,
+  "timeout": 150,
+  "rounds": 3,
+  "top_events": 20,
+  "fallback_hermes": false,
+  "_fallback_hermes说明": "设 true 则在没有 api_key 时复用 Hermes .env 的 DashScope 通道（qwen-plus）"
+}
