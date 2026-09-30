@@ -25,8 +25,8 @@ def check(name, cond, extra=''):
 
 print("== 1. 配置发现（无密钥时如实报告）==")
 cfg = sl.load_llm_config(quiet=True)
-check("默认 base_url 指向 DeepSeek", cfg['base_url'].startswith('https://api.deepseek.com'), cfg['base_url'])
-check("默认模型 deepseek-chat", cfg['model'] == 'deepseek-chat', cfg['model'])
+check("base_url 有效（配置文件优先于内置默认）", cfg['base_url'].startswith('http'), f"{cfg['base_url']} ← {cfg['source']}")
+check("model 非空且来源可追溯", bool(cfg['model']), f"{cfg['model']} ← {cfg['source']}")
 check("has_key 为布尔且与来源一致", isinstance(cfg['has_key'], bool), (cfg['has_key'], cfg['source']))
 check("来源可见", cfg['source'] in ('none', 'env', 'config/llm.local.json', 'hermes .env (DashScope)'), cfg['source'])
 
@@ -51,11 +51,39 @@ for name, txt in [('纯 JSON', '{"a":1}'), ('```json 包裹', '```json\n{"a":1}\
         check(f"  {name}", sl._extract_json(txt) == {'a': 1})
     except Exception as e:
         check(f"  {name}", False, f'{type(e).__name__}: {e}')
+for name, bad in [('尾逗号', '{"a":1,}'), ('数组尾逗号', '{"a":[1,2,]}'),
+                  ('单引号', "{'a': 1}"), ('含控制字符', '{"a":1}\x07')]:
+    try:
+        check(f"  坏 JSON 修复: {name}", sl._extract_json(bad) == {'a': 1} or sl._extract_json(bad).get('a') == [1, 2],
+              sl._extract_json(bad))
+    except Exception as e:
+        check(f"  坏 JSON 修复: {name}", False, f'{type(e).__name__}: {e}')
 try:
     sl._extract_json('完全没有 JSON')
     check("  无 JSON → 抛错", False)
 except Exception:
     check("  无 JSON → 抛错", True)
+
+print()
+print("== 3b. 首次坏 JSON → 回喂修复提示后重试成功 ==")
+_calls = {'n': 0}
+
+
+def _flaky(messages, cfg, json_mode=True):
+    _calls['n'] += 1
+    if _calls['n'] == 1:
+        return '{"impact": {"游资": 5', {'total_tokens': 10}        # 截断 JSON → 不可修复（尾逗号已被解析器救回）
+    return '{"impact": {"游资": 9}}', {'total_tokens': 10}
+
+
+_real_call = sl.call_llm
+sl.call_llm = _flaky
+try:
+    data, usage, content = sl._call_json([{'role': 'user', 'content': 'x'}], dict(cfg, api_key='dummy'), retries=1)
+    check("重试后拿到合法 JSON", data.get('impact', {}).get('游资') == 9, (data, _calls['n']))
+    check("确实发生了两次调用", _calls['n'] == 2, _calls['n'])
+finally:
+    sl.call_llm = _real_call
 
 print()
 print("== 4. response_format 不被支持时自动重试 ==")

@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import sys
 import time
 import urllib.error
@@ -195,15 +196,59 @@ def call_llm(messages, cfg, json_mode=True):
 
 
 def _extract_json(text):
-    """容错解析：模型偶尔会带 ```json 包裹或前后缀"""
+    """容错解析：```json 包裹 / 前后缀 / 尾逗号 / 单引号 / 控制字符 都要能救回来。
+
+    实测（2026-09-30）：deepseek-v4.1-flash 偶发尾逗号 → json.loads 抛
+    "Expecting ',' delimiter" 直接把整轮推演打回 rule 回落，所以这里必须多级修复。
+    """
     s = (text or '').strip()
-    if s.startswith('```'):
-        s = s.split('```')[1] if len(s.split('```')) > 1 else s
-        s = s[4:] if s.lower().startswith('json') else s
+    if '```' in s:
+        parts = s.split('```')
+        if len(parts) >= 2:
+            s = parts[1]
+        s = s[4:] if s.lstrip().lower().startswith('json') else s
     i, j = s.find('{'), s.rfind('}')
     if i < 0 or j <= i:
         raise ValueError('响应里没有 JSON 对象')
-    return json.loads(s[i:j + 1])
+    body = s[i:j + 1]
+    cands = [body, re.sub(r',\s*([}\]])', r'\1', body)]
+    cands.append(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', cands[-1]))
+    last = None
+    for c in cands:
+        for kwargs in ({}, {'strict': False}):
+            try:
+                return json.loads(c, **kwargs)
+            except Exception as e:
+                last = e
+    try:                      # 单引号/True/None 之类的 python 字面量兜底
+        import ast
+        return ast.literal_eval(cands[0])
+    except Exception as e:
+        last = e
+    raise ValueError(f'JSON 解析失败(多级修复后): {last}')
+
+
+def _call_json(messages, cfg, dry_run=False, retries=1):
+    """调用并解析 JSON：失败时把原文回喂要求"只输出合法 JSON"再试一次。
+
+    返回 (data, usage, raw_content)。
+    """
+    fn = mock_call if dry_run else call_llm
+    msgs, last_err, content = list(messages), None, ''
+    for attempt in range(retries + 1):
+        content, usage = fn(msgs, cfg)
+        try:
+            return _extract_json(content), usage, content
+        except Exception as e:
+            last_err = e
+            if attempt < retries:
+                w(f'[LLM] 第 {attempt + 1} 次返回不是合法 JSON（{e}），回喂修复提示重试…')
+                msgs = msgs + [
+                    {'role': 'assistant', 'content': (content or '')[:1200]},
+                    {'role': 'user', 'content': '上面这段不是合法 JSON。请只输出合法 JSON：不要 markdown 包裹、'
+                                                '不要注释、不要尾逗号，字段与要求完全一致。'},
+                ]
+    raise ValueError(f'JSON 解析失败(已重试 {retries} 次): {last_err}')
 
 
 MOCK_RESPONSE = {
@@ -272,10 +317,8 @@ def deduce_impact(seed, cfg, dry_run=False):
         '约束：impact 只填数字（对每方势力的净冲击，正=偏多/加仓，负=偏空/减仓）；',
         '      事件不足以支撑的信息宁可给接近 0 的值；theme_priority 最多 6 项，risk_points 最多 4 项。',
     ])
-    fn = mock_call if dry_run else call_llm
-    content, usage = fn([{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': user}], cfg)
-    data = _extract_json(content)
-    return data, usage, content
+    return _call_json([{'role': 'system', 'content': SYSTEM_PROMPT},
+                       {'role': 'user', 'content': user}], cfg, dry_run=dry_run)
 
 
 def play_round(rnd, seed, stances, cfg, dry_run=False, prev_note=''):
@@ -293,10 +336,8 @@ def play_round(rnd, seed, stances, cfg, dry_run=False, prev_note=''):
         ' "next_day": "≤40字：次日合力方向与强度定性",',
         ' "confidence": 0.0-1.0}',
     ])
-    fn = mock_call if dry_run else call_llm
-    content, usage = fn([{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': user}], cfg)
-    data = _extract_json(content)
-    return data, usage, content
+    return _call_json([{'role': 'system', 'content': SYSTEM_PROMPT},
+                       {'role': 'user', 'content': user}], cfg, dry_run=dry_run)
 
 
 def run(date_str=None, rounds=None, top_events=None, dry_run=False, quiet=False):
@@ -325,8 +366,17 @@ def run(date_str=None, rounds=None, top_events=None, dry_run=False, quiet=False)
         except (TypeError, ValueError):
             stances[n] = 0.0
     round_rows, prev_note = [], ''
+    partial = False
     for rnd in range(2, max(rounds, 1) + 1):
-        data, u, _raw = play_round(rnd, seed, stances, cfg, dry_run=dry_run, prev_note=prev_note)
+        try:
+            data, u, _raw = play_round(rnd, seed, stances, cfg, dry_run=dry_run, prev_note=prev_note)
+        except Exception as e:
+            # 单轮失败不再把整场推演打回回落：记下错误、保留上一轮立场继续
+            partial = True
+            round_rows.append({'round': rnd, 'error': f'{type(e).__name__}: {e}',
+                               'stances': {k: round(v, 1) for k, v in stances.items()}})
+            w(f'[LLM] 第 {rnd} 轮失败，保留上一轮立场继续：{type(e).__name__}: {e}')
+            continue
         adj = data.get('adjust') or {}
         for n in stances:
             try:
@@ -342,7 +392,7 @@ def run(date_str=None, rounds=None, top_events=None, dry_run=False, quiet=False)
     net = sum(stances[n] * weights[n] for n in stances)
     wsum = sum(weights[n] for n in stances) or 1.0
     payload = {
-        'ok': True, 'engine': 'llm', 'dry_run': bool(dry_run),
+        'ok': True, 'engine': 'llm', 'dry_run': bool(dry_run), 'partial': partial,
         'date': seed['date'], 'generated_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'model': cfg['model'], 'llm_source': cfg['source'], 'seed_sha': seed['sha'],
         'seed_stats': {'events_used': seed['events_used'], 'deduped_total': seed['deduped_total'],
