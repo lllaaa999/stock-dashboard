@@ -38,17 +38,21 @@ HIST = HIST_LOCAL if os.path.exists(HIST_LOCAL) else os.path.join(sd.DATA_DIR, '
 _market_cache = {
     'data': None,
     'timestamp': 0.0,
+    # 2026-09-30: 首页"缓存命中"原来读的是 data_feed 那套(行情快照)缓存, 而大盘页实际
+    # 走这个 _market_cache —— 于是首页永远显示 0%, 看着像坏了。这里补上自己的计数。
+    'hits': 0,
+    'misses': 0,
+    'last_refresh_s': None,
 }
 
 
 def _get_market_ttl() -> float:
-    """动态 TTL：A 股交易时段 (9:15-15:05 周一至周五) 6秒，其余时段 60秒"""
-    now = datetime.datetime.now()
-    if now.weekday() < 5:
-        minute_of_day = now.hour * 60 + now.minute
-        if (9 * 60 + 15) <= minute_of_day <= (15 * 60 + 5):
-            return 6.0
-    return 60.0
+    """动态 TTL：交易时段 6 秒, 其余时段 60 秒。
+
+    2026-09-30: 改用 data_feed.is_market_closed() 统一判定 —— 原实现把午休和节假日
+    都算作盘中, 长假里页面开着会 6 秒一次白刷上游。
+    """
+    return 60.0 if df_feed.is_market_closed() else 6.0
 
 
 def read_hist():
@@ -102,10 +106,14 @@ def api_market(refresh: bool = False):
 
     # 命中短期缓存直接返回（未强制刷新时）
     if not refresh and _market_cache['data'] is not None and (now_ts - _market_cache['timestamp']) < ttl:
+        _market_cache['hits'] += 1
         cached_resp = dict(_market_cache['data'])
         cached_resp['from_cache'] = True
         cached_resp['cache_age'] = round(now_ts - _market_cache['timestamp'], 1)
         return JSONResponse(cached_resp)
+
+    _market_cache['misses'] += 1
+
 
     def safe(fn, default=None):
         try:
@@ -152,6 +160,7 @@ def api_market(refresh: bool = False):
 
     _market_cache['data'] = resp_data
     _market_cache['timestamp'] = now_ts
+    _market_cache['last_refresh_s'] = elapsed
 
     return JSONResponse(resp_data)
 
@@ -388,8 +397,18 @@ def api_watchlist(codes: str = ""):
 
 @app.get("/api/data_status")
 def api_data_status():
-    """获取所有上游数据源健康度与内存 TTL 缓存运行指标"""
-    return JSONResponse(df_feed.get_system_data_status())
+    """上游数据源健康度 + 内存 TTL 缓存指标 + 大盘页缓存命中(market_cache)"""
+    st = df_feed.get_system_data_status()
+    _mh, _mm = _market_cache['hits'], _market_cache['misses']
+    st['market_cache'] = {
+        'hits': _mh,
+        'misses': _mm,
+        'hit_ratio_pct': round(_mh / max(_mh + _mm, 1) * 100, 1),
+        'ttl_s': _get_market_ttl(),
+        'last_refresh_s': _market_cache['last_refresh_s'],
+        'age_s': round(time.time() - _market_cache['timestamp'], 1) if _market_cache['timestamp'] else None,
+    }
+    return JSONResponse(st)
 
 
 @app.get("/api/stock/{code}")

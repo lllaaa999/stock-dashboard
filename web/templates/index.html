@@ -2544,7 +2544,10 @@ async function updateFeedStatus(){
       pSn.textContent = `${ok ? '🟢' : '⚪'} 新浪备用 (${sn.latency_ms ? sn.latency_ms + 'ms' : '热备'})`;
     }
     if(pCa){
-      pCa.textContent = `⚡ 缓存命中 ${c.hit_ratio_pct || 0}% (${c.hits || 0}次)`;
+      const mc = d.market_cache || null;
+      pCa.textContent = mc
+        ? `⚡ 大盘缓存 命中${mc.hits || 0}/未命中${mc.misses || 0} · TTL ${mc.ttl_s || '-'}s${d.market_closed ? ' · 休市中' : ''}`
+        : `⚡ 缓存命中 ${c.hit_ratio_pct || 0}% (${c.hits || 0}次)`;
     }
   } catch(e){}
 }

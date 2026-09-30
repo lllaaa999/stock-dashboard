@@ -9,6 +9,7 @@ import time
 import json
 import threading
 import datetime as dt
+from collections import OrderedDict
 from typing import Dict, List, Any, Optional
 
 # 导入现有底层 http 客户端
@@ -21,34 +22,51 @@ import stock_dashboard as sd
 # 1. 线程安全内存 TTL 缓存 (In-Memory TTL Cache)
 # ==========================================
 class MemoryTTLCache:
-    def __init__(self):
-        self._cache: Dict[str, tuple[float, Any]] = {}
+    """线程安全 TTL 缓存 + 真 LRU 硬上限。
+
+    旧实现只在条目数 >2000 **且存在过期项**时才清理 —— 没有硬上限、没有 LRU,
+    盘中热门 key 永不淘汰, 长跑会无界增长(2026-09-30 修正)。
+    现改为 OrderedDict: 命中即 move_to_end, 超上限时先清过期、再按 LRU 淘汰到 90%。
+    """
+
+    def __init__(self, max_entries: int = 4000):
+        self._cache: "OrderedDict[str, tuple[float, Any]]" = OrderedDict()
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
+        self._evictions = 0
+        self._max = int(max_entries)
 
     def get(self, key: str) -> Optional[Any]:
         with self._lock:
-            if key in self._cache:
-                exp, val = self._cache[key]
-                if time.time() < exp:
-                    self._hits += 1
-                    return val
-                else:
-                    del self._cache[key]
-            self._misses += 1
-            return None
+            item = self._cache.get(key)
+            if item is None:
+                self._misses += 1
+                return None
+            exp, val = item
+            if time.time() >= exp:
+                del self._cache[key]
+                self._misses += 1
+                return None
+            self._cache.move_to_end(key)      # LRU: 命中即刷新最近使用顺序
+            self._hits += 1
+            return val
 
     def set(self, key: str, val: Any, ttl: float = 60.0):
         with self._lock:
-            # 限制缓存最大条目，防止无界增长
-            if len(self._cache) > 2000:
-                now = time.time()
-                # 剔除过期或最老条目
-                expired = [k for k, (exp, _) in self._cache.items() if exp < now]
-                for k in expired[:500]:
-                    del self._cache[k]
             self._cache[key] = (time.time() + ttl, val)
+            self._cache.move_to_end(key)
+            if len(self._cache) > self._max:
+                self._evict_locked()
+
+    def _evict_locked(self):
+        now = time.time()
+        for k in [k for k, (exp, _) in self._cache.items() if exp < now]:
+            del self._cache[k]
+        target = max(1, int(self._max * 0.9))
+        while len(self._cache) > target:
+            self._cache.popitem(last=False)   # 淘汰最久未使用
+            self._evictions += 1
 
     def stats(self) -> Dict[str, Any]:
         with self._lock:
@@ -58,6 +76,8 @@ class MemoryTTLCache:
             hit_ratio = round(self._hits / total * 100, 1) if total > 0 else 0.0
             return {
                 "active_keys": valid,
+                "max_entries": self._max,
+                "evictions": self._evictions,
                 "hits": self._hits,
                 "misses": self._misses,
                 "hit_ratio_pct": hit_ratio
@@ -91,16 +111,50 @@ def _record_status(source: str, ok: bool, latency: float):
         elif st["failures"] >= 3:
             st["status"] = "degraded"
 
-def is_market_closed() -> bool:
-    """判断是否处于盘后时间 (周一至周五 15:05 之后或周末)"""
-    now = dt.datetime.now()
+_TRADE_DAY_CACHE = {'t': 0.0, 'is_trading': None, 'quote_date': None}
+
+
+def _is_trading_today(ttl: float = 300.0):
+    """今天是不是交易日 —— 用上证指数实时行情的日期戳判断(节假日它会停在最近交易日),
+    不硬编码节假日日历。取不到数据时保守返回 True(退回纯时间判断)。
+    返回 (is_trading, quote_date)。"""
+    now = time.time()
+    if _TRADE_DAY_CACHE['is_trading'] is not None and (now - _TRADE_DAY_CACHE['t']) < ttl:
+        return _TRADE_DAY_CACHE['is_trading'], _TRADE_DAY_CACHE['quote_date']
+    is_trading, qd = True, None
+    try:
+        raw = sd.http('https://qt.gtimg.cn/q=sh000001', gbk=True, timeout=3, retries=1)
+        parts = raw.split('~') if '~' in raw else []
+        if len(parts) > 30 and parts[30]:
+            qd = str(parts[30])[:8]
+            is_trading = (qd == dt.date.today().strftime('%Y%m%d'))
+    except Exception:
+        pass
+    _TRADE_DAY_CACHE.update({'t': now, 'is_trading': is_trading, 'quote_date': qd})
+    return is_trading, qd
+
+
+def _closed_by_clock(now) -> bool:
+    """纯时间判断(周末/盘前/午休/收盘后) —— 与交易日探测解耦, 便于单测"""
     if now.weekday() >= 5:
         return True
-    if now.hour > 15 or (now.hour == 15 and now.minute >= 5):
+    minute = now.hour * 60 + now.minute
+    if minute < 9 * 60 + 15 or minute > 15 * 60 + 5:
         return True
-    if now.hour < 9 or (now.hour == 9 and now.minute < 15):
+    if 11 * 60 + 30 <= minute < 13 * 60:
         return True
     return False
+
+
+def is_market_closed() -> bool:
+    """是否处于"非交易时段": 周末 / 节假日 / 盘前 / 午休 / 收盘后。
+
+    2026-09-30 修正: 原实现只认"周末 + 9:15 前 + 15:05 后", 午休(11:30-13:00)和
+    节假日都被当成盘中 —— 长假里页面开着会按 15s TTL 白打上游好几天。
+    """
+    if _closed_by_clock(dt.datetime.now()):
+        return True
+    return not _is_trading_today()[0]
 
 # ==========================================
 # 3. 实时行情：多源自动降级 (Tencent -> Sina -> EastMoney)
@@ -541,5 +595,7 @@ def get_system_data_status() -> Dict[str, Any]:
         "sources": SOURCE_HEALTH,
         "cache": CACHE.stats(),
         "market_closed": is_market_closed(),
+        "trading_today": _is_trading_today()[0],
+        "quote_date": _is_trading_today()[1],
         "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }

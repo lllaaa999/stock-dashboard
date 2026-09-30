@@ -41,3 +41,6 @@ data/stock_data/charts/*.png
 Thumbs.db
 
 *.bak
+
+# 优化/结算前的临时备份快照
+scratch/*_backup_*/

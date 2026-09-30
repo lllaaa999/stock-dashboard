@@ -239,6 +239,12 @@ def _pool(kind, ymd):
     sort = 'fund%3Aasc' if kind == 'DT' else 'fbt%3Aasc'
     u = f'https://push2ex.eastmoney.com/getTopic{kind}Pool?ut={UT}&dpt=wz.ztzt&Pageindex=0&pagesize=500&sort={sort}&date={ymd}'
     j = json.loads(http(u))
+    if not isinstance(j, dict) or not j.get('data'):
+        # ut token 失效时东财返回的是 rc!=0 / 无 data 字段的响应体; 旧代码会把它当成
+        # "该日无涨停池"静默吞掉 —— 7 日回溯白跑、情绪分凭空少一块(2026-09-30 修正)。
+        print('[涨停池·警告] %s %s 响应里没有 data 字段 —— 疑似 ut token 失效(当前 UT=%s); '
+              '请从东方财富行情页-涨停池的网络请求里重新抓 ut 并更新 UT 常量' % (kind, ymd, UT))
+        return []
     d = j.get('data') or {}
     return (d.get('pool') or [])
 
