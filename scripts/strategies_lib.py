@@ -276,7 +276,7 @@ def _sector_f164():
 
 # ================= E. 低位首板挖掘 (适用: 冰点末/修复) =================
 def scr_first_board(zt):
-    """首板+早封+零炸+封单比>=1.5%+小盘<=80亿, 按封单比排序"""
+    """首板+早封+零炸+封单比>=1.5%+小盘<=80亿; 按涨停质量分排序(同分看封单占比)"""
     out = []
     for x in zt:
         try:
@@ -297,11 +297,13 @@ def scr_first_board(zt):
         amt = _num(r.get('f6')) or _num(x.get('amount'))
         if amt < 1e8:
             continue
-        out.append((ratio, x, fbt, amt))
-    out.sort(key=lambda t: -t[0])
-    for ratio, x, fbt, amt in out[:10]:
-        w('%s %-6s [%s] 首封%s 封单%.1f亿(占流通%.1f%%) 流通%.0f亿 额%.1f亿' % (
-            x.get('c'), x.get('n'), x.get('hybk', '-'),
+        q, _qd = sd.limit_up_quality(x)
+        x['qlty'] = q                       # 带出去给 CLI/Web/Agent 复用(2026-09-30 P2-⑤)
+        out.append((q, ratio, x, fbt, amt))
+    out.sort(key=lambda t: (-t[0], -t[1]))
+    for q, ratio, x, fbt, amt in out[:10]:
+        w('%s %-6s [%s] 质量%.1f 首封%s 封单%.1f亿(占流通%.1f%%) 流通%.0f亿 额%.1f亿' % (
+            x.get('c'), x.get('n'), x.get('hybk', '-'), q,
             fbt[:2] + ':' + fbt[2:4], _num(x.get('fund')) / 1e8, ratio,
             _num(x.get('ltsz')) / 1e8, amt / 1e8))
     return out
@@ -339,12 +341,14 @@ def scr_break_rebound(zt):
         r = by_code().get(code) or {}
         if _num(r.get('f62')) <= 0:
             continue
+        q, _qd = sd.limit_up_quality(x)
+        x['qlty'] = q
         score = -pct_t1 + (10 if fbt <= '100000' else 0) + min(_num(r.get('f62')) / 1e8, 5)
-        out.append((score, code, x, pct_t1, fbt))
-    out.sort(key=lambda t: -t[0])
-    for sc, code, x, pct_t1, fbt in out[:8]:
-        w('%s %-6s [%s] T-1断板%+.1f%%后今反包 首封%s 炸%d 主力净入%+.1f亿' % (
-            code, x.get('n'), x.get('hybk', '-'), pct_t1,
+        out.append((q, score, code, x, pct_t1, fbt))
+    out.sort(key=lambda t: (-t[0], -t[1]))
+    for q, sc, code, x, pct_t1, fbt in out[:8]:
+        w('%s %-6s [%s] 质量%.1f T-1断板%+.1f%%后今反包 首封%s 炸%d 主力净入%+.1f亿' % (
+            code, x.get('n'), x.get('hybk', '-'), q, pct_t1,
             fbt[:2] + ':' + fbt[2:4], x.get('zbc', 0),
             _num((by_code().get(code) or {}).get('f62')) / 1e8))
     return out
@@ -418,12 +422,14 @@ def scr_n_shape(zt):
         r = by_code().get(code) or {}
         if _num(r.get('f10')) < 2.0:
             continue
+        q, _qd = sd.limit_up_quality(x)
+        x['qlty'] = q
         score = -pct_t1 + (t2[5] / max(t1[5], 1)) + min(_num(r.get('f10')), 10) * 0.5
-        out.append((score, code, x, pct_t1, fbt))
-    out.sort(key=lambda t: -t[0])
-    for sc, code, x, pct_t1, fbt in out[:8]:
-        w('%s %-6s [%s] %d板N字 T-1回调%+.1f%%今反包 首封%s' % (
-            code, x.get('n'), x.get('hybk', '-'), int(x.get('lbc', 1)),
+        out.append((q, score, code, x, pct_t1, fbt))
+    out.sort(key=lambda t: (-t[0], -t[1]))
+    for q, sc, code, x, pct_t1, fbt in out[:8]:
+        w('%s %-6s [%s] 质量%.1f %d板N字 T-1回调%+.1f%%今反包 首封%s' % (
+            code, x.get('n'), x.get('hybk', '-'), q, int(x.get('lbc', 1)),
             pct_t1, fbt[:2] + ':' + fbt[2:4]))
     return out
 
@@ -754,7 +760,7 @@ def run_strategies_structured(mode='auto'):
             try:
                 if k == 'E':
                     raw = fn(zt)
-                    for ratio, x, fbt, amt in (raw or [])[:10]:
+                    for _q, ratio, x, fbt, amt in (raw or [])[:10]:
                         c = x.get('c')
                         r = bc.get(c) or {}
                         p_val = _num(r.get('f2'))
@@ -769,11 +775,12 @@ def run_strategies_structured(mode='auto'):
                             'industry': x.get('hybk', '-'),
                             'price': round(p_val, 2),
                             'pct': round(pct_val, 2),
-                            'desc': f"首封{fbt[:2]}:{fbt[2:4]} 封单{_num(x.get('fund'))/1e8:.1f}亿(占流通{ratio:.1f}%) 流通{_num(x.get('ltsz'))/1e8:.0f}亿 额{amt/1e8:.1f}亿",
+                            'quality': _q,
+                            'desc': f"质量{_q:.1f} 首封{fbt[:2]}:{fbt[2:4]} 封单{_num(x.get('fund'))/1e8:.1f}亿(占流通{ratio:.1f}%) 流通{_num(x.get('ltsz'))/1e8:.0f}亿 额{amt/1e8:.1f}亿",
                         })
                 elif k == 'F':
                     raw = fn(zt)
-                    for sc, c, x, pct_t1, fbt in (raw or [])[:8]:
+                    for _q, sc, c, x, pct_t1, fbt in (raw or [])[:8]:
                         r = bc.get(c) or {}
                         p_val = _num(r.get('f2'))
                         if p_val <= 0 and _num(x.get('p')) > 0:
@@ -787,7 +794,8 @@ def run_strategies_structured(mode='auto'):
                             'industry': x.get('hybk', '-'),
                             'price': round(p_val, 2),
                             'pct': round(pct_val, 2),
-                            'desc': f"T-1断板{pct_t1:+.1f}%后今反包 首封{fbt[:2]}:{fbt[2:4]} 炸{x.get('zbc', 0)}次 主力净入{_num(r.get('f62'))/1e8:+.1f}亿",
+                            'quality': _q,
+                            'desc': f"质量{_q:.1f} T-1断板{pct_t1:+.1f}%后今反包 首封{fbt[:2]}:{fbt[2:4]} 炸{x.get('zbc', 0)}次 主力净入{_num(r.get('f62'))/1e8:+.1f}亿",
                         })
                 elif k == 'G':
                     raw = fn(univ)
@@ -802,7 +810,7 @@ def run_strategies_structured(mode='auto'):
                         })
                 elif k == 'H':
                     raw = fn(zt)
-                    for sc, c, x, pct_t1, fbt in (raw or [])[:8]:
+                    for _q, sc, c, x, pct_t1, fbt in (raw or [])[:8]:
                         r = bc.get(c) or {}
                         p_val = _num(r.get('f2'))
                         if p_val <= 0 and _num(x.get('p')) > 0:
@@ -816,7 +824,8 @@ def run_strategies_structured(mode='auto'):
                             'industry': x.get('hybk', '-'),
                             'price': round(p_val, 2),
                             'pct': round(pct_val, 2),
-                            'desc': f"{int(x.get('lbc', 1))}板N字 T-1回调{pct_t1:+.1f}%今反包 首封{fbt[:2]}:{fbt[2:4]}",
+                            'quality': _q,
+                            'desc': f"质量{_q:.1f} {int(x.get('lbc', 1))}板N字 T-1回调{pct_t1:+.1f}%今反包 首封{fbt[:2]}:{fbt[2:4]}",
                         })
                 elif k == 'I':
                     raw = fn(univ)
