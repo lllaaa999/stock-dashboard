@@ -1585,7 +1585,7 @@ def agent_sim(code=None):
         ag['散户'] = cl((sc - 45) * 3, -70, 85) * (0.5 if stage == '退潮' else 1) + (-20 if stage == '冰点' else 0)
         ag['游资'] = lb * 14 - zbrate * 1.2 + {'主升': 35, '亢奋': 10, '修复/震荡': 5, '退潮': -35, '冰点': -50}.get(stage or '', 0)
         ag['机构'] = cl((20 if mgd > 0 else -15 if mgd < 0 else 0) + (sc - 50) * 0.6, -40, 40)
-        ag['团伙(控盘)'] = lb * 16 - zbrate * 0.8 + (10 if 40 <= zt <= 95 else 0) + (-25 if stage in ('退潮', '冰点') else 0)
+        # 国家队逆周期逻辑: 恐慌(跌停>=10或情绪<35)托底买入(+40); 情绪过热(sc>68分位)逆周期降温平抑波动(-20); 两融骤降破百亿护盘(+20)
         ag['国家队'] = 40 if (n_dt >= 10 or sc < 35) else (-20 if sc > 68 else 0) + (20 if mgd < -100 else 0)
         w('  参与者    倾向(-100空~+100多)  依据')
         basis = {
@@ -2150,7 +2150,7 @@ def sim_world(scenario=None, llm_impact=None, llm_note=''):
     ag['散户'] = cl((sc - 45) * 3, -70, 85) * (0.5 if stage == '退潮' else 1) + (-20 if stage == '冰点' else 0)
     ag['游资'] = lb * 14 - zbrate * 1.2 + {'主升': 35, '亢奋': 10, '修复/震荡': 5, '退潮': -35, '冰点': -50}.get(stage, 0)
     ag['机构'] = cl((20 if mgd > 0 else -15 if mgd < 0 else 0) + (sc - 50) * 0.6, -40, 40)
-    ag['团伙(控盘)'] = lb * 16 - zbrate * 0.8 + (10 if 40 <= zt <= 95 else 0) + (-25 if stage in ('退潮', '冰点') else 0)
+    # 国家队逆周期逻辑: 恐慌(跌停>=10或情绪<35)托底买入(+40); 情绪过热(sc>68分位)逆周期降温平抑波动(-20); 两融骤降破百亿护盘(+20)
     ag['国家队'] = (40 if (n_dt >= 10 or sc < 35) else (-20 if sc > 68 else 0)) + (20 if mgd < -100 else 0)
     # -- 大散户: 跟随情绪但更极端; 亢奋重仓/冰点割肉/退潮死扛(反应系数<1); 杠杆盘敏感 --
     ag['大散户'] = cl((sc - 45) * 2.5, -65, 90) * {'亢奋': 1.2, '主升': 1.1, '修复/震荡': 1.0, '退潮': 0.55, '冰点': 0.4}.get(stage, 1.0) + (-25 if stage == '冰点' else 0) + (15 if mgd > 50 else -20 if mgd < -80 else 0)

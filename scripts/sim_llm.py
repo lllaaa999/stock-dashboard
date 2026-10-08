@@ -126,12 +126,56 @@ def build_seed(date_str=None, top_events=20):
     if not ev_path.exists():
         return None, f'缺少当日事件表 {ev_path}，请先运行: python scripts/news_events.py --date {date_str}'
     p = json.loads(ev_path.read_text(encoding='utf-8'))
+    # 1. 跨期衰减计算: 探测目标次一有效交易日与间隔日历天数
+    next_ymd = None
+    try:
+        import sim_score as sc
+        next_ymd = sc.next_trade_date(date_str)
+    except Exception:
+        pass
+
+    time_decay = 1.0
+    gap_days = 1
+    span_desc = "常规次日(T+1，衰减系数1.0)"
+    if next_ymd:
+        try:
+            d_cur = dt.datetime.strptime(date_str.replace('/', '-'), '%Y-%m-%d').date()
+            d_nxt = dt.datetime.strptime(next_ymd, '%Y%m%d').date()
+            gap_days = max(1, (d_nxt - d_cur).days)
+            if gap_days > 3:
+                # 长假跨期(如国庆7~8天假): 衰减至 0.35 左右，严控节前虚火线性外推
+                time_decay = round(max(0.25, 1.0 / (1.0 + 0.25 * (gap_days - 1))), 2)
+                span_desc = f"长假跨期(相隔{gap_days}天，跨期衰减系数{time_decay})"
+            elif gap_days in (2, 3):
+                # 跨周末(T+3): 衰减为 0.75
+                time_decay = 0.75
+                span_desc = f"跨周末(相隔{gap_days}天，跨期衰减系数{time_decay})"
+            else:
+                time_decay = 1.0
+                span_desc = f"常规次日(T+1，衰减系数1.0)"
+        except Exception:
+            pass
+
     lines = []
     for i, e in enumerate(p.get('events', [])[:top_events], 1):
         pol = '+' if e['polarity'] > 0 else ('-' if e['polarity'] < 0 else '·')
         sec = '/'.join(e.get('sectors', [])[:3]) or '-'
         stk = ' '.join(x.get('name', '') for x in (e.get('stocks') or [])[:3])
-        lines.append(f"{i}. [{e['strength']}|{e['type']}|{pol}|{e['bucket']}] {e['title'][:64]}"
+        
+        # 2. 时效与消化甄别: 15:00 收盘前的事件在今日盘中已充分交易, 标注[日内已反映/警惕兑现]
+        # 15:00 之后的事件为闭市后新增量, 标注[盘后新增量]
+        b = e.get('bucket', '')
+        t_str = str(e.get('time', ''))
+        is_post_close = False
+        if ' ' in t_str:
+            h_str = t_str.split(' ')[1]
+            if h_str >= '15:00:00':
+                is_post_close = True
+        elif b == '盘后':
+            is_post_close = True
+        
+        digest_tag = '盘后增量' if is_post_close else f"{b}·日内已反映"
+        lines.append(f"{i}. [{e['strength']}|{e['type']}|{pol}|{digest_tag}] {e['title'][:64]}"
                      f"（板块:{sec}{'｜个股:' + stk if stk else ''}）")
     board = p.get('sector_board') or {}
     pos = '，'.join(f"{r['name']}({r['count']}条 正{r['pos']}/负{r['neg']})" for r in (board.get('positive') or [])[:8])
@@ -148,15 +192,26 @@ def build_seed(date_str=None, top_events=20):
     except Exception as e:
         w(f'[种子] 情绪存档读取失败: {e}')
     text = '\n'.join([
-        f"【日期】{date_str}（推演目标：次一交易日）",
+        f"【日期】{date_str}（推演目标：{next_ymd or '次一交易日'} | 跨度：{span_desc}）",
         f"【市场微结构】{json.dumps(facts, ensure_ascii=False)}" if facts else '【市场微结构】缺失',
-        f"【当日事件表 Top{len(lines)}（按冲击强度，含类型/极性/时效）】",
+        f"【两项工程纪律准则】",
+        f"  1. 跨期衰减：推演目标相隔 {gap_days} 天（衰减系数 {time_decay}）。长假/跨周末期间海外波动与避险心理会大幅冲淡节前题材热度，严禁将节前脉冲题材线性外推到节后！",
+        f"  2. 消化与兑现过滤：标有【日内已反映】的消息，在今日盘面多已被资金交易反映甚至尾盘冲高回落；次日资金常借利好减仓出逃（Sell the news）。唯有【盘后增量】或超预期未定价的重大政策才具备次日开盘增量推力！",
+        f"【当日事件表 Top{len(lines)}（按冲击强度，含类型/极性/时效与消化标签）】",
         '\n'.join(lines) if lines else '(无事件)',
         f"【消息面板块榜·正面】{pos or '-'}",
         f"【消息面板块榜·负面】{neg or '-'}",
     ])
-    seed = {'date': date_str, 'facts': facts, 'events_used': len(lines),
-            'deduped_total': p.get('deduped_total'), 'text': text}
+    seed = {
+        'date': date_str,
+        'next_trade_date': next_ymd,
+        'gap_days': gap_days,
+        'time_decay': time_decay,
+        'facts': facts,
+        'events_used': len(lines),
+        'deduped_total': p.get('deduped_total'),
+        'text': text
+    }
     seed['sha'] = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
     return seed, None
 
@@ -315,6 +370,8 @@ def deduce_impact(seed, cfg, dry_run=False):
         '  "confidence": 0.0-1.0',
         '}',
         '约束：impact 只填数字（对每方势力的净冲击，正=偏多/加仓，负=偏空/减仓）；',
+        '      严格遵从工程准则：①跨期衰减（长假/周末跨期长时各势力打分大幅折价，忌线性外推）；',
+        '      ②消化与兑现过滤（日内已反映事件在今日盘面已price in甚至炸板，次日谨防逢高派发，严禁当增量推力）；',
         '      事件不足以支撑的信息宁可给接近 0 的值；theme_priority 最多 6 项，risk_points 最多 4 项。',
     ])
     return _call_json([{'role': 'system', 'content': SYSTEM_PROMPT},
@@ -391,12 +448,18 @@ def run(date_str=None, rounds=None, top_events=None, dry_run=False, quiet=False)
         usages.append(u)
     net = sum(stances[n] * weights[n] for n in stances)
     wsum = sum(weights[n] for n in stances) or 1.0
+    time_decay = float(seed.get('time_decay', 1.0))
+    decayed_net = round(net * time_decay, 1)
+    decayed_net_pct = round((net / wsum) * time_decay, 1)
     payload = {
         'ok': True, 'engine': 'llm', 'dry_run': bool(dry_run), 'partial': partial,
         'date': seed['date'], 'generated_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'model': cfg['model'], 'llm_source': cfg['source'], 'seed_sha': seed['sha'],
         'seed_stats': {'events_used': seed['events_used'], 'deduped_total': seed['deduped_total'],
                        'facts': seed['facts']},
+        'target_date': seed.get('next_trade_date'),
+        'gap_days': seed.get('gap_days', 1),
+        'time_decay': time_decay,
         'impact': {k: round(float(impact_map.get(k) or 0), 1) for k in weights},
         'theme_priority': resp.get('theme_priority') or [],
         'risk_points': resp.get('risk_points') or [],
@@ -407,6 +470,7 @@ def run(date_str=None, rounds=None, top_events=None, dry_run=False, quiet=False)
         'rounds': round_rows,
         'stances_final': {k: round(v, 1) for k, v in stances.items()},
         'net': round(net, 1), 'net_pct': round(net / wsum, 1),
+        'decayed_net': decayed_net, 'decayed_net_pct': decayed_net_pct,
         'usage': {'calls': len(usages), 'total_tokens': sum(int(u.get('total_tokens') or 0) for u in usages)},
         'elapsed_s': round(time.time() - t0, 1),
     }
@@ -426,13 +490,16 @@ def print_report(p):
     w(f"LLM 消息面推演 · {p['date']}（模型 {p['model']}｜{p['llm_source']}｜"
       f"{'DRY-RUN 样例' if p['dry_run'] else '真实调用'}）")
     w('=' * 78)
+    tgt_info = f" → 目标日: {p.get('target_date')}" if p.get('target_date') else ""
+    decay_str = f" (跨期相隔 {p.get('gap_days')} 天，衰减系数 {p.get('time_decay')})" if p.get('time_decay', 1.0) < 1.0 else ""
     w(f"种子: 事件 {p['seed_stats']['events_used']} 条（当日去重共 {p['seed_stats']['deduped_total']} 条）"
-      f" | sha {p['seed_sha']} | 微结构 {json.dumps(p['seed_stats']['facts'], ensure_ascii=False)}")
+      f" | sha {p['seed_sha']}{tgt_info}{decay_str} | 微结构 {json.dumps(p['seed_stats']['facts'], ensure_ascii=False)}")
     w('')
     w('【九方冲击矩阵】LLM 判断（-40~+40）')
     for n, wt, _d in FORCES:
         w(f"  {n:<10} 权重{wt}  {p['impact'][n]:+6.1f}   {FORCE_DESC[n][:26]}")
-    w(f"  加权合力: {p['net']:+.1f}（单位刻度 {p['net_pct']:+.1f}）")
+    decay_info = f" | 跨期衰减后合力: {p.get('decayed_net', p['net']):+.1f} (刻度 {p.get('decayed_net_pct', p['net_pct']):+.1f})" if p.get('time_decay', 1.0) < 1.0 else ""
+    w(f"  加权合力: {p['net']:+.1f}（单位刻度 {p['net_pct']:+.1f}）{decay_info}")
     if p['rounds']:
         w('')
         w('【多轮博弈修正】')

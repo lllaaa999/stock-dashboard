@@ -241,14 +241,17 @@ def score_risks(risks, facts):
 
 
 def score_one(pred, facts):
-    """纯记分：预测 payload + 次日事实 → 记分结果"""
-    net_pct = pred.get('net_pct')
+    # 跨期衰减适配: 优先采用经时间衰减折现后的合力刻度，使长假/跨周末对账客观公允
+    net_pct = pred.get('decayed_net_pct') if pred.get('decayed_net_pct') is not None else pred.get('net_pct')
     if net_pct is None:
-        return {'ok': False, 'reason': '预测里没有 net_pct'}
+        return {'ok': False, 'reason': '预测里没有 net_pct / decayed_net_pct'}
     res = {
         'ok': True, 'pred_date': pred.get('date'), 'next_date': facts.get('date'),
         'model': pred.get('model'), 'seed_sha': pred.get('seed_sha'),
-        'pred_net': pred.get('net'), 'pred_net_pct': net_pct,
+        'pred_net': pred.get('decayed_net', pred.get('net')),
+        'pred_net_pct': net_pct,
+        'raw_net_pct': pred.get('net_pct'),
+        'time_decay': pred.get('time_decay', 1.0),
         'direction': score_direction(net_pct, facts),
         'strength': score_strength(net_pct, facts),
         'sectors': score_sectors(pred.get('theme_priority') or [], facts),
