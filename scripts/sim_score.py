@@ -54,11 +54,21 @@ def _sent_records():
 
 
 def next_trade_date(date_str):
-    """从情绪存档里找下一条记录（= 次一交易日）；没有则返回 None（未收盘/休市）"""
+    """获取次一有效交易日。优先以交易所真实日K为唯一事实源，防止假期休市记录被误判。"""
     ymd = date_str.replace('-', '')
+    try:
+        kl = sd.kline_tx('sh000001', 90)
+        k_dates = [str(r[0])[:10].replace('-', '') for r in kl]
+        for kd in k_dates:
+            if kd > ymd:
+                return kd
+    except Exception:
+        pass
+    # 兜底：若日K未返回，遍历情绪存档，但必须有真实指数涨跌幅校验
     for r in _sent_records():
-        if str(r.get('date', '')) > ymd:
-            return str(r['date'])
+        d = str(r.get('date', ''))
+        if d > ymd and _index_pct(d) is not None:
+            return d
     return None
 
 

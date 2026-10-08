@@ -1686,15 +1686,19 @@ function renderStrategicDecision(sd){
   const el = document.getElementById('strategicDecisionBox');
   if(!el || !sd) return;
   
-  // 兼顾 phase / stage 命名
   const phase = sd.phase || sd.stage || {};
+  const pa = sd.portfolio_audit || {};
   const rc = sd.reality_check || sd.truth_audit || {};
   const contra = sd.contradiction || {};
-  const tactics = sd.tactics || sd.annihilation_rules || {};
+  const tactics = sd.tactics || {};
   const motto = sd.motto || '以方法建立认知，由认知派生纪律。';
 
+  const r1 = tactics.rule_1_concentration || {};
+  const r2 = tactics.rule_2_fire_command || {};
+  const r3 = tactics.rule_3_stop_loss || {};
+
   const phaseColor = phase.color || '#38bdf8';
-  const posPct = phase.pos_pct != null ? phase.pos_pct : (phase.max_position_pct != null ? phase.max_position_pct : 0);
+  const posPct = phase.pos_pct != null ? phase.pos_pct : 15;
   const posRange = phase.pos_range || (posPct + '%');
 
   // 实事求是证据链渲染
@@ -1725,20 +1729,38 @@ function renderStrategicDecision(sd){
     `;
   }).join('') || '<div style="color:var(--text-muted);font-size:12px;">暂无客观证据条目</div>';
 
-  // 状态警示
   const isDanger = (rc.status === 'danger') || (rc.divergence);
   const verdict = rc.verdict || '实事求是核对盘面第一手数据';
 
-  // 主要矛盾与次要矛盾
-  const primaryTheme = contra.primary_theme || (contra.primary ? contra.primary.name : '等待合力形成');
-  const primaryAspect = contra.primary_aspect || (contra.primary ? contra.primary.desc : '存量博弈拉锯');
+  // 主要矛盾
+  const primaryTheme = contra.primary_theme || '等待合力形成';
+  const primaryAspect = contra.primary_aspect || '存量博弈拉锯';
   const nature = contra.nature || '多空力量消长';
   const secWarning = contra.secondary_warning || '防范盘中无量轮动脉冲诱多';
 
-  // 战术法则
-  const rule1 = tactics.rule_1_concentration || '伤其十指不如断其一指：全账户持仓严格控制在 2~3 只以内，绝不分散！';
-  const rule2 = tactics.rule_2_preparation || '不打无把握之仗：9:25 竞价未现高胜算信号前，手指离开扳机！';
-  const rule3 = tactics.rule_3_adaptability || '实事求是：一旦大盘跌破防守线或龙头爆头，客观条件已变，立即执行纪律！';
+  // 9:25 开火条件列表
+  const fireConds = r2.conditions || [];
+  const fireCondsHtml = fireConds.map(c => `
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:12px;border-bottom:1px dashed rgba(255,255,255,0.06);">
+      <span style="color:var(--text-secondary);">
+        ${c.passed ? '<span style="color:#10b981;font-weight:700;">✓</span>' : '<span style="color:#ef4444;font-weight:700;">✗</span>'} ${c.name}
+      </span>
+      <span>
+        <span style="color:var(--text-muted);font-size:11px;">要求 ${c.threshold}</span>
+        <span style="font-weight:700;margin-left:6px;color:${c.passed ? '#10b981' : '#f87171'};">${c.actual}</span>
+      </span>
+    </div>
+  `).join('');
+
+  // 战备持仓实查颜色
+  let paBg = 'rgba(16,185,129,0.08)';
+  let paBorder = 'rgba(16,185,129,0.3)';
+  let paColor = '#10b981';
+  if(pa.status === 'RED_OVERWEIGHT'){
+    paBg = 'rgba(239,68,68,0.12)'; paBorder = 'rgba(239,68,68,0.4)'; paColor = '#ef4444';
+  } else if(pa.status === 'YELLOW_CAUTION'){
+    paBg = 'rgba(245,158,11,0.12)'; paBorder = 'rgba(245,158,11,0.4)'; paColor = '#f59e0b';
+  }
 
   el.innerHTML = `
     <div style="background:var(--bg-card);border:1px solid ${phaseColor};border-radius:12px;padding:18px 20px;box-shadow:0 8px 24px rgba(0,0,0,0.25);">
@@ -1754,7 +1776,7 @@ function renderStrategicDecision(sd){
               </span>
             </div>
             <div style="font-size:12px;color:var(--text-muted);margin-top:3px;">
-              以方法建立认知，由认知派生纪律 · 实事求是 · 抓主要矛盾 · 集中优势兵力打歼灭战
+              以方法建立认知，由认知派生纪律 · 真实持仓硬核对账 · 歼灭战量化军令
             </div>
           </div>
         </div>
@@ -1773,25 +1795,41 @@ function renderStrategicDecision(sd){
         </div>
       </div>
 
+      <!-- 战备兵力实查横幅 (动真格对撞账本) -->
+      <div style="background:${paBg};border:1px solid ${paBorder};padding:12px 16px;border-radius:8px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
+          <div style="font-weight:800;font-size:14px;color:${paColor};display:flex;align-items:center;gap:6px;">
+            <span>💼 【战备兵力实查 · 真实持仓硬核验】：</span>
+            <span>${pa.tag || '实查中'}</span>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);">
+            实际持有: <b>${pa.actual_stocks_count || 0}</b> 只 (上限 ${pa.max_stocks_limit || 1} 只) | 实测仓位: <b>${pa.actual_pos_pct || 0}%</b> (战略上限 ${pa.target_pos_pct || 15}%)
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-primary);line-height:1.5;">
+          ${pa.instruction || ''}
+        </div>
+      </div>
+
       <!-- 战略大势方针与兵力分配横条 -->
-      <div style="background:linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(15,23,42,0.6) 100%);padding:14px 16px;border-radius:8px;margin-bottom:16px;border-left:4px solid ${phaseColor};">
-        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+      <div style="background:linear-gradient(135deg, rgba(255,255,255,0.03) 0%, rgba(15,23,42,0.6) 100%);padding:12px 16px;border-radius:8px;margin-bottom:16px;border-left:4px solid ${phaseColor};">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:6px;">
           <div style="font-weight:700;font-size:14px;color:var(--text-primary);display:flex;align-items:center;gap:6px;">
             <span>🚩 战略方针：</span>
             <span style="color:${phaseColor};font-weight:800;">“${phase.motto || phase.posture || '按兵不动'}”</span>
           </div>
-          <div style="font-size:12px;color:var(--text-secondary);">
-            战术姿态: <span style="color:#f8fafc;font-weight:600;">${phase.posture || ''}</span>
+          <div style="font-size:12px;color:var(--text-muted);">
+            依据: ${phase.basis_note || ''}
           </div>
         </div>
-        <div style="font-size:12px;color:var(--text-muted);margin-bottom:10px;">
+        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
           ${phase.desc || ''}
         </div>
-        <!-- 兵力仓位进度条 -->
+        <!-- 兵力仓位进度条对比 -->
         <div style="display:flex;align-items:center;gap:10px;">
-          <span style="font-size:12px;color:var(--text-secondary);min-width:65px;">兵力上限:</span>
+          <span style="font-size:12px;color:var(--text-secondary);min-width:65px;">战略上限:</span>
           <div style="flex:1;height:8px;background:rgba(255,255,255,0.08);border-radius:4px;overflow:hidden;">
-            <div style="width:${posPct}%;height:100%;background:${phaseColor};border-radius:4px;transition:width 0.5s;"></div>
+            <div style="width:${posPct}%;height:100%;background:${phaseColor};border-radius:4px;"></div>
           </div>
           <span style="font-size:12px;font-weight:700;color:${phaseColor};min-width:40px;text-align:right;">${posPct}%</span>
         </div>
@@ -1805,9 +1843,9 @@ function renderStrategicDecision(sd){
           <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">
             <span style="display:flex;align-items:center;gap:6px;">
               <span>🔍</span>
-              <span>实事求是 · 盘面真相核验</span>
+              <span>实事求是 · 盘面微观真相</span>
             </span>
-            <span style="font-size:11px;color:var(--text-muted);">《实践论》反对主观臆断</span>
+            <span style="font-size:11px;color:var(--text-muted);">《实践论》反对本本主义</span>
           </div>
 
           <div style="padding:8px 10px;background:${isDanger ? 'rgba(239,68,68,0.12)' : 'rgba(56,189,248,0.08)'};border:1px solid ${isDanger ? 'rgba(239,68,68,0.3)' : 'rgba(56,189,248,0.2)'};border-radius:6px;font-size:12px;color:${isDanger ? '#fca5a5' : '#7dd3fc'};margin-bottom:10px;line-height:1.4;">
@@ -1849,29 +1887,50 @@ function renderStrategicDecision(sd){
           </div>
         </div>
 
-        <!-- 卡片 3: 集中优势兵力 (战略问题) -->
+        <!-- 卡片 3: 集中优势兵力 (歼灭战三大军令量化硬开关) -->
         <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;">
           <div style="font-size:14px;font-weight:700;color:var(--text-primary);margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;">
             <span style="display:flex;align-items:center;gap:6px;">
               <span>⚔️</span>
-              <span>集中优势兵力 · 歼灭战战术法则</span>
+              <span>歼灭战三大军令 · 量化硬开关</span>
             </span>
-            <span style="font-size:11px;color:var(--text-muted);">《中国革命战争的战略问题》</span>
+            <span style="font-size:11px;color:var(--text-muted);">《战略问题》实战指令</span>
           </div>
 
-          <div style="margin-bottom:8px;padding:8px 10px;background:var(--bg-card);border-radius:6px;border-left:3px solid #facc15;">
-            <div style="font-weight:700;color:#facc15;font-size:12px;margin-bottom:2px;">⚔️ 兵力集中度法则</div>
-            <div style="font-size:12px;color:var(--text-secondary);line-height:1.4;">${rule1}</div>
+          <!-- 军令 1 -->
+          <div style="margin-bottom:8px;padding:8px 10px;background:var(--bg-card);border-radius:6px;border-left:3px solid ${r1.passed ? '#10b981' : '#ef4444'};">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+              <span style="font-weight:700;color:#facc15;font-size:12px;">⚔️ 军令 1: 兵力集中度</span>
+              <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;color:${r1.passed ? '#10b981' : '#ef4444'};background:${r1.passed ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};">
+                ${r1.passed ? 'PASS 合规' : 'FAIL 违纪'}
+              </span>
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);">${r1.actual || ''} vs ${r1.threshold || ''}</div>
           </div>
 
-          <div style="margin-bottom:8px;padding:8px 10px;background:var(--bg-card);border-radius:6px;border-left:3px solid #38bdf8;">
-            <div style="font-weight:700;color:#38bdf8;font-size:12px;margin-bottom:2px;">⚔️ 战役准备法则</div>
-            <div style="font-size:12px;color:var(--text-secondary);line-height:1.4;">${rule2}</div>
+          <!-- 军令 2: 9:25 开火指令硬开关 -->
+          <div style="margin-bottom:8px;padding:8px 10px;background:var(--bg-card);border-radius:6px;border-left:3px solid ${r2.fire_status === 'FIRE_ALLOWED' ? '#10b981' : (r2.fire_status === 'FIRE_FORBIDDEN' ? '#ef4444' : '#f59e0b')};">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+              <span style="font-weight:700;color:#38bdf8;font-size:12px;">⚔️ 军令 2: 9:25 开火硬开关</span>
+              <span style="font-size:12px;font-weight:800;color:${r2.fire_status === 'FIRE_ALLOWED' ? '#10b981' : (r2.fire_status === 'FIRE_FORBIDDEN' ? '#ef4444' : '#f59e0b')};">
+                ${r2.fire_status_title || '开火评估中'}
+              </span>
+            </div>
+            <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${r2.fire_reason || ''}</div>
+            <div style="background:var(--bg-subtle);padding:6px 8px;border-radius:4px;margin-bottom:4px;">
+              ${fireCondsHtml}
+            </div>
           </div>
 
-          <div style="padding:8px 10px;background:var(--bg-card);border-radius:6px;border-left:3px solid #10b981;">
-            <div style="font-weight:700;color:#10b981;font-size:12px;margin-bottom:2px;">⚔️ 实事求是动态纠偏法则</div>
-            <div style="font-size:12px;color:var(--text-secondary);line-height:1.4;">${rule3}</div>
+          <!-- 军令 3 -->
+          <div style="padding:8px 10px;background:var(--bg-card);border-radius:6px;border-left:3px solid ${r3.passed ? '#10b981' : '#ef4444'};">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px;">
+              <span style="font-weight:700;color:#10b981;font-size:12px;">⚔️ 军令 3: 因敌变化动态止损</span>
+              <span style="font-size:11px;font-weight:700;padding:1px 6px;border-radius:4px;color:${r3.passed ? '#10b981' : '#ef4444'};background:${r3.passed ? 'rgba(16,185,129,0.15)' : 'rgba(239,68,68,0.15)'};">
+                ${r3.passed ? 'PASS 正常' : 'ALERT 报警'}
+              </span>
+            </div>
+            <div style="font-size:12px;color:var(--text-secondary);">${r3.content || ''}</div>
           </div>
 
           <div style="margin-top:10px;font-size:11px;color:var(--text-muted);font-style:italic;line-height:1.4;">
@@ -2144,7 +2203,19 @@ async function loadMarket(force=false){
     const t0 = performance.now();
     const r = await fetch('/api/market' + (force ? '?refresh=1' : ''));
     const d = await r.json();
-    if(d.strategic_decision) renderStrategicDecision(d.strategic_decision);
+    let sdData = d.strategic_decision;
+    try {
+      const myHoldings = typeof getPortfolio === 'function' ? getPortfolio() : [];
+      if(myHoldings && myHoldings.length){
+        const sdResp = await fetch('/api/strategic_decision', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ portfolio: myHoldings, equity: 1000000.0 })
+        });
+        if(sdResp.ok) sdData = await sdResp.json();
+      }
+    } catch(err){}
+    if(sdData) renderStrategicDecision(sdData);
     renderIdxCards(d.indices); renderGlobal(d.globals); renderEmotion(d.emotion);
     renderSector(d.sectors); renderMargin(d.margin); renderNews(d.news);
     const h = await (await fetch('/api/emotion/history')).json(); renderEmoTrend(h);

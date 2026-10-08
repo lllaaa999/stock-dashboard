@@ -175,15 +175,41 @@ def api_market(refresh: bool = False):
     return JSONResponse(resp_data)
 
 
-@app.get("/api/strategic_decision")
-def api_strategic_decision():
-    """战役决策参谋部：基于毛选认识论与矛盾论体系的战略大势与战术指令"""
+@app.api_route("/api/strategic_decision", methods=["GET", "POST"])
+async def api_strategic_decision(request: Request):
+    """战役决策参谋部：基于毛选认识论与矛盾论体系的战略大势与战术指令 (支持持仓账本对账)"""
     try:
+        portfolio = None
+        equity = 1000000.0
+        if request.method == "POST":
+            try:
+                body = await request.json()
+                portfolio = body.get('portfolio')
+                equity = float(body.get('equity', 1000000.0))
+            except Exception:
+                pass
+        else:
+            pf_str = request.query_params.get('portfolio')
+            if pf_str:
+                try:
+                    portfolio = json.loads(pf_str)
+                except Exception:
+                    pass
+            eq_param = request.query_params.get('equity')
+            if eq_param:
+                try:
+                    equity = float(eq_param)
+                except Exception:
+                    pass
+
         m_data = _market_cache.get('data') or {}
         emo = m_data.get('emotion')
         sec = m_data.get('sectors')
         idxs = m_data.get('indices')
-        res = strat_dec.analyze_strategic_decision(emo=emo, sec=sec, idxs=idxs)
+        res = strat_dec.analyze_strategic_decision(
+            emo=emo, sec=sec, idxs=idxs,
+            portfolio=portfolio, account_equity=equity
+        )
         return JSONResponse(res)
     except Exception as e:
         return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
