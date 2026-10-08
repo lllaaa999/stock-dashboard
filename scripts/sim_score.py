@@ -22,6 +22,7 @@ import argparse
 import collections
 import datetime as dt
 import json
+import os
 import pathlib
 import sys
 
@@ -300,7 +301,9 @@ def ledger_upsert(rec):
     rows.append(rec)
     rows.sort(key=lambda r: (str(r.get('pred_date', '')), str(r.get('next_date', ''))))
     LLM_DIR.mkdir(parents=True, exist_ok=True)
-    LEDGER.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows), encoding='utf-8')
+    tmp_path = LEDGER.with_suffix('.tmp')
+    tmp_path.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows), encoding='utf-8')
+    os.replace(tmp_path, LEDGER)
     return len(rows)
 
 

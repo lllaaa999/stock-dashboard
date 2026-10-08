@@ -429,17 +429,36 @@ def _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb, force=False):
       ③ FORCE_ARCHIVE=1 可绕过 ①，供人工补录；② 始终生效（错了就显式报错让你确认）
     """
     import os as _os
-    if force or _os.environ.get('FORCE_ARCHIVE') == '1':
-        return True, 'FORCE_ARCHIVE 显式放行'
-    try:
-        kl = kline_tx('sh000001', 60)
-        dates = [str(row[0])[:10].replace('-', '') for row in kl] if kl else []
-    except Exception as e:
-        return False, f'日K取数异常({type(e).__name__}) → fail-closed 拒绝入库'
-    if not dates:
-        return False, '日K为空 → fail-closed 拒绝入库'
-    if ymd not in dates:
-        return False, f'该日不在交易所日K中（日K最近交易日 {dates[-1]}）→ 非交易日/休市'
+    force_bypass = bool(force or _os.environ.get('FORCE_ARCHIVE') == '1')
+    
+    # 步骤 ①: 校验是否为交易所有效交易日
+    if not force_bypass:
+        try:
+            kl = kline_tx('sh000001', 60)
+            dates = [str(row[0])[:10].replace('-', '') for row in kl] if kl else []
+        except Exception as e:
+            return False, f'日K取数异常({type(e).__name__}) → fail-closed 拒绝入库'
+        if not dates:
+            return False, '日K为空 → fail-closed 拒绝入库'
+        
+        # 容错: 若为当天工作日 15:00~18:00 收盘后，腾讯日K偶发存在 5~10 分钟切线延迟
+        _now = dt.datetime.now()
+        is_today_post_close = (ymd == _now.strftime('%Y%m%d') and _now.hour >= 15 and _now.weekday() < 5)
+        
+        if ymd not in dates:
+            # 尝试看实时指数是否有成交（若有实际百亿成交额，说明确实是今天收盘，仅为日K推送延迟）
+            has_real_trading = False
+            if is_today_post_close:
+                try:
+                    sh_q = tx_realtime(['sh000001'])
+                    if sh_q and float(sh_q[0].get('price', 0)) > 0:
+                        has_real_trading = True
+                except Exception:
+                    pass
+            if not has_real_trading:
+                return False, f'该日不在交易所日K中（日K最近交易日 {dates[-1]}）→ 非交易日/休市'
+
+    # 步骤 ②: 回吐检测 (即使强制放行 ①，若与前一日完全雷同也要发出告警)
     prev = [r for r in recs if r.get('date') and str(r.get('date')) < str(ymd)]
     if prev:
         p = prev[-1]
@@ -449,10 +468,14 @@ def _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb, force=False):
         except Exception:
             same = False
         if same:
-            return False, (f'四项数值与最近交易日 {p.get("date")} 完全相同 '
-                           f'(zt{int(n_zt)}/zb{int(n_zb)}/dt{int(n_dt)}/{int(max_lb)}板) '
-                           f'→ 疑似接口回吐最近数据；若确认是真实交易日请用 FORCE_ARCHIVE=1 重跑')
-    return True, '通过"日K存在 + 非回吐"双重校验'
+            msg = (f'四项数值与最近交易日 {p.get("date")} 完全相同 '
+                   f'(zt{int(n_zt)}/zb{int(n_zb)}/dt{int(n_dt)}/{int(max_lb)}板) '
+                   f'→ 疑似接口回吐最近数据')
+            if force_bypass:
+                return True, f'FORCE_ARCHIVE 显式放行 (但请注意: {msg})'
+            return False, msg + '；若确认是真实交易日请用 FORCE_ARCHIVE=1 重跑'
+
+    return True, '通过"日K存在 + 非回吐"双重校验' if not force_bypass else 'FORCE_ARCHIVE 显式放行'
 
 
 def emotion(ymd=None):
