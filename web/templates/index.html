@@ -2904,6 +2904,7 @@ function renderLLMPanel(el, d){
     + (llm.partial ? '　|　<span style="color:#fbbf24;">部分轮次失败</span>' : '') + '</div></div>'
     + '<div style="margin-top:10px;font-size:13px;color:var(--text-secondary);">'
     + '合力 <b style="color:var(--text-pure);">' + (llm.net || 0) + '</b>（刻度 ' + (llm.net_pct || 0) + '）'
+    + (llm.time_decay && llm.time_decay < 1.0 ? '　<span style="display:inline-block;padding:2px 8px;border-radius:10px;background:#f59e0b22;border:1px solid #f59e0b88;color:#fbbf24;font-weight:700;">⏱️ 跨期' + (llm.gap_days ? llm.gap_days + '天' : '') + '衰减 ' + Math.round(llm.time_decay * 10) + '折 → 折现合力 ' + (llm.decayed_net || 0) + '（刻度 ' + (llm.decayed_net_pct || 0) + '）</span>' : '')
     + '　权重口径与规则引擎一致；数值聚合仍由规则引擎完成</div>'
     + '<div style="margin-top:10px;"><b style="font-size:14px;">九方冲击矩阵（LLM 判断）</b>' + bars + '</div>'
     + (themes ? '<div style="margin-top:12px;"><b style="font-size:14px;">板块 / 题材优先级</b><div style="margin-top:4px;">' + themes + '</div></div>' : '')

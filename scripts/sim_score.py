@@ -241,19 +241,30 @@ def score_risks(risks, facts):
 
 
 def score_one(pred, facts):
-    # 跨期衰减适配: 优先采用经时间衰减折现后的合力刻度，使长假/跨周末对账客观公允
-    net_pct = pred.get('decayed_net_pct') if pred.get('decayed_net_pct') is not None else pred.get('net_pct')
-    if net_pct is None:
-        return {'ok': False, 'reason': '预测里没有 net_pct / decayed_net_pct'}
+    raw_net_pct = pred.get('net_pct')
+    if raw_net_pct is None:
+        return {'ok': False, 'reason': '预测里没有 net_pct'}
+    decayed_net_pct = pred.get('decayed_net_pct', raw_net_pct)
+    time_decay = float(pred.get('time_decay', 1.0))
+
+    # 双刻度对账: direction 为折现后，direction_raw 为原始未折现
+    dir_decayed = score_direction(decayed_net_pct, facts)
+    dir_raw = score_direction(raw_net_pct, facts)
+
+    str_decayed = score_strength(decayed_net_pct, facts)
+    str_raw = score_strength(raw_net_pct, facts)
+
     res = {
         'ok': True, 'pred_date': pred.get('date'), 'next_date': facts.get('date'),
         'model': pred.get('model'), 'seed_sha': pred.get('seed_sha'),
-        'pred_net': pred.get('decayed_net', pred.get('net')),
-        'pred_net_pct': net_pct,
-        'raw_net_pct': pred.get('net_pct'),
-        'time_decay': pred.get('time_decay', 1.0),
-        'direction': score_direction(net_pct, facts),
-        'strength': score_strength(net_pct, facts),
+        'pred_net': pred.get('net'), 'pred_net_pct': raw_net_pct,
+        'decayed_net': pred.get('decayed_net', pred.get('net')),
+        'decayed_net_pct': decayed_net_pct,
+        'time_decay': time_decay,
+        'direction': dir_decayed,
+        'direction_raw': dir_raw,
+        'strength': str_decayed,
+        'strength_raw': str_raw,
         'sectors': score_sectors(pred.get('theme_priority') or [], facts),
         'scenario': score_scenario(pred.get('scenarios') or {}, facts),
         'risks': score_risks(pred.get('risk_points') or [], facts),
@@ -323,11 +334,13 @@ def ledger_stats():
     if not n:
         return {}
     dir_hits = [r['direction']['hit'] for r in rows if r.get('direction', {}).get('hit') is not None]
+    raw_dir_hits = [r.get('direction_raw', {}).get('hit') for r in rows if r.get('direction_raw', {}).get('hit') is not None]
     sec_rates = [r['sectors']['hit_rate_pct'] for r in rows if r.get('sectors', {}).get('hit_rate_pct') is not None]
     str_hits = [r['strength']['hit'] for r in rows if r.get('strength', {}).get('hit') is not None]
     return {
         'samples': n,
         'direction_hit_pct': round(sum(1 for x in dir_hits if x) / len(dir_hits) * 100, 1) if dir_hits else None,
+        'raw_direction_hit_pct': round(sum(1 for x in raw_dir_hits if x) / len(raw_dir_hits) * 100, 1) if raw_dir_hits else None,
         'strength_hit_pct': round(sum(1 for x in str_hits if x) / len(str_hits) * 100, 1) if str_hits else None,
         'sector_avg_hit_pct': round(sum(sec_rates) / len(sec_rates), 1) if sec_rates else None,
         'scenario_dist': dict(collections.Counter(r['scenario'].get('realized') for r in rows
@@ -364,7 +377,9 @@ def run(date=None, all_=False, quiet=False):
         (LLM_DIR / f'score-{d}.json').write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding='utf-8')
         if res.get('ok'):
             ledger_upsert({'pred_date': d, 'next_date': res['next_date'],
-                           'direction': res['direction'], 'strength': res['strength'],
+                           'time_decay': res.get('time_decay', 1.0),
+                           'direction': res['direction'], 'direction_raw': res.get('direction_raw'),
+                           'strength': res['strength'], 'strength_raw': res.get('strength_raw'),
                            'sectors': res['sectors'], 'scenario': res['scenario'],
                            'risks': res['risks']})
         results.append(res)

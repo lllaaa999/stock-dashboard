@@ -67,9 +67,10 @@ mock_facts = {
     'zt_industries': {'电池': 5, '银行': 1}
 }
 score_res = sim_score.score_one(mock_pred, mock_facts)
-check("score_one 优先读取 decayed_net_pct", score_res.get('pred_net_pct') == 2.8, f"pred_net_pct={score_res.get('pred_net_pct')}")
-check("保留原始 raw_net_pct 供回溯", score_res.get('raw_net_pct') == 7.9, f"raw_net_pct={score_res.get('raw_net_pct')}")
-check("跨期衰减后方向预测转为中性理性研判", score_res['direction']['pred'] == '中性', f"pred_direction={score_res['direction']['pred']}")
+check("score_one 输出主刻度为折现后", score_res.get('decayed_net_pct') == 2.8, f"decayed={score_res.get('decayed_net_pct')}")
+check("保留原始 raw_net_pct 供回溯", score_res.get('pred_net_pct') == 7.9, f"raw={score_res.get('pred_net_pct')}")
+check("主方向依据衰减后刻度判定为中性", score_res['direction']['pred'] == '中性', f"pred_direction={score_res['direction']['pred']}")
+check("双刻度原始方向保留为偏多", score_res['direction_raw']['pred'] == '偏多', f"raw_direction={score_res['direction_raw']['pred']}")
 
 print(f"\n全部验证完成: PASS={passed}, FAIL={failed}")
 if failed > 0:
