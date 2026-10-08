@@ -2174,6 +2174,12 @@ def sim_world(scenario=None, llm_impact=None, llm_note=''):
                    'net': round(net, 1), 'net_mean': round(net_pct, 1)})
 
 
+def strategic_decision(emo=None, sec=None, idxs=None):
+    """战略战术决策中枢：基于毛选认识论与矛盾论体系的局势研判与兵力指令"""
+    import strategic_decision as strat_dec
+    return strat_dec.analyze_strategic_decision(emo=emo, sec=sec, idxs=idxs)
+
+
 # ---------- main ----------
 if __name__ == '__main__':
     cmd = sys.argv[1] if len(sys.argv) > 1 else 'market'
@@ -2249,6 +2255,10 @@ if __name__ == '__main__':
             w('\n-- ⚠️ 亏钱效应大面榜 (高点回撤) --')
             for it in res.get('big_loss', [])[:6]:
                 w(f"  {it['code']} {it['name']:<6} 现价{it['pct']:+5.2f}% | 曾冲高{it['high_pct']:+5.2f}% | 日内回撤面值: {it['drop_from_high']:+5.2f}%")
+        elif cmd in ('strategy', 'decision'):
+            import strategic_decision as strat_dec
+            res = strat_dec.analyze_strategic_decision()
+            w(strat_dec.format_cli_output(res))
     except Exception as e:
         w(f'[FATAL] {type(e).__name__}: {e}')
         sys.exit(1)

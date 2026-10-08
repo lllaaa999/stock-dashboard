@@ -8,6 +8,7 @@ import stock_dashboard as sd
 import strategies_lib as strat_lib
 import auction_radar as ar
 import data_feed as df_feed
+import strategic_decision as strat_dec
 
 def _normalize_stock_code(raw_code: str) -> str:
     """自动将 sh600519 / 600519.SH / sz000001 / ' 600519 ' 归一化为纯6位数字代码"""
@@ -146,9 +147,16 @@ def api_market(refresh: bool = False):
                 results[key] = [] if key == 'indices' else None
 
     elapsed = round(time.time() - t0, 2)
+    strat_dec_res = safe(lambda: strat_dec.analyze_strategic_decision(
+        emo=results.get('emotion'),
+        sec=results.get('sectors'),
+        idxs=results.get('indices')
+    ), None)
+
     resp_data = dict(
         indices=results.get('indices', []),
         emotion=results.get('emotion'),
+        strategic_decision=strat_dec_res,
         globals=results.get('globals'),
         sectors=results.get('sectors') or dict(inflow=[], outflow=[]),
         margin=results.get('margin'),
@@ -165,6 +173,20 @@ def api_market(refresh: bool = False):
     _market_cache['last_refresh_s'] = elapsed
 
     return JSONResponse(resp_data)
+
+
+@app.get("/api/strategic_decision")
+def api_strategic_decision():
+    """战役决策参谋部：基于毛选认识论与矛盾论体系的战略大势与战术指令"""
+    try:
+        m_data = _market_cache.get('data') or {}
+        emo = m_data.get('emotion')
+        sec = m_data.get('sectors')
+        idxs = m_data.get('indices')
+        res = strat_dec.analyze_strategic_decision(emo=emo, sec=sec, idxs=idxs)
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"status": "error", "error": str(e)}, status_code=500)
 
 
 @app.get("/api/emotion/history")
