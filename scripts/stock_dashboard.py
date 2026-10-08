@@ -116,7 +116,8 @@ def tx_realtime(codes):
             amts = ('-' if f[2].startswith('.') else
                     (f'{amt/10000:,.0f}亿' if amt >= 10000 else (f'{amt:,.0f}万' if amt > 0 else '-')))
             out.append(dict(code=f[2], name=f[1], price=float(f[3]), chg=float(f[31]),
-                            pct=float(f[32]), high=float(f[33]), low=float(f[34]), amount=amts))
+                            pct=float(f[32]), high=float(f[33]), low=float(f[34]), amount=amts,
+                            raw_amount=amt, trade_time=f[30] if len(f) > 30 else ''))
     return out
 
 def market_quotes():
@@ -446,13 +447,19 @@ def _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb, force=False):
         is_today_post_close = (ymd == _now.strftime('%Y%m%d') and _now.hour >= 15 and _now.weekday() < 5)
         
         if ymd not in dates:
-            # 尝试看实时指数是否有成交（若有实际百亿成交额，说明确实是今天收盘，仅为日K推送延迟）
+            # 尝试看实时指数是否有真实交易（日K偶发存在5~10分钟切线延迟，但实时行情时间戳必须是今天且成交额大于0）
             has_real_trading = False
             if is_today_post_close:
                 try:
                     sh_q = tx_realtime(['sh000001'])
-                    if sh_q and float(sh_q[0].get('price', 0)) > 0:
-                        has_real_trading = True
+                    if sh_q:
+                        q0 = sh_q[0]
+                        # 严谨校验: 行情时间戳必须与传入ymd完全一致，且必须有真实成交额
+                        # 腾讯行情在休市日仍返回前一交易日收盘价(恒>0)，但时间戳绝不会是休市日
+                        q_date = str(q0.get('trade_time', ''))[:8].replace('-', '')
+                        q_amt = float(q0.get('raw_amount', 0))
+                        if q_date == ymd and q_amt > 0:
+                            has_real_trading = True
                 except Exception:
                     pass
             if not has_real_trading:
