@@ -1,11 +1,11 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-战略战术决策中枢 (Strategic Decision Engine) v2
+战略战术决策中枢 (Strategic Decision Engine) v2.1
 基于《毛泽东选集》底层认识论与决策方法论：
-  1. 《论持久战》—— 战略阶段与大势定位 (防御 / 相持 / 反攻，单一事实源消费 cycle_position)
-  2. 《实践论 / 反对本本主义》—— 实事求是 · 盘面微观真相核验 (消费已有 diverge，穿透指数虚火)
-  3. 《矛盾论》—— 抓主要矛盾与核心战场 (多日资金净流与梯队定性，识别轮动诱多)
+  1. 《论持久战》—— 战略阶段与大势定位 (防御 / 相持 / 反攻，单一事实源消费 cycle_position；空数据 unknown 守卫)
+  2. 《实践论 / 反对本本主义》—— 实事求是 · 盘面微观真相核验 (消费已有 diverge，穿透指数虚火，无数据不造假)
+  3. 《矛盾论》—— 抓主要矛盾与核心战场 (多日资金净流与梯队定性，识别轮动诱多与单日脉冲)
   4. 《战略问题》—— 集中优势兵力打歼灭战 (持仓账本真实对账 + 9:25 开火硬量化开关 + 动态止损)
 """
 import sys
@@ -37,25 +37,119 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     :param sec: 板块资金流 (来自 sd.sector_flow())
     :param idxs: 指数行情 (来自 sd.tx_realtime(sd.IDX_CODES))
     :param portfolio: 用户实际持仓账本 [{'code': '600519', 'shares': 200, 'cost': 1450, 'stop_loss': 1380}, ...]
-    :param account_equity: 账户总资产 (元)，未传默认 1,000,000 元
+    :param account_equity: 账户总资产 (元)，未指定则按 1,000,000 元估算并显式注明
     """
+    # 1. 彻底防守 None 与异常崩溃
     if emo is None:
         try:
             emo = sd.emotion()
         except Exception:
             emo = {}
+    emo = emo or {}
+
     if sec is None:
         try:
             sec = sd.sector_flow(5 if dt.datetime.now().hour < 15 else 1)
         except Exception:
             sec = {}
+    sec = sec or {}
+
     if idxs is None:
         try:
             idxs = sd.tx_realtime(sd.IDX_CODES)
         except Exception:
             idxs = []
+    idxs = idxs or []
 
-    # 1. 提取基础事实
+    # 2. 真实数据校验 (数据断供守卫: 缺数据绝不造假事实，绝不瞎下军令与仓位)
+    has_valid_data = bool(
+        emo and (emo.get('score') is not None or emo.get('zt') is not None or emo.get('zt_count') is not None)
+    )
+
+    if not has_valid_data:
+        motto_unknown = "没有调查，没有发言权；不知敌情，绝不草率盲动。"
+        return {
+            "status": "data_unavailable",
+            "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "phase": {
+                "key": "unknown",
+                "title": "数据暂不可用",
+                "badge": "信号缺失 · 暂停研判",
+                "color": "#94a3b8",
+                "motto": motto_unknown,
+                "desc": "行情接口连接断供或非交易时段无快照，系统恪守《实践论》底线，严禁用虚构数据臆想推演！",
+                "posture": "保持静默观望，暂停开火与仓位下达，等待第一手真实数据恢复。",
+                "pos_range": "数据缺失 · 暂不给仓位建议",
+                "pos_pct": None,
+                "max_stocks": None,
+                "cycle_stage": "未知",
+                "basis_note": "核心情绪与盘面数据缺失，拒绝盲目臆断",
+            },
+            "portfolio_audit": {
+                "title": "战备兵力实查 · 真实持仓硬约束",
+                "account_equity": float(account_equity) if account_equity and float(account_equity) > 0 else 1000000.0,
+                "equity_is_estimate": not bool(account_equity and float(account_equity) > 0),
+                "actual_stocks_count": len(portfolio) if isinstance(portfolio, list) else 0,
+                "max_stocks_limit": None,
+                "actual_market_value": 0.0,
+                "actual_pos_pct": 0.0,
+                "target_pos_pct": None,
+                "excess_pos_pct": 0.0,
+                "excess_stocks": 0,
+                "reduce_amount": 0.0,
+                "status": "DATA_UNAVAILABLE",
+                "tag": "⚪ 暂缺大势基准",
+                "instruction": "因市场底层数据断供，暂无法比对战备兵力合规性。",
+                "holdings": [],
+            },
+            "reality_check": {
+                "title": "实事求是 · 盘面真相核验 (反对主观臆断)",
+                "status": "unavailable",
+                "verdict": "第一手盘面数据缺失，实事求是停止核验，严禁用默认值代替客观事实！",
+                "divergence": False,
+                "evidence": [
+                    {"dimension": "数据链条", "fact": "行情数据断供", "eval": "⚪ 暂停", "comment": "等待数据重连"}
+                ],
+            },
+            "contradiction": {
+                "title": "矛盾论 · 抓主要矛盾与核心战场",
+                "nature": "未知 (数据缺失)",
+                "primary_theme": "无",
+                "primary_aspect": "数据不足，无法定性矛盾主要方面",
+                "secondary_warning": "不作臆断",
+                "sustainable": False,
+            },
+            "tactics": {
+                "title": "集中优势兵力打歼灭战 · 军令硬开关",
+                "rule_1_concentration": {
+                    "title": "伤其十指不如断其一指",
+                    "passed": True,
+                    "threshold": "待评估",
+                    "actual": f"持有 {len(portfolio) if isinstance(portfolio, list) else 0} 只",
+                    "verdict": "待评估",
+                    "content": "数据断供暂不判定集中度",
+                },
+                "rule_2_fire_command": {
+                    "title": "不打无把握之仗 · 9:25 开火硬开关",
+                    "fire_status": "DATA_UNAVAILABLE",
+                    "fire_status_title": "⚠️ 数据缺失 (锁死扳机)",
+                    "fire_reason": "核心市场数据缺失，胜算不明，坚决不开火！",
+                    "conditions": [],
+                    "content": "不知敌情，绝不草率盲动！",
+                },
+                "rule_3_stop_loss": {
+                    "title": "实事求是 · 因敌变化动态止损",
+                    "passed": True,
+                    "breached_count": 0,
+                    "breached_stocks": [],
+                    "verdict": "待评估",
+                    "content": "数据恢复后核验防守止损线",
+                },
+            },
+            "motto": motto_unknown,
+        }
+
+    # 3. 提取基础事实
     score = float(emo.get('score', 50.0))
     band = emo.get('band', '中性')
     zt_cnt = int(emo.get('zt') if emo.get('zt') is not None else emo.get('zt_count', 0))
@@ -69,7 +163,7 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     ladder = emo.get('ladder_grouped') or {}
     themes = emo.get('themes_list') or emo.get('themes') or []
 
-    # 提取上证与创业板涨跌幅 (支持字典含 code 或 name)
+    # 提取上证与创业板涨跌幅
     sh_pct = 0.0
     cy_pct = 0.0
     for q in idxs:
@@ -85,7 +179,6 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     zb_rate = round((zb_cnt / max(1, total_z)) * 100, 1)
 
     # ==================== 维度一：《论持久战》战略三阶段 (消费 cycle_position 单一事实源) ====================
-    # 周期源对齐：优先从情绪对象中获取已定位的 cycle stage，没有则调用 cycle_position()
     cycle_stage = emo.get('stage')
     if not cycle_stage:
         try:
@@ -94,7 +187,6 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
             cycle_stage = None
 
     if not cycle_stage:
-        # 无存档时由基础指标判定
         if score < 42 or zb_rate >= 35 or dt_cnt >= 10:
             cycle_stage = '退潮'
         elif score >= 65 and zb_rate < 20 and dt_cnt <= 2:
@@ -194,51 +286,53 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     inflow_names = [x.get('name') for x in inflows[:5] if x.get('name')]
     theme_names = [t['name'] if isinstance(t, dict) else t[0] for t in themes[:5]] if themes else []
 
-    # 找交集：既有资金净流入，又有涨停板扎堆的板块
     confirmed_main = [name for name in inflow_names if any(name in t or t in name for t in theme_names)]
     if confirmed_main:
         primary_theme_str = ' · '.join(confirmed_main[:3])
         has_sustainable_trend = True
+        sustain_desc = "5日主力资金持续净流入且涨停梯队合力共振"
     elif inflow_names:
         primary_theme_str = ' · '.join(inflow_names[:2])
         has_sustainable_trend = False
+        sustain_desc = "主力资金有净流入但涨停梯队支撑不足，属于权重护盘或结构分歧"
     elif theme_names:
         primary_theme_str = ' · '.join(theme_names[:2])
         has_sustainable_trend = False
+        sustain_desc = "当日涨停脉冲但5日主力资金未见大幅净流入，定性为超跌试错，持续性存疑"
     else:
         primary_theme_str = '核心权重'
         has_sustainable_trend = False
+        sustain_desc = "板块轮动涣散，无明显主战场"
 
-    # 筛选出属于次要矛盾 / 杂毛诱多的板块（涨幅小或流出严重，但盘中出现跟风涨停）
     outflows = sec.get('outflow') or []
     outflow_names = [x.get('name') for x in outflows[:3] if x.get('name')]
     distraction_themes = [t for t in theme_names if t not in primary_theme_str and any(t in o for o in outflow_names)]
 
     if phase_key == "defense":
         contradiction_nature = "存量流失与高位派发出清"
-        primary_aspect = f"防守期资金避险为主，局部脉冲【{primary_theme_str}】仅为超跌或护盘抽风，缺乏大兵团持续增量"
+        primary_aspect = f"防守期资金避险为主，局部脉冲【{primary_theme_str}】({sustain_desc})，缺乏大兵团持续增量"
         secondary_warning = (
             f"今日边缘板块 ({'、'.join(distraction_themes[:3]) if distraction_themes else '杂毛轮动'}) 净流出严重，无持续性，"
             "定性为【次要矛盾 / 轮动骚扰与诱多】，坚决不分心、不追击。"
         )
     elif phase_key == "counter":
         contradiction_nature = "增量扩张与主线核心抢筹"
-        primary_aspect = f"兵团级主力集中突击【{primary_theme_str}】，梯队完整中军扎实，具备持续进攻动能"
+        primary_aspect = f"兵团级主力集中突击【{primary_theme_str}】({sustain_desc})，梯队完整中军扎实，具备持续进攻动能"
         secondary_warning = "主线之外的其他分支反弹均为支流，严禁‘分兵支援’，牢牢咬住主线主战场！"
     else:
         contradiction_nature = "存量博弈拉锯与轮动内卷"
-        primary_aspect = f"结构性行情突围，资金聚焦于局部领头题材【{primary_theme_str}】"
+        primary_aspect = f"结构性行情突围，资金聚焦于局部领头题材【{primary_theme_str}】({sustain_desc})"
         secondary_warning = (
             f"盘中边缘板块 ({'、'.join(distraction_themes[:2]) if distraction_themes else '跟风杂毛'}) 快速轮动抽血，皆为【次要矛盾】。"
             "切忌东一榔头西一棒子，紧盯辨识度前排。"
         )
 
     # ==================== 维度四：接真实持仓账本，硬性兵力约束动真格 ====================
-    account_eq = float(account_equity) if account_equity and float(account_equity) > 0 else 1000000.0
+    equity_is_estimate = not bool(account_equity and float(account_equity) > 0)
+    account_eq = float(account_equity) if not equity_is_estimate else 1000000.0
     actual_holdings = portfolio if isinstance(portfolio, list) else []
     actual_count = len(actual_holdings)
 
-    # 获取持仓股票当前市价
     total_market_val = 0.0
     stop_loss_breached = []
     holding_details = []
@@ -279,29 +373,30 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     allowed_max_val = round(account_eq * (pos_pct / 100.0), 2)
     reduce_amount = max(0.0, round(total_market_val - allowed_max_val, 2))
 
+    est_note = " (按总资产 100 万估算)" if equity_is_estimate else ""
+
     # 战备戒备状态判定
     if excess_pos_pct > 10.0 or excess_stocks > 0:
         pos_audit_status = "RED_OVERWEIGHT"
-        pos_audit_tag = "🔴 严重超限 · 必须立刻减仓"
+        pos_audit_tag = f"🔴 严重超限 · 必须立刻减仓{est_note}"
         pos_audit_instruction = (
-            f"战备红色警报！实测仓位 {actual_pos_pct}% (超限 {excess_pos_pct}%)，持仓 {actual_count} 只 (超限 {excess_stocks} 只)！"
+            f"战备红色警报！实测仓位 {actual_pos_pct}%{est_note} (超限 {excess_pos_pct}%)，持仓 {actual_count} 只 (超限 {excess_stocks} 只)！"
             f"严重违背《论持久战》兵力纪律，必须立即减仓约 ¥{reduce_amount:,.0f}，清退非核心杂毛！"
         )
     elif excess_pos_pct > 0.0:
         pos_audit_status = "YELLOW_CAUTION"
-        pos_audit_tag = "🟡 轻度超额 · 停止加仓"
-        pos_audit_instruction = f"仓位轻度超额 {excess_pos_pct}% (当前 {actual_pos_pct}% vs 上限 {pos_pct}%)，严禁再开新仓，等待冲高减至安全水位。"
+        pos_audit_tag = f"🟡 轻度超额 · 停止加仓{est_note}"
+        pos_audit_instruction = f"仓位轻度超额 {excess_pos_pct}% (当前 {actual_pos_pct}% vs 上限 {pos_pct}%){est_note}，严禁再开新仓，等待冲高减至安全水位。"
     elif actual_count == 0:
         pos_audit_status = "GREEN_EMPTY"
         pos_audit_tag = "🟢 空仓待命 · 作战自由度极高"
         pos_audit_instruction = "当前空仓，保存有生力量完好，拥有绝对选择权与主动权！"
     else:
         pos_audit_status = "GREEN_COMPLIANT"
-        pos_audit_tag = "🟢 兵力合规 · 战备状态良好"
-        pos_audit_instruction = f"当前持有 {actual_count} 只，实测仓位 {actual_pos_pct}%，完全符合战略{pos_range}要求。"
+        pos_audit_tag = f"🟢 兵力合规 · 战备状态良好{est_note}"
+        pos_audit_instruction = f"当前持有 {actual_count} 只，实测仓位 {actual_pos_pct}%{est_note}，完全符合战略{pos_range}要求。"
 
     # ==================== 维度五：三条军令落成可判定开关 (接竞价雷达 + 涨停质量分) ====================
-    # 军令一: 歼灭战集中度开关
     rule_1_passed = (actual_count <= max_stocks)
     rule_1_detail = {
         "title": "伤其十指不如断其一指",
@@ -313,7 +408,6 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     }
 
     # 军令二: 9:25 开火指令硬开关 (接竞价雷达溢价 + 晋级率 + 涨停质量分)
-    # 扫描当前最高涨停质量分 (通过 sd.limit_up_quality)
     max_quality = 0.0
     quality_leader = ""
     try:
@@ -326,7 +420,6 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     except Exception:
         max_quality = 0.0
 
-    # 判定开火条件
     cond_stage_ok = (phase_key != "defense")
     cond_premium_ok = (premium >= 1.0)
     cond_rate_ok = (rate_1to2 >= 15.0)
@@ -377,7 +470,7 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
         )
     }
 
-    # 持久化存档快照 (供次日对账与可证伪核验)
+    # 4. 持久化存档快照 (仅在有真实有效数据时记录，供次日对账与证伪)
     decision_record = {
         "date": dt.date.today().strftime('%Y%m%d'),
         "time": dt.datetime.now().strftime('%H:%M:%S'),
@@ -418,6 +511,7 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
         "portfolio_audit": {
             "title": "战备兵力实查 · 真实持仓硬约束",
             "account_equity": account_eq,
+            "equity_is_estimate": equity_is_estimate,
             "actual_stocks_count": actual_count,
             "max_stocks_limit": max_stocks,
             "actual_market_value": total_market_val,
@@ -478,18 +572,18 @@ def format_cli_output(d):
     lines.append(f"【作战姿态】 {p['posture']}")
     lines.append("-" * 68)
     lines.append(f"【战备兵力实查】 ({pa['tag']})")
-    lines.append(f"  • 持仓只数: {pa['actual_stocks_count']} 只 (战略上限 {pa['max_stocks_limit']} 只)")
-    lines.append(f"  • 实测仓位: {pa['actual_pos_pct']}% (战略上限 {pa['target_pos_pct']}%, 超限 {pa['excess_pos_pct']}%)")
+    lines.append(f"  • 持仓只数: {pa['actual_stocks_count']} 只 (战略上限 {pa.get('max_stocks_limit') or '无'} 只)")
+    lines.append(f"  • 实测仓位: {pa['actual_pos_pct']}% (战略上限 {pa.get('target_pos_pct') or '无'}%, 超限 {pa.get('excess_pos_pct', 0)}%)")
     lines.append(f"  • 兵力指令: {pa['instruction']}")
     lines.append("-" * 68)
     lines.append(f"【实事求是 · 盘面真相核验】 (状态: {rc['status'].upper()})")
     lines.append(f"  结论: {rc['verdict']}")
-    for ev in rc['evidence']:
+    for ev in rc.get('evidence', []):
         lines.append(f"  • {ev['dimension']}: {ev['fact']} [{ev['eval']}] -> {ev['comment']}")
     lines.append("-" * 68)
     lines.append("【矛盾论 · 抓主要矛盾与核心战场】")
     lines.append(f"  • 市场总矛盾: {c['nature']}")
-    lines.append(f"  • 矛盾主要方面 (主战场): 【{c['primary_theme']}】 (持续性: {'高' if c['sustainable'] else '需观察'})")
+    lines.append(f"  • 矛盾主要方面 (主战场): 【{c['primary_theme']}】 (持续性: {'高' if c['sustainable'] else '需观察/非持续主线'})")
     lines.append(f"    {c['primary_aspect']}")
     lines.append(f"  • 警惕次要矛盾 (轮动杂毛):")
     lines.append(f"    {c['secondary_warning']}")
@@ -498,7 +592,7 @@ def format_cli_output(d):
     lines.append(f"  [军令 1 - 集中兵力] {'[PASS]' if r1['passed'] else '[FAIL]'} {r1['actual']} vs {r1['threshold']}")
     lines.append(f"  [军令 2 - 9:25开火] {r2['fire_status_title']}")
     lines.append(f"          原因: {r2['fire_reason']}")
-    for cond in r2['conditions']:
+    for cond in r2.get('conditions', []):
         lines.append(f"          {'✓' if cond['passed'] else '✗'} {cond['name']}: {cond['actual']} (要求 {cond['threshold']})")
     lines.append(f"  [军令 3 - 动态撤退] {'[PASS]' if r3['passed'] else '[ALERT]'} {r3['content']}")
     lines.append("=" * 68)

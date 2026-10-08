@@ -616,12 +616,26 @@ def emotion(ymd=None):
         if os.path.exists(hist):
             recs = [json.loads(l) for l in open(hist, encoding='utf-8')]
         if not any(r.get('date') == ymd for r in recs):
-            with open(hist, 'a', encoding='utf-8') as fp:
-                fp.write(json.dumps(dict(date=ymd, score=round(s, 2), band=band, zt=n_zt,
-                                         zb=n_zb, dt=n_dt, max_lb=max_lb, algo='v2',
-                                         score_v1=round(s_v1, 2), effect=_effect_flat(eff),
-                                         diverge=diverge), ensure_ascii=False) + '\n')
-            w(f'(已存档 共{len(recs)+1}条)')
+            # 交易日有效性门禁: 必须是交易所真实交易日 (节假日与非交易日严禁入库，防止毒化 MA 与周期判定)
+            is_valid_day = True
+            try:
+                kl_check = kline_tx('sh000001', 30)
+                if kl_check:
+                    k_dates = [str(row[0])[:10].replace('-', '') for row in kl_check]
+                    # 历史日期必须在日K中；当天日期在15点后也应有日K生成
+                    if ymd not in k_dates and ymd < _now.strftime('%Y%m%d'):
+                        is_valid_day = False
+            except Exception:
+                pass
+            if not is_valid_day:
+                w(f'({ymd} 非有效交易日/节假日休市, 跳过情绪归档)')
+            else:
+                with open(hist, 'a', encoding='utf-8') as fp:
+                    fp.write(json.dumps(dict(date=ymd, score=round(s, 2), band=band, zt=n_zt,
+                                             zb=n_zb, dt=n_dt, max_lb=max_lb, algo='v2',
+                                             score_v1=round(s_v1, 2), effect=_effect_flat(eff),
+                                             diverge=diverge), ensure_ascii=False) + '\n')
+                w(f'(已存档 共{len(recs)+1}条)')
         return dict(score=s, band=band, zt=n_zt, zb=n_zb, dt=n_dt, max_lb=max_lb, ymd=ymd,
                      first_boards=first_boards, ladder_grouped=ladder_grouped,
                      limit_down=limit_down, themes_list=themes_list, promotion=promotion,

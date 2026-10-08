@@ -214,6 +214,21 @@ def test_decision_record_persistence(real_defense_emotion_fixture):
         assert 'fire_status' in last_rec
 
 
+def test_missing_data_unknown_guard():
+    """
+    测试点 8: 数据断供时防崩溃且绝不瞎下军令 (进入 unknown 状态，仓位为 None)
+    """
+    res = sd_engine.analyze_strategic_decision(emo={}, sec=None, idxs=None)
+    assert res['status'] == 'data_unavailable'
+    assert res['phase']['key'] == 'unknown'
+    assert res['phase']['pos_pct'] is None
+    assert res['reality_check']['status'] == 'unavailable'
+    r2 = res['tactics']['rule_2_fire_command']
+    assert r2['fire_status'] == 'DATA_UNAVAILABLE'
+    cli_txt = sd_engine.format_cli_output(res)
+    assert '数据暂不可用' in cli_txt
+
+
 if __name__ == '__main__':
     print("=" * 60)
     print("🧪 正在运行战略决策中枢真实数据自动化测试套件...")
@@ -243,6 +258,9 @@ if __name__ == '__main__':
     test_decision_record_persistence(emo_fix)
     print("✓ PASS: 测试点 7 - 战略判定自动记账持久化可证伪")
 
+    test_missing_data_unknown_guard()
+    print("✓ PASS: 测试点 8 - 数据断供防崩溃与 unknown 仓位空值守卫")
+
     print("=" * 60)
-    print("🎉 恭喜！7 项真实场景核心测试全部 100% 通过！")
+    print("🎉 恭喜！8 项真实场景核心测试全部 100% 通过！")
     print("=" * 60)
