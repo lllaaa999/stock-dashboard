@@ -265,16 +265,43 @@ def predictions():
     return sorted(p for p in LLM_DIR.glob('sim-*.json'))
 
 
-def already_scored(date_str):
+def already_scored(date_str, next_ymd=None):
+    """是否已记分。传入 next_ymd 时还要求"记的次日就是当前算出的次日"——
+    这样陈旧样本（例如当初误用假期日 20261001 当次日算出来的那条）不会挡住重算，自动自愈。"""
     if not LEDGER.exists():
         return False
     for line in LEDGER.read_text(encoding='utf-8').splitlines():
+        line = line.strip()
+        if not line:
+            continue
         try:
-            if json.loads(line).get('pred_date') == date_str:
-                return True
+            r = json.loads(line)
         except Exception:
             continue
+        if r.get('pred_date') == date_str:
+            return True if next_ymd is None else (r.get('next_date') == next_ymd)
     return False
+
+
+def ledger_upsert(rec):
+    """按 pred_date 覆盖写入（同一笔预测重算即替换, 不再重复追加/累计虚高）"""
+    rows = []
+    if LEDGER.exists():
+        for line in LEDGER.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except Exception:
+                continue
+            if r.get('pred_date') != rec.get('pred_date'):
+                rows.append(r)
+    rows.append(rec)
+    rows.sort(key=lambda r: (str(r.get('pred_date', '')), str(r.get('next_date', ''))))
+    LLM_DIR.mkdir(parents=True, exist_ok=True)
+    LEDGER.write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in rows), encoding='utf-8')
+    return len(rows)
 
 
 def ledger_stats():
@@ -309,7 +336,8 @@ def run(date=None, all_=False, quiet=False):
         d = p.stem.replace('sim-', '')
         if date and d != date:
             continue
-        if not all_ and already_scored(d):
+        nxt_pre = next_trade_date(d)          # 先算出"当前应记的次日", 用来识别陈旧样本
+        if not all_ and already_scored(d, nxt_pre):
             continue
         todo.append((d, p))
     if not todo:
@@ -329,11 +357,10 @@ def run(date=None, all_=False, quiet=False):
         res['next_date'] = facts.get('date')
         (LLM_DIR / f'score-{d}.json').write_text(json.dumps(res, ensure_ascii=False, indent=1), encoding='utf-8')
         if res.get('ok'):
-            with open(LEDGER, 'a', encoding='utf-8') as f:
-                f.write(json.dumps({'pred_date': d, 'next_date': res['next_date'],
-                                    'direction': res['direction'], 'strength': res['strength'],
-                                    'sectors': res['sectors'], 'scenario': res['scenario'],
-                                    'risks': res['risks']}, ensure_ascii=False) + '\n')
+            ledger_upsert({'pred_date': d, 'next_date': res['next_date'],
+                           'direction': res['direction'], 'strength': res['strength'],
+                           'sectors': res['sectors'], 'scenario': res['scenario'],
+                           'risks': res['risks']})
         results.append(res)
     if not quiet:
         print_report(results)

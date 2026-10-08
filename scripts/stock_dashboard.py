@@ -416,6 +416,45 @@ def _effect_metrics(ttl=300.0):
     return out
 
 
+def _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb, force=False):
+    """情绪档案写入资格（2026-10-08 门禁 v2）。返回 (bool, 原因)。
+
+    三层校验，缺一不可：
+      ① 该日必须在交易所日K里 —— **包含"今天"**（收盘后日K必有当天行）。
+         日K取不到/为空 → fail-closed：宁可今天不归档，也不写可能是假的数据
+         （旧版 bug：`ymd < today` 把"今天"排除在校验外，而 20261001 那条假记录
+           恰恰是"当天是假期"时写进去的 —— 门禁放行了当初翻车的那一类）
+      ② 四项数值与最近一条存档**完全相同** → 判为"接口对休市日回吐最近交易日数据"
+         （10-01 假记录的真正根因：push2ex 对任意日期返回最近一个池）
+      ③ FORCE_ARCHIVE=1 可绕过 ①，供人工补录；② 始终生效（错了就显式报错让你确认）
+    """
+    import os as _os
+    if force or _os.environ.get('FORCE_ARCHIVE') == '1':
+        return True, 'FORCE_ARCHIVE 显式放行'
+    try:
+        kl = kline_tx('sh000001', 60)
+        dates = [str(row[0])[:10].replace('-', '') for row in kl] if kl else []
+    except Exception as e:
+        return False, f'日K取数异常({type(e).__name__}) → fail-closed 拒绝入库'
+    if not dates:
+        return False, '日K为空 → fail-closed 拒绝入库'
+    if ymd not in dates:
+        return False, f'该日不在交易所日K中（日K最近交易日 {dates[-1]}）→ 非交易日/休市'
+    prev = [r for r in recs if r.get('date') and str(r.get('date')) < str(ymd)]
+    if prev:
+        p = prev[-1]
+        try:
+            same = (int(p.get('zt') or -1) == int(n_zt) and int(p.get('zb') or -1) == int(n_zb)
+                    and int(p.get('dt') or -1) == int(n_dt) and int(p.get('max_lb') or -1) == int(max_lb))
+        except Exception:
+            same = False
+        if same:
+            return False, (f'四项数值与最近交易日 {p.get("date")} 完全相同 '
+                           f'(zt{int(n_zt)}/zb{int(n_zb)}/dt{int(n_dt)}/{int(max_lb)}板) '
+                           f'→ 疑似接口回吐最近数据；若确认是真实交易日请用 FORCE_ARCHIVE=1 重跑')
+    return True, '通过"日K存在 + 非回吐"双重校验'
+
+
 def emotion(ymd=None):
     w('\n===== [4] 市场情绪(涨停池实测) =====')
     if not ymd:
@@ -616,19 +655,10 @@ def emotion(ymd=None):
         if os.path.exists(hist):
             recs = [json.loads(l) for l in open(hist, encoding='utf-8')]
         if not any(r.get('date') == ymd for r in recs):
-            # 交易日有效性门禁: 必须是交易所真实交易日 (节假日与非交易日严禁入库，防止毒化 MA 与周期判定)
-            is_valid_day = True
-            try:
-                kl_check = kline_tx('sh000001', 30)
-                if kl_check:
-                    k_dates = [str(row[0])[:10].replace('-', '') for row in kl_check]
-                    # 历史日期必须在日K中；当天日期在15点后也应有日K生成
-                    if ymd not in k_dates and ymd < _now.strftime('%Y%m%d'):
-                        is_valid_day = False
-            except Exception:
-                pass
-            if not is_valid_day:
-                w(f'({ymd} 非有效交易日/节假日休市, 跳过情绪归档)')
+            # 交易日有效性门禁 v2: 日K存在(含今天) + 非"接口回吐" + 取数失败 fail-closed
+            _ok, _why = _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb)
+            if not _ok:
+                w(f'({ymd} 归档门禁拒绝: {_why})')
             else:
                 with open(hist, 'a', encoding='utf-8') as fp:
                     fp.write(json.dumps(dict(date=ymd, score=round(s, 2), band=band, zt=n_zt,
