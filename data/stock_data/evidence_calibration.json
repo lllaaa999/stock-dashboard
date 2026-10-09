@@ -1,0 +1,18 @@
+{
+  "timestamp": "2026-10-09 19:21:26",
+  "sample_count": 33,
+  "v1_samples": 30,
+  "v2_samples": 3,
+  "emotion_percentiles": {
+    "p25": 41.6,
+    "p50": 58.9,
+    "p75": 69.5
+  },
+  "zb_rate_percentiles": {
+    "p25": 18.1,
+    "p50": 25.0,
+    "p75": 31.0
+  },
+  "calibration_status": "v2积累阶段",
+  "honest_rule_reminder": "严禁在v2样本未达30前假造实证结论，当前阈值严格承袭历史经验分位"
+}

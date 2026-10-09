@@ -31,6 +31,7 @@ env/
 *.log
 data/snapshot_cache.json
 data/stock_data/charts/*.png
+data/stock_data/daily_pipeline_report.json
 
 # IDE & OS
 .idea/
