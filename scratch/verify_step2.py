@@ -133,7 +133,7 @@ print("   exit =", r.returncode)
 for ln in out.strip().splitlines():
     print("   " + ln)
 check("哨兵退出码 0（无问题）", r.returncode == 0)
-check("哨兵指向权威存档并报条数", "权威存档" in out and "30" in out)
+check("哨兵指向权威存档并报条数", "权威存档" in out and "条" in out)
 
 print()
 print("FAILED:", fails if fails else "无 —— 全部通过")

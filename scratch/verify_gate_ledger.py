@@ -76,7 +76,7 @@ todo = []
 for p in ss.predictions():
     d = p.stem.replace('sim-', '')
     nxt = ss.next_trade_date(d)
-    if not ss.already_scored(d, nxt):
+    if nxt and not ss.already_scored(d, nxt):
         todo.append(d)
 check("已记且次日正确 → 默认跳过（不重复计分）", todo == [], todo)
 check("若次日变了 → 会重算（陈旧样本挡不住）",

@@ -103,9 +103,8 @@ print()
 print("== 7. 历史存档未被改写（v2 记录将从今日收盘起追加）==")
 h = ROOT / "data" / "stock_data" / "sentiment_history.jsonl"
 recs = [json.loads(l) for l in h.read_text(encoding='utf-8').splitlines() if l.strip()]
-last = recs[-1]
-print("   末条:", {k: last.get(k) for k in ('date', 'score', 'algo', 'score_v1', 'effect', 'diverge')})
-check("末条仍是 v1 结构（无 algo 字段）", last.get('algo') is None and last.get('date') == '20260929')
+v1_recs = [r for r in recs if str(r.get('date', '')) <= '20260929']
+check("历史 v1 记录未被篡改（无 algo 字段）", len(v1_recs) >= 30 and all(r.get('algo') is None for r in v1_recs))
 
 print()
 print("FAILED:", fails if fails else "无 —— 全部通过")

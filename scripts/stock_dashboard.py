@@ -370,9 +370,12 @@ def _emotion_score_v2(n_zt, n_zb, n_dt, max_lb, eff):
     if eff.get('available'):
         prem = float(eff.get('premium', 0.0))
         rate = float(eff.get('rate_1to2', 0.0))
-        if s >= 50 and (prem < 0 or rate < 25):
+        eff_sc = float(eff.get('score', 0.5))
+        # 情绪分偏高但赚钱效应偏弱: 表面高(s>=50)，但接力资金亏损(prem<0)或综合赚钱效应不及中性且梯队失血(eff_sc<0.5 且 rate<20)
+        # 避免溢价高达+2.6%且超强接力时因晋级率24.2%被硬编码rate<25误杀
+        if s >= 50 and (prem < 0 or (eff_sc < 0.5 and rate < 20) or (prem < 0.8 and rate < 25)):
             diverge = 'score_high_effect_weak'
-        elif s < 50 and prem > 3 and rate > 50:
+        elif s < 50 and ((prem > 3.0 and rate > 50.0) or (eff_sc >= 0.65 and prem >= 2.0)):
             diverge = 'score_low_effect_strong'
     return s, diverge
 
