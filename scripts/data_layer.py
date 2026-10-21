@@ -41,6 +41,7 @@ def _get_mootdx():
 # baostock 登录管理
 # ============================================================================
 _bs_logged = False
+_bs_init_failed = False     # 熔断锁：未安装或初始化失败时彻底熔断静默
 _bs_fail_count = 0          # 连续失败计数
 _bs_disabled_until = 0      # 暂时禁用截止时间戳
 _BS_MAX_FAIL = 10           # 连续失败超过此数后暂时禁用
@@ -50,16 +51,24 @@ _BS_RETRY_INTERVAL = 1.0    # 重试间隔（秒）
 
 
 def _bs_login():
-    global _bs_logged
+    global _bs_logged, _bs_init_failed
+    if _bs_init_failed:
+        return False
     if _bs_logged:
         return True
     try:
         import baostock as bs
         lg = bs.login()
         _bs_logged = (lg.error_code == '0')
+        if not _bs_logged:
+            _bs_init_failed = True
         return _bs_logged
+    except ImportError:
+        _bs_init_failed = True
+        return False
     except Exception as e:
         print(f'[data_layer] baostock 登录失败: {e}')
+        _bs_init_failed = True
         return False
 
 
@@ -220,7 +229,9 @@ def kline_baostock(code, days=160, start_date=None):
     返回: [[date, open, close, high, low, vol], ...]  失败返回 None
     优化：重试机制 + 连续失败暂时禁用 + 错误日志抑制
     """
-    global _bs_fail_count, _bs_disabled_until
+    global _bs_fail_count, _bs_disabled_until, _bs_init_failed
+    if _bs_init_failed:
+        return None
 
     # 检查是否被暂时禁用
     now = time.time()

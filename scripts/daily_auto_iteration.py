@@ -65,6 +65,12 @@ def step_market_and_emotion(target_ymd, force=False):
         emo = sd.emotion(target_ymd)
         res['emotion'] = emo
         log(f"情绪分计算完成: 日期={emo.get('date')} 得分={emo.get('score')} 分区={emo.get('band')} 背离={emo.get('diverge')}")
+        # 连板梯队断层日志记录与盘后不可变快照双保险归档
+        if emo and isinstance(emo, dict):
+            la = emo.get('ladder_analysis') or {}
+            log(f"连板梯队诊断: [{la.get('tag', '未知')}] {la.get('status_desc', '无梯队数据')} 最高高度={la.get('max_height', 1)}板")
+            snap_ok, snap_msg = sd.archive_daily_snapshot(target_ymd, emo, force=force)
+            log(f"盘后不可变快照状态: {snap_msg}")
     except Exception as e:
         log(f"情绪指标计算异常: {e}", level='ERROR')
         res['emotion_error'] = str(e)
@@ -113,6 +119,20 @@ def step_news_events(target_date_str):
         return {'status': 'ok', 'count': count, 'path': str(events_file)}
     except Exception as e:
         log(f"消息面处理异常: {e}", level='WARN')
+        return {'status': 'error', 'error': str(e)}
+
+
+def step_auction_audit(target_ymd, force=False):
+    """步骤: 早盘竞价雷达推荐池收盘自动对账 (封板率/溢价/胜率)"""
+    log("--> [对账闭环] 正在运行早盘竞价推荐池收盘自动对账...")
+    try:
+        import auction_audit as aa
+        res = aa.audit_auction_for_day(target_ymd, force=force)
+        wts_summary = res.get('summary', {}).get('weak_to_strong', {})
+        log(f"竞价对账完成: 弱转强标的 {wts_summary.get('count', 0)} 只 | 真实封板率={wts_summary.get('zt_rate', 0)}% | 日内胜率={wts_summary.get('win_rate', 0)}% | 平均盈亏={wts_summary.get('avg_pnl', 0)}%")
+        return res
+    except Exception as e:
+        log(f"竞价对账异常: {e}", level='WARN')
         return {'status': 'error', 'error': str(e)}
 
 
@@ -252,6 +272,7 @@ def run_daily_pipeline(target_date=None, force=False):
     # 执行步骤
     pipeline_results['steps']['market_and_emotion'] = step_market_and_emotion(ymd, force=force)
     pipeline_results['steps']['news_events'] = step_news_events(date_str)
+    pipeline_results['steps']['auction_audit'] = step_auction_audit(ymd, force=force)
     pipeline_results['steps']['ledger_audit'] = step_ledger_audit()
     pipeline_results['steps']['threshold_calibration'] = step_threshold_calibration()
     pipeline_results['steps']['next_day_simulation'] = step_next_day_simulation(date_str)

@@ -52,3 +52,32 @@ data/news/
 # LLM 推演归档 + 本地密钥配置(绝不入库)
 data/llm/
 config/llm.local.json
+
+scratch/decompiled_*/
+scratch/decryptor/
+scratch/resources/
+
+
+
+# 逆向挖掘产物(同花顺客户端协议/解密字符串) — 绝不入库
+scratch/decrypted_strings.txt
+scratch/v2_requests.txt
+scratch/v3_requests.txt
+scratch/decompiled_strings.txt
+scratch/*_requests.txt
+
+# Python 编译缓存(全目录覆盖)
+**/__pycache__/
+*.pyc
+*.pyo
+
+# 同花顺客户端逆向/反射/Socket协议探测 (第三方商业软件逆向产物)
+scratch/dump_protocols.py
+scratch/parse_protocols.py
+scratch/inspect_ths.py
+scratch/inspect_reflection.py
+scratch/reflect.ps1
+scratch/run_reflect.ps1
+scratch/test_ths_socket.py
+scratch/test_ths_datafeed.py
+scratch/decrypted_strings.txt

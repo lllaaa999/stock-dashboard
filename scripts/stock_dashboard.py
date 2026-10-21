@@ -14,7 +14,7 @@
   python stock_dashboard.py agents [代码]   # 多主体推演(大盘或个股)
   python stock_dashboard.py sim [情景]      # 世界模拟v2(记忆+传染+情景注入)
 """
-import sys, os, json, re, ssl, time, math, urllib.request, datetime as dt
+import sys, os, json, re, ssl, time, threading, urllib.request, datetime as dt  # urllib.request 被 http() 使用
 
 try:
     from curl_cffi import requests as _creq
@@ -24,8 +24,18 @@ except Exception:
     _HAS_CURL = False
 
 sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
+# 注: limit_up_quality 虽在本文件内未直接调用，但被 strategic_decision / strategies_lib
+# 通过 sd.limit_up_quality 引用，必须保留导出；_lu_* 系列内部函数已无外部引用。
+from core.chan import chan_analysis_structured
+from core.quality import limit_up_quality
+from core.emotion import _emotion_band, _emotion_score_v1, _emotion_score_v2, _effect_flat
+
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
-_cand = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+_cand = os.path.join(ROOT_DIR, 'data')
 if os.path.isdir(_cand):
     _H = _cand
 else:
@@ -33,12 +43,34 @@ else:
 HERMES_HOME = _H
 DATA_DIR = os.path.join(HERMES_HOME, 'stock_data')
 CHART_DIR = os.path.join(DATA_DIR, 'charts')
+SNAPSHOT_DIR = os.path.join(DATA_DIR, 'snapshots')
 os.makedirs(CHART_DIR, exist_ok=True)
+os.makedirs(SNAPSHOT_DIR, exist_ok=True)
 UA = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'}
 
-def http(url, gbk=False, timeout=20, retries=3, referer=None, headers=None):
+def http(url, gbk=False, timeout=8, retries=2, referer=None, headers=None, circuit=True):
+    """HTTP 取数（curl_cffi 优先，urllib 兜底），带 host 级熔断。
+
+    修复 (2026-10-18):
+    1) 原实现完全不看 host 熔断状态 —— 熔断只存在于 _get_first_ok，而
+       tx_realtime / kline_tx / news / margin 等全部直连 http()，于是一个
+       已判死的 host 仍会被反复请求。现在所有出网请求都经过这里，冷却期内的
+       host 直接快速失败（fail-fast），不再消耗 timeout × retries。
+    2) 默认超时从 20s 收敛到 8s、重试 3 次收敛到 2 次。原默认值下，
+       快讯三级回退链最坏要等约 2 分钟，指数行情最坏 60s+，用户侧表现为
+       "页面转圈"。绝大多数 JSON 接口在 2s 内返回，8s 已足够宽容。
+
+    :param circuit: 是否参与熔断（False 时强制请求，用于人工探活）
+    """
+    import urllib.parse
     import time
+
+    host = urllib.parse.urlsplit(url).netloc
+    # fail-fast: 熔断期内直接抛错，避免 timeout × retries 的无谓等待
+    if circuit and host and _cb_is_open(host):
+        raise RuntimeError('host %s 处于熔断冷却期，跳过请求' % host)
+
     last = None
     hh = dict(headers) if headers else dict(UA)
     if referer and not headers:
@@ -49,45 +81,70 @@ def http(url, gbk=False, timeout=20, retries=3, referer=None, headers=None):
                 try:
                     r = _creq.get(url, headers=hh, impersonate='chrome', timeout=timeout)
                     raw = r.content
+                    if circuit and host:
+                        _cb_record(host, True)
                     return raw.decode('gbk', 'replace') if gbk else raw.decode('utf-8', 'replace')
                 except Exception:
                     pass  # curl 失败回退 urllib
             req = urllib.request.Request(url, headers=hh)
             with urllib.request.urlopen(req, timeout=timeout, context=CTX) as r:
                 raw = r.read()
+            if circuit and host:
+                _cb_record(host, True)
             return raw.decode('gbk', 'replace') if gbk else raw.decode('utf-8', 'replace')
         except Exception as e:
             last = e
+            if circuit and host:
+                _cb_record(host, False)
+            # 熔断刚打开时不再做无意义的重试退避
+            if circuit and host and _cb_is_open(host):
+                break
             time.sleep(0.8 * (i + 1))
     raise last
 
 # ---- host 级熔断: 进程内连续失败计数, 自动半开启恢复机制 ----
 _HOST_FAIL = {}          # {host: 连续失败次数}
 _HOST_BLACKOUT = {}      # {host: 冷却截止时间戳}
+_CB_LOCK = threading.Lock()   # 修复: Web 多线程下熔断状态需加锁，避免计数竞争
 _CIRCUIT_N = int(os.environ.get('STOCK_HTTP_BREAK_N', '3'))
 _CIRCUIT_COOLDOWN = 60.0 # 熔断后冷却 60 秒自动半开启重试
 
-def _get_first_ok(urls, gbk=False, timeout=20, retries=2, referer=None, headers=None):
-    """按序尝试 urls, 跳过处于冷却期内的 host; 某 host 连续失败 _CIRCUIT_N 次后冷却 60s。
-    任一 host 成功即清零计数并解除熔断。"""
-    import urllib.parse, time
-    last = None
+
+def _cb_record(host, ok):
+    """记录一次 host 级请求结果，维护熔断状态（线程安全）"""
+    import time
+    if not host:
+        return
     now_ts = time.time()
-    for u in urls:
-        host = urllib.parse.urlsplit(u).netloc
-        if host in _HOST_BLACKOUT and now_ts < _HOST_BLACKOUT[host]:
-            continue
-        try:
-            txt = http(u, gbk=gbk, timeout=timeout, retries=retries, referer=referer, headers=headers)
+    with _CB_LOCK:
+        if ok:
             _HOST_FAIL[host] = 0
             _HOST_BLACKOUT.pop(host, None)
-            return txt
+        else:
+            n = _HOST_FAIL.get(host, 0) + 1
+            _HOST_FAIL[host] = n
+            if n >= _CIRCUIT_N:
+                _HOST_BLACKOUT[host] = now_ts + _CIRCUIT_COOLDOWN
+                w('[熔断] %s 连续%d次失败, 冷却%.0f秒' % (host, n, _CIRCUIT_COOLDOWN))
+
+def _get_first_ok(urls, gbk=False, timeout=8, retries=2, referer=None, headers=None):
+    """按序尝试 urls, 跳过处于冷却期内的 host; 某 host 连续失败 _CIRCUIT_N 次后冷却 60s。
+    任一 host 成功即清零计数并解除熔断。"""
+    import urllib.parse
+    last = None
+    for u in urls:
+        host = urllib.parse.urlsplit(u).netloc
+        # 冷却期内的 host 直接跳过，避免把时间浪费在已知失效的通道上
+        if _cb_is_open(host):
+            continue
+        try:
+            # http() 内部已负责记录成功/失败并维护熔断状态，此处不再重复计数，
+            # 否则同一个失败会被计两次（一次在 http 内，一次在这里），
+            # 导致熔断阈值实际只相当于 half。
+            return http(u, gbk=gbk, timeout=timeout, retries=retries,
+                        referer=referer, headers=headers)
         except Exception as e:
             last = e
-            _HOST_FAIL[host] = _HOST_FAIL.get(host, 0) + 1
-            if _HOST_FAIL[host] >= _CIRCUIT_N:
-                _HOST_BLACKOUT[host] = now_ts + _CIRCUIT_COOLDOWN
-                w('[熔断] %s 连续%d次失败, 暂时冷却60秒' % (host, _CIRCUIT_N))
     raise RuntimeError('全部通道失败: %s' % last)
 
 def _cb_is_open(host):
@@ -150,6 +207,14 @@ def global_markets():
         return None
 
 # ---------- 3. 板块主力资金 ----------
+# 修复 (2026-10-18): 原实现 days=1(当日 f62) 与 days=5(近5日 f164) 共用同一个
+# sector_flow.json，两种口径互相覆盖，页面会拿 5 日累计当"今日"显示。
+# 现在按口径分文件，并带日期戳，跨日自动失效。
+def _sector_cache_file(days):
+    _d = dt.date.today().strftime('%Y%m%d')
+    return os.path.join(DATA_DIR, 'sector_flow_d%d_%s.json' % (days, _d))
+
+# 兼容旧引用（仅读，不再写入）
 _SECTOR_CACHE_FILE = os.path.join(DATA_DIR, 'sector_flow.json')
 
 def sector_flow(days=1):
@@ -178,9 +243,13 @@ def sector_flow(days=1):
                 w(f"{d['f14']}: {fv/1e8:+.1f}亿 ({pv:+.2f}%)")
                 dst.append(row)
         if out['inflow'] or out['outflow']:
+            out['source'] = 'eastmoney'
+            out['days'] = days
+            out['estimated'] = False
             try:
-                os.makedirs(os.path.dirname(_SECTOR_CACHE_FILE), exist_ok=True)
-                json.dump(out, open(_SECTOR_CACHE_FILE, 'w', encoding='utf-8'), ensure_ascii=False)
+                _fp = _sector_cache_file(days)
+                os.makedirs(os.path.dirname(_fp), exist_ok=True)
+                json.dump(out, open(_fp, 'w', encoding='utf-8'), ensure_ascii=False)
             except Exception:
                 pass
             return out
@@ -210,21 +279,25 @@ def sector_flow(days=1):
                     if o['flow'] > 0:
                         o['flow'] = -abs(o['flow'])
                 out['outflow'] = s_outflow
-                w(f'[新浪板块资金降级成功] 获取流入{len(out["inflow"])}只, 流出{len(out["outflow"])}只')
-                try:
-                    os.makedirs(os.path.dirname(_SECTOR_CACHE_FILE), exist_ok=True)
-                    json.dump(out, open(_SECTOR_CACHE_FILE, 'w', encoding='utf-8'), ensure_ascii=False)
-                except Exception:
-                    pass
+                # 修复 (2026-10-18): 新浪没有真正的"主力净流入"字段，这里的 flow
+                # 是用「成交额 × 涨跌幅 × 0.15」估算出来的（0.15 为经验系数），
+                # 与东财的主力资金口径完全不同。旧代码把它当真实数据落盘缓存，
+                # 导致下次直接读缓存时无法区分真假。现在显式打标且不落盘，
+                # 每次重新计算，避免污染 day=1/day=5 的口径。
+                out['source'] = 'sina_estimated'
+                out['estimated'] = True
+                out['days'] = days
+                w(f'[新浪板块资金降级成功] 获取流入{len(out["inflow"])}只, 流出{len(out["outflow"])}只 (估算值, 不落盘)')
                 return out
     except Exception as e2:
         w(f'[新浪板块资金降级失败] {e2}')
 
-    # 通道 3: 本地快照缓存
-    if os.path.exists(_SECTOR_CACHE_FILE):
+    # 通道 3: 本地快照缓存（按口径 + 日期分文件，只接受当天的东财真实数据）
+    _cf = _sector_cache_file(days)
+    if os.path.exists(_cf):
         try:
-            cached = json.load(open(_SECTOR_CACHE_FILE, encoding='utf-8'))
-            if cached.get('inflow') or cached.get('outflow'):
+            cached = json.load(open(_cf, encoding='utf-8'))
+            if (cached.get('inflow') or cached.get('outflow')) and not cached.get('estimated'):
                 w('[板块资金使用本地缓存]')
                 return cached
         except Exception:
@@ -234,158 +307,46 @@ def sector_flow(days=1):
 
 # ---------- 4. 涨停池/情绪指数 ----------
 UT = '7eea3edcaed734bea9cbfc24409ed989'
-# ==================== 涨停质量分 (2026-09-30 P2) ====================
-def _lu_num(v):
-    return float(v) if isinstance(v, (int, float)) else 0.0
-
-
-def _lu_time_score(fbt):
-    """封板时间分 0~10(越早越强)。依据: 9:25 竞价封板 3 日超额 +5.7%, 10:00 后递减, 14:00 后 -2.4%"""
-    if not fbt:
-        return None
-    if fbt <= 93000:
-        return 10.0
-    if fbt <= 100000:
-        return 8.0
-    if fbt <= 113000:
-        return 5.0
-    if fbt <= 140000:
-        return 2.0
-    return 0.0
-
-
-def _lu_seal_score(ratio_pct):
-    """封单强度分 0~10 = 封单额/流通市值。>5% -> 3日超额 +8.4%, 1~5% -> +3.1%, <1% -> -0.7%"""
-    if ratio_pct is None:
-        return None
-    if ratio_pct >= 5:
-        return 10.0
-    if ratio_pct >= 1:
-        return 7.0
-    if ratio_pct >= 0.5:
-        return 4.0
-    if ratio_pct >= 0.1:
-        return 2.0
-    return 0.0
-
-
-def _lu_board_score(lbc):
-    """连板结构分 0~10。依据: 第 2 板 alpha 最强, 4 板后衰减, 6 板以上转负"""
-    if not lbc:
-        return None
-    return {1: 4.0, 2: 10.0, 3: 6.0, 4: 2.0}.get(int(lbc), 0.0)
-
-
-def limit_up_quality(d):
-    """涨停质量分 0~10 = 0.35x封板时间 + 0.35x封单强度 + 0.30x连板结构, 缺项按权重归一, 烂板扣分。
-
-    只用池子里现成的字段(fbt/fund/ltsz/lbc/zbc), 不额外发请求。
-    依据: 涨停板因子实证(竞价封板 +5.7% / 封单占流通>5% +8.4% / 第 2 板 alpha 最强)。
-    E/F/H 策略用它当首要排序键, 并通过 x['qlty'] 把分数带给 CLI 与 Web。
-    返回 (score, detail)。
-    """
-    try:
-        fbt = int(d.get('fbt') or 0)
-    except Exception:
-        fbt = 0
-    try:
-        lbc = int(d.get('lbc') or 0)
-    except Exception:
-        lbc = 0
-    try:
-        zbc = int(d.get('zbc') or 0)
-    except Exception:
-        zbc = 0
-    ltsz = _lu_num(d.get('ltsz'))
-    ratio = (_lu_num(d.get('fund')) / ltsz * 100) if ltsz > 0 else None
-
-    parts = []
-    tv, sv, bv = _lu_time_score(fbt), _lu_seal_score(ratio), _lu_board_score(lbc)
-    if tv is not None:
-        parts.append((tv, 0.35, 'time'))
-    if sv is not None:
-        parts.append((sv, 0.35, 'seal'))
-    if bv is not None:
-        parts.append((bv, 0.30, 'board'))
-    if not parts:
-        return 0.0, {'score': 0.0, 'missing': True, 'used_factors': 0}
-    wsum = sum(p[1] for p in parts)
-    score = sum(p[0] * p[1] for p in parts) / wsum
-    if zbc >= 3:
-        score -= 1.5
-    elif zbc == 2:
-        score -= 0.7
-    score = max(0.0, min(10.0, round(score, 2)))
-    return score, {
-        'score': score, 'fbt': fbt, 'lbc': lbc, 'zbc': zbc,
-        'seal_ratio_pct': round(ratio, 2) if ratio is not None else None,
-        'parts': {p[2]: p[0] for p in parts},
-        'used_factors': len(parts), 'missing': len(parts) < 3,
-    }
-
+# ==================== 涨停质量分 (迁移至 core.quality，保持外观兼容) ====================
+# 已在文件头部从 core.quality 统一导入:
+# limit_up_quality, _lu_num, _lu_time_score, _lu_seal_score, _lu_board_score
+_POOL_CACHE = {}
 
 def _pool(kind, ymd):
+    today_ymd = dt.date.today().strftime('%Y%m%d')
+    cache_key = (kind, ymd)
+    if cache_key in _POOL_CACHE:
+        val, ts = _POOL_CACHE[cache_key]
+        if ymd < today_ymd or (time.time() - ts) < 30.0:
+            return val
+
     # 注意: DT池必须用 fund 排序 —— fbt(首次封板时间)字段跌停股没有, 会恒返回空pool
     # (2026-08-25 三方会诊实证: 曾误判"跌停池无历史数据", 实为 sort 参数假象)
     sort = 'fund%3Aasc' if kind == 'DT' else 'fbt%3Aasc'
     u = f'https://push2ex.eastmoney.com/getTopic{kind}Pool?ut={UT}&dpt=wz.ztzt&Pageindex=0&pagesize=500&sort={sort}&date={ymd}'
-    j = json.loads(http(u))
-    if not isinstance(j, dict) or not j.get('data'):
-        # ut token 失效时东财返回的是 rc!=0 / 无 data 字段的响应体; 旧代码会把它当成
-        # "该日无涨停池"静默吞掉 —— 7 日回溯白跑、情绪分凭空少一块(2026-09-30 修正)。
-        print('[涨停池·警告] %s %s 响应里没有 data 字段 —— 疑似 ut token 失效(当前 UT=%s); '
-              '请从东方财富行情页-涨停池的网络请求里重新抓 ut 并更新 UT 常量' % (kind, ymd, UT))
+    try:
+        raw_resp = http(u, timeout=3.0, retries=1)
+        j = json.loads(raw_resp)
+        if not isinstance(j, dict) or not j.get('data'):
+            # ut token 失效时东财返回的是 rc!=0 / 无 data 字段的响应体
+            # 负缓存: 空结果也缓存一小段时间，避免情绪回溯(最多8日x3池)反复打上游
+            _POOL_CACHE[cache_key] = ([], time.time())
+            return []
+        d = j.get('data') or {}
+        pool = d.get('pool') or []
+        # 修复 (2026-10-18): 原实现只在 pool 非空时写缓存，空池每次都要重新请求。
+        # emotion() 会回溯 8 个交易日 x 3 个池，非交易日/无数据日会全部落空，
+        # 每次都打满上游。现在空结果也进负缓存（当日 30s / 历史日长期有效）。
+        _POOL_CACHE[cache_key] = (pool, time.time())
+        return pool
+    except Exception:
+        # 网络/解析异常不写负缓存 —— 否则会把"请求失败"伪装成"当天没有涨停池"，
+        # 让上层误判为非交易日。失败就让下次重试。
         return []
-    d = j.get('data') or {}
-    return (d.get('pool') or [])
 
-# ---------- 情绪指数打分: v1(对照留档) / v2(去饱和+赚钱效应) ----------
-def _emotion_band(s):
-    return ('冰点' if s < 30 else '退潮/偏冷' if s < 50 else '中性' if s < 70 else '活跃' if s < 85 else '亢奋')
-
-def _emotion_score_v1(n_zt, n_zb, n_dt, max_lb):
-    """旧公式(0-100): 基准10 + 广度30 + 高度25 + 封板质量20 - 跌停惩罚15。仅作对照留档。"""
-    s = 10
-    s += min(n_zt / 80, 1) * 30
-    s += min(max_lb / 8, 1) * 25
-    s += (1 - n_zb / (n_zt + n_zb)) * 20 if (n_zt + n_zb) else 10
-    s -= min(n_dt / 15, 1) * 15
-    return max(0, min(100, s))
-
-def _emotion_score_v2(n_zt, n_zb, n_dt, max_lb, eff):
-    """新公式(0-100): 基准10 + 广度18(平方根去饱和) + 高度17(平方根) + 封板质量12
-    + 赚钱效应25 + 跌停惩罚15。
-    赚钱效应 = 0.6*溢价分 + 0.4*晋级分; 溢价分 = clamp(昨日涨停今均涨跌, -5%, +5%) 归一化;
-    晋级分 = min(1进2晋级率/50, 1)。取不到该指标时按中性 12.5 分计入(并标注).
-    返回 (score, diverge)。diverge: score_high_effect_weak / score_low_effect_strong / None
-    """
-    s = 10
-    s += math.sqrt(min(n_zt / 120, 1)) * 18
-    s += math.sqrt(min(max_lb / 8, 1)) * 17
-    s += ((1 - n_zb / (n_zt + n_zb)) * 12 if (n_zt + n_zb) else 6)
-    s += (eff['score'] * 25) if eff.get('available') else 12.5
-    s -= min(n_dt / 15, 1) * 15
-    s = max(0, min(100, s))
-    diverge = None
-    if eff.get('available'):
-        prem = float(eff.get('premium', 0.0))
-        rate = float(eff.get('rate_1to2', 0.0))
-        eff_sc = float(eff.get('score', 0.5))
-        # 情绪分偏高但赚钱效应偏弱: 表面高(s>=50)，但接力资金亏损(prem<0)或综合赚钱效应不及中性且梯队失血(eff_sc<0.5 且 rate<20)
-        # 避免溢价高达+2.6%且超强接力时因晋级率24.2%被硬编码rate<25误杀
-        if s >= 50 and (prem < 0 or (eff_sc < 0.5 and rate < 20) or (prem < 0.8 and rate < 25)):
-            diverge = 'score_high_effect_weak'
-        elif s < 50 and ((prem > 3.0 and rate > 50.0) or (eff_sc >= 0.65 and prem >= 2.0)):
-            diverge = 'score_low_effect_strong'
-    return s, diverge
-
-def _effect_flat(eff):
-    """存档用扁平化(不写嵌套, 便于日后回测)"""
-    if not eff.get('available'):
-        return None
-    return dict(premium=eff.get('premium'), rate_1to2=eff.get('rate_1to2'),
-                effect_score=round(eff.get('score', 0) * 25, 2),
-                y_date=eff.get('y_date'), tag=eff.get('tag'))
+# ---------- 情绪指数打分 (迁移至 core.emotion，保持外观兼容) ----------
+# 已在文件头部从 core.emotion 统一导入:
+# _emotion_band, _emotion_score_v1, _emotion_score_v2, _effect_flat
 
 _EFFECT_CACHE = {'t': 0.0, 'data': None}
 
@@ -402,15 +363,32 @@ def _effect_metrics(ttl=300.0):
         ps = r.get('premium_summary') or {}
         pm = r.get('promotion_metrics') or {}
         prem, rate = ps.get('avg_curr_pct'), pm.get('rate_1to2')
-        if r.get('status') == 'ok' and prem is not None and rate is not None:
+        # 修复 (2026-10-18): 晋级率在休市/非相邻交易日会返回 None（无法计算），
+        # 但赚钱效应分数仍可由"昨涨停溢价"单独给出。旧实现要求两者同时存在，
+        # 导致休市日与历史回补场景下赚钱效应永久不可用，浪费了一半有效信号。
+        # 现在：有溢价就按溢价给分，晋级率缺失时降权(仅用 premium 归一化)，
+        # 并在返回值里标注 rate_available 让前端区分。
+        if r.get('status') == 'ok' and prem is not None:
             prem_c = max(-5.0, min(5.0, float(prem)))
             prem_n = (prem_c + 5.0) / 10.0
-            rate_n = min(float(rate) / 50.0, 1.0)
+            rate_available = rate is not None
+            if rate_available:
+                rate_n = min(float(rate) / 50.0, 1.0)
+                score = 0.6 * prem_n + 0.4 * rate_n
+            else:
+                rate_n = None
+                score = prem_n          # 仅溢价口径
             out = {'available': True, 'premium': round(float(prem), 2),
-                   'premium_clamped': round(prem_c, 2), 'rate_1to2': round(float(rate), 1),
-                   'premium_norm': round(prem_n, 3), 'rate_norm': round(rate_n, 3),
-                   'score': round(0.6 * prem_n + 0.4 * rate_n, 4),
-                   'y_date': ps.get('y_date'), 'tag': ps.get('sentiment_tag')}
+                   'premium_clamped': round(prem_c, 2),
+                   'rate_1to2': (round(float(rate), 1) if rate_available else None),
+                   'rate_available': rate_available,
+                   'premium_norm': round(prem_n, 3),
+                   'rate_norm': (round(rate_n, 3) if rate_available else None),
+                   'score': round(score, 4),
+                   'y_date': ps.get('y_date'), 'tag': ps.get('sentiment_tag'),
+                   # preview=True 表示该组数据是"历史两交易日"复盘口径，而非当日实况
+                   'preview': bool(ps.get('preview_mode')),
+                   'tag_live': ps.get('sentiment_tag_live')}
         else:
             out = {'available': False,
                    'reason': 'radar status=%s prem=%s rate=%s' % (r.get('status'), prem, rate)}
@@ -488,10 +466,178 @@ def _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb, force=False):
     return True, '通过"日K存在 + 非回吐"双重校验' if not force_bypass else 'FORCE_ARCHIVE 显式放行'
 
 
+def analyze_ladder_faults(ladder_grouped=None, first_boards=None, max_lb=1):
+    """
+    连板梯队结构与断层诊断算法（吸纳 vibe-astock / 寻龙诀实战经验）。
+
+    业务逻辑：
+    1. 统计各高度板位个股家数；
+    2. 若最高连板 max_height <= 2: 属于空间受限（无连板标杆赚钱效应）；
+    3. 若最高连板 max_height >= 3:
+       检查区间 [2, max_height - 1] 的所有板位。若存在板位股票数为 0，则判定为梯队断层！
+       - 若最高断层在 max_height - 1 (如最高5板但4板断层): 诊断为'高位断层·独木难支'，防龙头孤立跳水；
+       - 若 2板 为 0 (1进2全军覆没): 诊断为'接力断层·冰点失血'，防打板全面退潮；
+       - 若处于中间板位: 诊断为'中位断层·梯队分化'；
+       - 若无断层: 诊断为'梯队完整·良性接力'。
+    """
+    counts = {}
+    fb_len = len(first_boards) if isinstance(first_boards, list) else int(first_boards or 0)
+    counts[1] = fb_len
+
+    if isinstance(ladder_grouped, dict):
+        for k, v in ladder_grouped.items():
+            try:
+                ik = int(k)
+                if ik >= 2:
+                    counts[ik] = len(v) if isinstance(v, list) else int(v or 0)
+            except (ValueError, TypeError):
+                continue
+    elif isinstance(ladder_grouped, list):
+        for item in ladder_grouped:
+            if isinstance(item, dict):
+                lb = item.get('lbc', 1)
+                try:
+                    ilb = int(lb)
+                    if ilb >= 2:
+                        counts[ilb] = counts.get(ilb, 0) + 1
+                except (ValueError, TypeError):
+                    continue
+
+    max_height = max([int(max_lb or 1)] + list(counts.keys())) if counts else int(max_lb or 1)
+
+    if max_height <= 2:
+        has_fault = False
+        fault_levels = []
+        status = "low_suppression"
+        status_desc = f"连板空间受限（市场最高仅{max_height}板，缺乏高度标杆）"
+        tag = "空间受限"
+    else:
+        fault_levels = [lvl for lvl in range(2, max_height) if counts.get(lvl, 0) == 0]
+        if not fault_levels:
+            has_fault = False
+            status = "healthy"
+            status_desc = f"梯队完整连贯（2~{max_height}板层层递进无断档，接力梯队健康）"
+            tag = "梯队完整"
+        else:
+            has_fault = True
+            fault_str = "、".join(f"{lvl}板" for lvl in fault_levels)
+            if (max_height - 1) in fault_levels:
+                status = "high_gap"
+                status_desc = f"高位梯队断层（{fault_str}空缺，最高{max_height}板孤木难支，警惕高位分歧杀跌）"
+                tag = "高位断层"
+            elif 2 in fault_levels:
+                status = "seed_gap"
+                status_desc = f"首板接力断层（2板空缺/1进2失败，接力意愿冰点）"
+                tag = "接力断层"
+            else:
+                status = "mid_gap"
+                status_desc = f"中位梯队断层（{fault_str}空缺，中生代断档，个股分化严重）"
+                tag = "中位断层"
+
+    return {
+        "max_height": max_height,
+        "counts": {str(k): v for k, v in sorted(counts.items())},
+        "fault_levels": fault_levels,
+        "has_fault": has_fault,
+        "status": status,
+        "status_desc": status_desc,
+        "tag": tag,
+    }
+
+
+def snapshot_file_path(ymd):
+    clean_ymd = str(ymd).replace('-', '')[:8]
+    return os.path.join(SNAPSHOT_DIR, f"snapshot_{clean_ymd}.json")
+
+
+def get_daily_snapshot(ymd):
+    """读取指定交易日的盘后不可变快照。"""
+    p = snapshot_file_path(ymd)
+    if os.path.exists(p):
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+    return None
+
+
+def archive_daily_snapshot(ymd, emotion_data, force=False):
+    """
+    保存 15:35 盘后定稿不可变快照（吸纳 vibe-astock 不可变归档设计）。
+
+    不可变性守则：
+    1. 盘后一旦归档入库，标记 immutable=True；若已有快照且非 force，拒绝随意覆写；
+    2. 只有收盘后（15:00 之后，或带 force=True 明确补录）才允许生成归档，杜绝盘中未定稿数据污染；
+    3. 写入采用原子写入（写 tmp 再 replace），防止断电或并发写导致 json 损坏。
+    """
+    if not ymd or not emotion_data:
+        return False, "参数缺失"
+
+    clean_ymd = str(ymd).replace('-', '')[:8]
+    p = snapshot_file_path(clean_ymd)
+
+    # 不可变守卫
+    if os.path.exists(p) and not force:
+        return True, f"不可变快照已存在 ({p})"
+
+    _now = dt.datetime.now()
+    is_today = (clean_ymd == _now.strftime('%Y%m%d'))
+    if is_today and _now.hour < 15 and not force:
+        return False, "盘中未收盘定稿 (需 15:00 后收盘归档)"
+
+    try:
+        snapshot = {
+            "date": clean_ymd,
+            "archived_at": _now.strftime("%Y-%m-%d %H:%M:%S"),
+            "immutable": True,
+            "score": emotion_data.get("score"),
+            "band": emotion_data.get("band"),
+            "zt": emotion_data.get("zt"),
+            "zb": emotion_data.get("zb"),
+            "dt": emotion_data.get("dt"),
+            "max_lb": emotion_data.get("max_lb"),
+            "stage": emotion_data.get("stage"),
+            "diverge": emotion_data.get("diverge"),
+            "effect": emotion_data.get("effect"),
+            "ladder_analysis": emotion_data.get("ladder_analysis"),
+            "ladder_grouped": emotion_data.get("ladder_grouped"),
+            "first_boards": emotion_data.get("first_boards"),
+            "limit_down": emotion_data.get("limit_down"),
+            "themes_list": emotion_data.get("themes_list"),
+            "board_quality": emotion_data.get("board_quality"),
+            "promotion": emotion_data.get("promotion"),
+            "zha_ban": emotion_data.get("zha_ban"),
+        }
+        tmp_p = p + f".tmp.{os.getpid()}"
+        with open(tmp_p, 'w', encoding='utf-8') as fp:
+            json.dump(snapshot, fp, ensure_ascii=False, indent=2)
+        os.replace(tmp_p, p)
+        return True, f"成功归档不可变快照 -> {p}"
+    except Exception as e:
+        return False, f"快照归档失败: {e}"
+
+
 def emotion(ymd=None):
     w('\n===== [4] 市场情绪(涨停池实测) =====')
     if not ymd:
         ymd = dt.date.today().strftime('%Y%m%d')
+    # 修复 (2026-10-18): 若传入/默认的日期不是真实交易日（周末、节假日），
+    # 直接回退到最近的真实交易日。上游涨停池接口对非交易日会回吐最近交易日的
+    # 快照，"池子有数据"因此不能作为交易日判据 —— 否则周日会拿着周五的数据
+    # 冒充"今日情绪"，并让归档门禁误判、把非交易日写进历史。
+    try:
+        import trading_calendar as _tcal
+    except ImportError:
+        try:
+            from scripts import trading_calendar as _tcal
+        except ImportError:
+            _tcal = None
+    if _tcal is not None:
+        _real = _tcal.latest_trading_day(ymd)
+        if _real and _real != ymd:
+            w(f'(注: {ymd} 非交易日, 自动回溯至最近交易日 {_real})')
+            ymd = _real
     req_ymd = ymd
     try:
         # 两段式回溯(dsh方案D): 先用 ZT 池单请求探测哪天有数, 命中后再补拉 ZB/DT
@@ -530,8 +676,13 @@ def emotion(ymd=None):
         w(f'日期:{ymd}  涨停:{n_zt} 炸板:{n_zb}(率{br:.0f}%) 跌停:{n_dt} 最高连板:{max_lb}板')
         w(f'>>> 情绪指数: {s:.2f}/100 [{band}] <<<   (v1 公式对照: {s_v1:.2f})')
         if eff.get('available'):
-            w('赚钱效应: 昨日涨停今均溢价 %+.2f%% | 1进2晋级率 %.1f%% | 昨日=%s [%s]' % (
-                eff['premium'], eff['rate_1to2'], eff.get('y_date') or '', eff.get('tag') or ''))
+            # rate_1to2 可能为 None（休市/非相邻交易日无法计算晋级率）。
+            # 旧写法 '%.1f%%' % None 抛 TypeError，被外层 except 吞掉 ->
+            # 整个 emotion() 返回 None -> 页面 emotion 变空对象 {}。
+            _rate = eff.get('rate_1to2')
+            _rate_txt = ('%.1f%%' % _rate) if _rate is not None else '不可用(休市)'
+            w('赚钱效应: 昨日涨停今均溢价 %+.2f%% | 1进2晋级率 %s | 昨日=%s [%s]' % (
+                eff['premium'], _rate_txt, eff.get('y_date') or '', eff.get('tag') or ''))
         else:
             w('赚钱效应: 取不到(%s) -> 该项按中性 12.5 分计入, 已标注 effect_unavailable' % eff.get('reason'))
         if diverge == 'score_high_effect_weak':
@@ -578,6 +729,12 @@ def emotion(ymd=None):
         for d in ladder:
             lb = d.get('lbc', 2)
             ladder_grouped.setdefault(lb, []).append(_slim(d))
+        # 连板梯队断层结构诊断（吸纳 vibe-astock / 寻龙诀实战经验）
+        ladder_analysis = analyze_ladder_faults(ladder_grouped, first_boards, max_lb)
+        if ladder_analysis.get('has_fault'):
+            w(f'** 梯队断层预警: [{ladder_analysis["tag"]}] {ladder_analysis["status_desc"]}')
+        else:
+            w(f'梯队结构诊断: [{ladder_analysis["tag"]}] {ladder_analysis["status_desc"]}')
         # 跌停列表
         limit_down = [dict(code=d.get('c', ''), name=d.get('n', ''), hybk=d.get('hybk', '')) for d in dtl]
         # 题材分布（按涨停家数排序，含领涨股）
@@ -706,7 +863,12 @@ def emotion(ymd=None):
                      score_v1=round(s_v1, 2), effect=_effect_flat(eff), diverge=diverge,
                      effect_available=eff.get('available'))
     except Exception as e:
-        w(f'[情绪数据失败] {e}')
+        # 修复 (2026-10-18): 原来只打印 str(e)，堆栈全丢。"must be real number,
+        # not NoneType" 这类消息无法定位到具体行，排查成本极高（本次连踩三处）。
+        # 改为打印完整堆栈，便于定位；返回值语义不变。
+        import traceback as _tb
+        w(f'[情绪数据失败] {type(e).__name__}: {e}')
+        w(_tb.format_exc())
         return None
 
 # ---------- 5. 两融余额 ----------
@@ -917,31 +1079,88 @@ def news(num=12):
         return []
 
 # ---------- 7. 个股体检 ----------
+_KLINE_MEM_CACHE = {}
+_KLINE_CACHE_TTL = 60.0          # 交易时段：60 秒
+_KLINE_CACHE_TTL_CLOSED = 1800.0 # 休市时段：30 分钟（历史日K不会变）
+_KLINE_NEG_TTL = 20.0            # 空/失败结果的负缓存：20 秒（避免级联重试雪崩）
+
+def _is_market_closed_now():
+    """当前是否处于休市状态（收盘后/午休/盘前/周末）。
+
+    日K在休市期间不会变化，可显著拉长缓存 TTL，避免反复请求同一份数据。
+    """
+    now = dt.datetime.now()
+    if now.weekday() >= 5:
+        return True
+    m = now.hour * 60 + now.minute
+    return m < 9 * 60 + 15 or m > 15 * 60 + 5 or (11 * 60 + 30 <= m < 13 * 60)
+
+
 def kline_tx(full_code, days=160):
+    """日K线数据获取：新浪 → 腾讯 → 东财 → mootdx/baostock 四重高可用容灾 + 内存缓存
+
+    修复 (2026-10-18):
+      1) 原来固定 TTL=60s，盘后/周末也每 60 秒重拉一次完全不变的历史日K，
+         白白消耗上游配额。现在休市期 TTL 拉长到 30 分钟。
+      2) 失败/空结果不写缓存，下次调用会重跑整条四源级联（最坏 4 次网络往返）。
+         现在空结果写 20 秒短负缓存，避免雪崩式重试。
+      3) 去掉多余的 `global`（本函数只读字典、不重新赋值）。
+    """
+    cache_key = (str(full_code).lower(), int(days))
+    now = time.time()
+    if cache_key in _KLINE_MEM_CACHE:
+        ts, val = _KLINE_MEM_CACHE[cache_key]
+        ttl = _KLINE_CACHE_TTL_CLOSED if _is_market_closed_now() else _KLINE_CACHE_TTL
+        # 空结果用短 TTL，真实数据用正常 TTL
+        eff_ttl = ttl if val else _KLINE_NEG_TTL
+        if now - ts < eff_ttl:
+            return val
+
     # 1. 优先新浪日 K 线接口（毫秒级、免 WAF 限流、极度稳定）
     try:
         raw_code = full_code.lower()
         if not raw_code.startswith(('sh', 'sz')):
             raw_code = ('sh' if raw_code.startswith(('6', '5', '9')) else 'sz') + raw_code
         u = f'http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={raw_code}&scale=240&ma=no&datalen={days}'
-        raw = http(u, timeout=2.5, retries=1)
+        raw = http(u, timeout=3.5, retries=1)
         data = json.loads(raw)
         if data and isinstance(data, list):
             out = []
             for r in data:
                 out.append([r['day'], float(r['open']), float(r['close']), float(r['high']), float(r['low']), float(r['volume'])])
             if len(out) >= 5:
+                _KLINE_MEM_CACHE[cache_key] = (now, out)
                 return out
     except Exception:
         pass
 
-    # 2. 东财历史 K 线接口（备用）
+    # 2. 腾讯官方前复权日 K 通道 (web.ifzq.gtimg.cn/appstock/app/fqkline/get)
     try:
-        code = full_code[2:]
-        market = '1' if full_code.startswith(('sh', 'SH', '6', '5', '9')) else '0'
+        raw_code = full_code.lower()
+        if not raw_code.startswith(('sh', 'sz')):
+            raw_code = ('sh' if raw_code.startswith(('6', '5', '9')) else 'sz') + raw_code
+        tx_url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={raw_code},day,,,{days},qfq'
+        tx_raw = http(tx_url, timeout=4.0, retries=1)
+        tx_json = json.loads(tx_raw)
+        target_dict = tx_json.get('data', {}).get(raw_code, {})
+        klines = target_dict.get('qfqday') or target_dict.get('day') or []
+        if klines:
+            out = []
+            for r in klines:
+                out.append([r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])])
+            if len(out) >= 5:
+                _KLINE_MEM_CACHE[cache_key] = (now, out)
+                return out
+    except Exception:
+        pass
+
+    # 3. 东财历史 K 线接口（备用）
+    try:
+        code = full_code[2:] if full_code.lower().startswith(('sh', 'sz')) else full_code
+        market = '1' if full_code.lower().startswith(('sh', '6', '5', '9')) else '0'
         secid = f'{market}.{code}'
         em_hdr = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': 'https://www.eastmoney.com/'}
-        url = (f'https://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}'
+        url = (f'http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}'
                f'&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
                f'&klt=101&fqt=1&end=20500101&lmt={days}')
         j = json.loads(http(url, headers=em_hdr, timeout=2.5, retries=1))
@@ -951,19 +1170,25 @@ def kline_tx(full_code, days=160):
             for line in klines:
                 p = line.split(',')
                 out.append([p[0], float(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[5])])
-            return out
+            if len(out) >= 5:
+                _KLINE_MEM_CACHE[cache_key] = (now, out)
+                return out
     except Exception:
         pass
 
-    # 3. 统一数据层（mootdx 兜底）
+    # 4. 统一数据层（mootdx / baostock 兜底）
     try:
         import data_layer
         kl = data_layer.kline(full_code, days)
         if kl and len(kl) >= 5:
+            _KLINE_MEM_CACHE[cache_key] = (now, kl)
             return kl
     except Exception:
         pass
 
+    # 四源全部失败：写一份空结果的负缓存（短 TTL），避免短时间内反复重跑
+    # 整条四源级联造成上游雪崩。20 秒后自动重试。
+    _KLINE_MEM_CACHE[cache_key] = (now, [])
     return []
 
 def stock_checkup(code, days=160):
@@ -976,7 +1201,12 @@ def stock_checkup(code, days=160):
     except Exception as e:
         w(f'[行情失败] {e}')
     try:
-        kl = kline_tx(full, days); closes = [r[2] for r in kl]; last = closes[-1]
+        kl = kline_tx(full, days)
+        # 加固: 四源全失败时 kline_tx 返回 []，直接 closes[-1] 会抛 IndexError，
+        # 上层只看到"K线失败: list index out of range"，无法判断是数据源挂了。
+        if not kl:
+            raise ValueError('日K数据获取失败（四源均无结果）')
+        closes = [r[2] for r in kl]; last = closes[-1]
         ma = lambda k: sum(closes[-k:]) / k
         w(f"[趋势] 收{last:.2f} | MA5 {ma(5):.2f} MA10 {ma(10):.2f} MA20 {ma(20):.2f} MA60 {ma(60):.2f}")
         hi = max(r[3] for r in kl[-120:]); lo = min(r[4] for r in kl[-120:])
@@ -1188,177 +1418,9 @@ def screener(mode='all'):
 
 
 # ---------- 9. 缠论简化引擎(日线级别) ----------
-def _ema(vals, n):
-    k = 2.0 / (n + 1)
-    out = [vals[0]]
-    for v in vals[1:]:
-        out.append(out[-1] * (1 - k) + v * k)
-    return out
-
-def chan_analysis_structured(kl, code=''):
-    """缠论日线级别结构化分析: K线包含合并、分型、笔、中枢识别、背驰与买卖点判定"""
-    if not kl or len(kl) < 30:
-        return {
-            'status': 'error',
-            'msg': 'K线数量不足30根，无法构建缠论中枢',
-            'bi_points': [],
-            'zhongshu_list': [],
-            'last_zhongshu': None,
-            'signals': [],
-            'cur_dir': '未知',
-            'trail': '',
-            'summary': 'K线不足30根，结构尚未成型'
-        }
-    closes = [r[2] for r in kl]
-    e12, e26 = _ema(closes, 12), _ema(closes, 26)
-    dif = [a - b for a, b in zip(e12, e26)]
-    dea = _ema(dif, 9)
-    hist = [(a - b) * 2 for a, b in zip(dif, dea)]
-
-    # 1. K线包含合并: [日期, 高, 低, 原始索引]
-    bars = []
-    for i, r in enumerate(kl):
-        h, l = float(r[3]), float(r[4])
-        if bars and ((h >= bars[-1][1] and l <= bars[-1][2]) or (h <= bars[-1][1] and l >= bars[-1][2])):
-            up = len(bars) < 2 or bars[-2][1] <= bars[-1][1]
-            if up:
-                bars[-1][1] = max(bars[-1][1], h); bars[-1][2] = max(bars[-1][2], l)
-            else:
-                bars[-1][1] = min(bars[-1][1], h); bars[-1][2] = min(bars[-1][2], l)
-            bars[-1][0] = r[0]; bars[-1][3] = i
-        else:
-            bars.append([r[0], h, l, i])
-
-    # 2. 分型 -> 笔(交替极值, 间隔>=4根合并K线)
-    fx = []
-    for i in range(1, len(bars) - 1):
-        p0, p1, p2 = bars[i - 1], bars[i], bars[i + 1]
-        if p1[1] > p0[1] and p1[1] > p2[1]:
-            fx.append([i, '顶', p1[1], p1[0], p1[3]])
-        elif p1[2] < p0[2] and p1[2] < p2[2]:
-            fx.append([i, '底', p1[2], p1[0], p1[3]])
-    bi = []
-    for f in fx:
-        if not bi:
-            bi.append(f); continue
-        lf = bi[-1]
-        if f[1] == lf[1]:
-            if (f[1] == '顶' and f[2] > lf[2]) or (f[1] == '底' and f[2] < lf[2]):
-                bi[-1] = f
-        elif f[0] - lf[0] >= 4:
-            bi.append(f)
-
-    if len(bi) < 4:
-        return {
-            'status': 'warning',
-            'msg': '有效笔不足4段，结构未成型',
-            'bi_points': [[b[3], round(b[2], 2), b[1], b[4]] for b in bi],
-            'zhongshu_list': [],
-            'last_zhongshu': None,
-            'signals': [],
-            'cur_dir': '未知',
-            'trail': '',
-            'summary': '有效笔不足4段，中枢未成型'
-        }
-
-    trail = ' -> '.join('%s%.2f(%s)' % (b[1], b[2], str(b[3])[5:]) for b in bi[-5:])
-    cur_dir = '向下' if bi[-1][1] == '顶' else '向上'
-    bi_points = [[b[3], round(b[2], 2), b[1], b[4]] for b in bi]
-
-    # 3. 中枢识别: 三笔重叠区间
-    legs = [(bi[j - 1], bi[j]) for j in range(1, len(bi))]
-    zhongshu_list = []
-    for idx in range(len(legs) - 2):
-        sub = legs[idx:idx + 3]
-        los = [min(a[2], b[2]) for a, b in sub]
-        his = [max(a[2], b[2]) for a, b in sub]
-        z_lo, z_hi = max(los), min(his)
-        if z_lo < z_hi:
-            zhongshu_list.append({
-                'lo': round(z_lo, 2),
-                'hi': round(z_hi, 2),
-                'start_date': sub[0][0][3],
-                'end_date': sub[-1][1][3]
-            })
-
-    l3 = legs[-3:]
-    los = [min(a[2], b[2]) for a, b in l3]
-    his = [max(a[2], b[2]) for a, b in l3]
-    zs_lo, zs_hi = max(los), min(his)
-    last_zs = None
-    pos = '未知'
-    hint = ''
-    signals = []
-
-    if zs_lo < zs_hi:
-        last_close = closes[-1]
-        pos = '内部' if zs_lo <= last_close <= zs_hi else ('上方' if last_close > zs_hi else '下方')
-        last_zs = {
-            'lo': round(zs_lo, 2),
-            'hi': round(zs_hi, 2),
-            'start_date': l3[0][0][3],
-            'end_date': l3[-1][1][3],
-            'pos': pos
-        }
-        if pos == '上方' and cur_dir == '向上':
-            hint = '三买候选: 向上离开中枢后次回抽不跌破中枢上轨'
-            signals.append({
-                'date': bi[-1][3], 'price': round(bi[-1][2], 2),
-                'type': '三买候选', 'desc': '三买潜力', 'color': '#10b981'
-            })
-        elif pos == '下方' and cur_dir == '向下':
-            hint = '三卖形态: 向下击穿中枢后次反弹不进中枢下轨'
-            signals.append({
-                'date': bi[-1][3], 'price': round(bi[-1][2], 2),
-                'type': '三卖警戒', 'desc': '三卖警戒', 'color': '#ef4444'
-            })
-
-    # 4. 背驰判断
-    def leg_area(a, b):
-        lo_i, hi_i = sorted((a[4], b[4]))
-        seg = hist[max(0, lo_i - 3):hi_i + 1]
-        return sum(abs(x) for x in seg)
-
-    sig_str = ''
-    dn = [lg for lg in legs if lg[1][1] == '底']
-    up = [lg for lg in legs if lg[1][1] == '顶']
-    if len(dn) >= 2:
-        (a1, b1), (a2, b2) = dn[-2], dn[-1]
-        if b2[2] < b1[2] and leg_area(a2, b2) < leg_area(a1, b1):
-            sig_str = '底背驰候选(价创新低·动能收缩)'
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '底背驰', 'desc': '底背驰', 'color': '#10b981'
-            })
-    if len(up) >= 2:
-        (a1, b1), (a2, b2) = up[-2], up[-1]
-        if b2[2] > b1[2] and leg_area(a2, b2) < leg_area(a1, b1):
-            sig_str = '顶背驰候选(价创新高·动能收缩)'
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '顶背驰', 'desc': '顶背驰', 'color': '#ef4444'
-            })
-
-    summary_parts = [f"当前处于日线【{cur_dir}的一笔】"]
-    if last_zs:
-        summary_parts.append(f"中枢区间 [{last_zs['lo']} ~ {last_zs['hi']}]，现价位于中枢【{pos}】")
-    if hint:
-        summary_parts.append(hint)
-    if sig_str:
-        summary_parts.append(f"异动信号：{sig_str}")
-
-    return {
-        'status': 'ok',
-        'cur_dir': cur_dir,
-        'trail': trail,
-        'bi_points': bi_points,
-        'bi_list': bi_points,
-        'zhongshu_list': zhongshu_list[-3:],
-        'last_zhongshu': last_zs,
-        'signals': signals,
-        'divergence': sig_str or '无明显背驰',
-        'summary': '；'.join(summary_parts)
-    }
+# ---------- 9. 缠论简化引擎 (迁移至 core.chan，保持外观兼容) ----------
+# 已在文件头部从 core.chan 统一导入:
+# _ema, chan_analysis_structured
 
 def chan_analysis(kl, code=''):
     """终端文字版缠论输出，兼容已有命令行接口"""
@@ -1512,25 +1574,44 @@ def _seat_class(name):
         return '知名游资'
     return '营业部通道'
 
+_LHB_CACHE = {}   # {(code, day, flag): rows} —— 龙虎榜是收盘后静态数据，可长期缓存
+
 def _lhb_detail(code, day, flag):
     import urllib.parse
+    ck = (code, day, flag)
+    if ck in _LHB_CACHE:
+        return _LHB_CACHE[ck]
     pr = {'reportName': 'RPT_BILLBOARD_DAILYDETAILSBUY' if flag == 'B' else 'RPT_BILLBOARD_DAILYDETAILSSELL',
           'columns': 'ALL', 'filter': "(TRADE_DATE='%s')(SECURITY_CODE=\"%s\")" % (day, code),
           'pageNumber': '1', 'pageSize': '500', 'sortTypes': '-1',
           'sortColumns': 'BUY' if flag == 'B' else 'SELL', 'source': 'WEB', 'client': 'WEB'}
-    j = json.loads(http('https://datacenter-web.eastmoney.com/api/data/v1/get?' + urllib.parse.urlencode(pr)))
-    return ((j.get('result') or {}).get('data')) or []
+    # 修复 (2026-10-18): 原用默认 timeout(曾为20s)/retries(3)，叠加 lhb_profile
+    # 的 9天×(买+卖) 最多 18 次串行请求，最坏可卡 2 分钟以上。龙虎榜接口很轻，
+    # 收敛到 5s/1 次重试；结果按 (代码,日期,方向) 缓存，历史数据不会变。
+    j = json.loads(http('https://datacenter-web.eastmoney.com/api/data/v1/get?' + urllib.parse.urlencode(pr),
+                        timeout=5, retries=1))
+    rows = ((j.get('result') or {}).get('data')) or []
+    _LHB_CACHE[ck] = rows
+    return rows
 
 def lhb_profile(code):
+    """个股席位画像：回溯最近 9 天找该股上榜日。
+
+    修复 (2026-10-18): 原实现每天都要先查"买"再查"卖"共 2 次请求，
+    无上榜时 9 天 = 18 次串行网络请求。现在先只查"买"侧探测上榜日，
+    命中后才补查"卖"侧，未上榜的天数请求量减半；配合 _lhb_detail 的缓存，
+    同一只股票重复体检几乎零网络开销。
+    """
     day, rb, rs = None, [], []
     for i in range(9):
         dd = dt.date.today() - dt.timedelta(days=i)
         if dd.weekday() >= 5:
             continue
-        b = _lhb_detail(code, dd.strftime('%Y-%m-%d'), 'B')
-        s_ = _lhb_detail(code, dd.strftime('%Y-%m-%d'), 'S')
+        ds = dd.strftime('%Y-%m-%d')
+        b = _lhb_detail(code, ds, 'B')
+        s_ = _lhb_detail(code, ds, 'S')
         if b or s_:
-            day, rb, rs = dd.strftime('%Y-%m-%d'), b, s_
+            day, rb, rs = ds, b, s_
             break
     if not (rb or rs):
         return '(近两周无龙虎榜记录)'

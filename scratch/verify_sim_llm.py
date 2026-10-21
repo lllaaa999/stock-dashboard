@@ -132,8 +132,8 @@ check("加权合力为数值", isinstance(p.get('net'), (int, float)), p.get('ne
 check("板块优先级/风险点/情景齐备", bool(p.get('theme_priority')) and bool(p.get('risk_points')) and bool(p.get('scenarios')))
 check("token 记账有效", (p.get('usage') or {}).get('total_tokens', 0) > 0, p.get('usage'))
 out = pathlib.Path(p.get('saved_to', ''))
-check("归档文件已落盘且可解析", out.exists() and isinstance(json.loads(out.read_text(encoding='utf-8')), dict), str(out))
-check("归档里保留原始响应(可对账)", 'raw_first_call' in json.loads(out.read_text(encoding='utf-8')))
+check("归档文件已落盘且可解析", out.is_file() and isinstance(json.loads(out.read_text(encoding='utf-8')), dict), str(out))
+check("归档里保留原始响应(可对账)", out.is_file() and 'raw_first_call' in json.loads(out.read_text(encoding='utf-8')))
 check("dry_run 标记为真", p.get('dry_run') is True)
 check("多轮含交叉判断与次日定性", all(r.get('cross') and r.get('next_day') for r in (p.get('rounds') or [])),
       [(r.get('cross'), r.get('next_day')) for r in (p.get('rounds') or [])][:1])

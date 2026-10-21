@@ -17,6 +17,10 @@ CUR_DIR = os.path.dirname(os.path.abspath(__file__))
 if CUR_DIR not in sys.path:
     sys.path.insert(0, CUR_DIR)
 import stock_dashboard as sd
+try:
+    from ths_extractor import THSRealtimeQuote
+except ImportError:
+    THSRealtimeQuote = None
 
 # ==========================================
 # 1. 线程安全内存 TTL 缓存 (In-Memory TTL Cache)
@@ -90,6 +94,7 @@ CACHE = MemoryTTLCache()
 # ==========================================
 SOURCE_HEALTH = {
     "tencent": {"status": "healthy", "latency_ms": 0, "failures": 0, "successes": 0},
+    "ths": {"status": "healthy", "latency_ms": 0, "failures": 0, "successes": 0},
     "sina": {"status": "healthy", "latency_ms": 0, "failures": 0, "successes": 0},
     "eastmoney": {"status": "healthy", "latency_ms": 0, "failures": 0, "successes": 0}
 }
@@ -128,8 +133,14 @@ def _is_trading_today(ttl: float = 300.0):
         if len(parts) > 30 and parts[30]:
             qd = str(parts[30])[:8]
             is_trading = (qd == dt.date.today().strftime('%Y%m%d'))
-    except Exception:
-        pass
+    except Exception as _e:
+        # 修复 (2026-10-18): 原来静默 pass，并把乐观的 is_trading=True 连同
+        # 300s TTL 写进缓存 —— 一次网络抖动会让系统在 5 分钟内都认为"今天是交易日"，
+        # 进而影响盘前/休市判定。现在：异常时只做短缓存(30s)让下次尽快重试，
+        # 并记录原因，避免把"探测失败"固化成"确定是交易日"。
+        _TRADE_DAY_CACHE.update({'t': now - ttl + 30.0, 'is_trading': True, 'quote_date': None})
+        _TRADE_DAY_CACHE['last_error'] = '%s: %s' % (type(_e).__name__, _e)
+        return True, None
     _TRADE_DAY_CACHE.update({'t': now, 'is_trading': is_trading, 'quote_date': qd})
     return is_trading, qd
 
@@ -211,6 +222,42 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                 chg = float(f[31]) if f[31] else 0.0
                 vol = float(f[36]) if f[36] else 0.0
 
+                limit_up = float(f[47]) if len(f) > 47 and f[47] else 0.0
+                limit_down = float(f[48]) if len(f) > 48 and f[48] else 0.0
+                is_zt = (price >= limit_up - 0.01) if limit_up > 0 else False
+                is_dt = (price <= limit_down + 0.01) if limit_down > 0 else False
+
+                # 买卖五档挂单 [[price, vol], ...] (量单位为手)
+                bids = [
+                    [float(f[9] or 0), float(f[10] or 0)],
+                    [float(f[11] or 0), float(f[12] or 0)],
+                    [float(f[13] or 0), float(f[14] or 0)],
+                    [float(f[15] or 0), float(f[16] or 0)],
+                    [float(f[17] or 0), float(f[18] or 0)],
+                ]
+                asks = [
+                    [float(f[19] or 0), float(f[20] or 0)],
+                    [float(f[21] or 0), float(f[22] or 0)],
+                    [float(f[23] or 0), float(f[24] or 0)],
+                    [float(f[25] or 0), float(f[26] or 0)],
+                    [float(f[27] or 0), float(f[28] or 0)],
+                ]
+                tot_bid = sum(b[1] for b in bids)
+                tot_ask = sum(a[1] for a in asks)
+                denom = tot_bid + tot_ask
+                order_ratio = round((tot_bid - tot_ask) / denom * 100, 2) if denom > 0 else 0.0
+
+                bid1_p = bids[0][0]
+                bid1_v = bids[0][1]
+                ask1_p = asks[0][0]
+                ask1_v = asks[0][1]
+
+                # 挂单额计算：1手=100股，元转亿元除以 1e8，即 (p * v * 100) / 1e8 = (p * v) / 1e6
+                bid1_amt_yi = round(bid1_p * bid1_v / 1e6, 2) if bid1_p > 0 else 0.0
+                ask1_amt_yi = round(ask1_p * ask1_v / 1e6, 2) if ask1_p > 0 else 0.0
+                seal_amount_yi = bid1_amt_yi if is_zt else 0.0
+                dt_pressure_yi = ask1_amt_yi if is_dt else 0.0
+
                 result[c] = {
                     'code': c,
                     'name': f[1],
@@ -223,6 +270,24 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                     'chg': chg,
                     'volume': vol,
                     'amount': amts,
+                    'upper_limit': limit_up,
+                    'lower_limit': limit_down,
+                    'is_zt': is_zt,
+                    'is_dt': is_dt,
+                    'bid1': (bid1_p, bid1_v),
+                    'ask1': (ask1_p, ask1_v),
+                    'bids': bids,
+                    'asks': asks,
+                    'total_bid_vol': tot_bid,
+                    'total_ask_vol': tot_ask,
+                    'order_ratio': order_ratio,
+                    'weibi': order_ratio,
+                    'bid1_amount_yi': bid1_amt_yi,
+                    'ask1_amount_yi': ask1_amt_yi,
+                    'seal_amount_yi': seal_amount_yi,
+                    'seal_wan': round(seal_amount_yi * 10000, 1),
+                    'dt_pressure_yi': dt_pressure_yi,
+                    'dt_wan': round(dt_pressure_yi * 10000, 1),
                     'source': 'tencent',
                     'updated_at': f[30] if len(f) > 30 else ''
                 }
@@ -230,10 +295,65 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
             _record_status("tencent", True, time.time() - t0)
             CACHE.set(cache_key, result, ttl=1.5)
             return result
-    except Exception as e:
+    except Exception:
         _record_status("tencent", False, time.time() - t0)
 
-    # --- 策略 B: 新浪财经 (备源 1) ---
+    # --- 策略 B: 同花顺极速行情 (备源 1，官方快照与高精盘口) ---
+    t0 = time.time()
+    if THSRealtimeQuote:
+        try:
+            missing_codes = [c for c in norm_list if c[0] not in result]
+            if missing_codes:
+                from concurrent.futures import ThreadPoolExecutor
+                def _fetch_ths(item):
+                    pure, full, _ = item
+                    q = THSRealtimeQuote.get_realhead(pure)
+                    if q and q.get('price'):
+                        amt_w = q.get('amount_wan', 0.0)
+                        amts = (f"{amt_w/10000:,.1f}亿" if amt_w >= 10000 else (f"{amt_w:,.0f}万" if amt_w > 0 else '-'))
+                        return pure, {
+                            'code': pure,
+                            'name': q.get('name', ''),
+                            'price': q.get('price', 0.0),
+                            'prev_close': q.get('prev_close', 0.0),
+                            'open': q.get('open', 0.0),
+                            'high': q.get('high', 0.0),
+                            'low': q.get('low', 0.0),
+                            'pct': q.get('change_pct', 0.0),
+                            'chg': q.get('change_amt', 0.0),
+                            'volume': q.get('volume_hand', 0.0),
+                            'amount': amts,
+                            'upper_limit': q.get('upper_limit', 0.0),
+                            'lower_limit': q.get('lower_limit', 0.0),
+                            'turnover_rate': q.get('turnover_rate', 0.0),
+                            'is_zt': q.get('is_zt', False),
+                            'is_dt': q.get('is_dt', False),
+                            'bid1': q.get('bid1', (0.0, 0.0)),
+                            'ask1': q.get('ask1', (0.0, 0.0)),
+                            'bids': q.get('bids', []),
+                            'asks': q.get('asks', []),
+                            'order_ratio': q.get('order_ratio', 0.0),
+                            'bid1_amount_yi': q.get('bid1_amount_yi', 0.0),
+                            'ask1_amount_yi': q.get('ask1_amount_yi', 0.0),
+                            'seal_amount_yi': q.get('seal_amount_yi', 0.0),
+                            'dt_pressure_yi': q.get('dt_pressure_yi', 0.0),
+                            'source': 'ths',
+                            'updated_at': q.get('time', '')
+                        }
+                    return pure, None
+
+                with ThreadPoolExecutor(max_workers=min(len(missing_codes), 8)) as executor:
+                    for pure, item in executor.map(_fetch_ths, missing_codes):
+                        if item:
+                            result[pure] = item
+                if len(result) >= len(full_codes) * 0.8:
+                    _record_status("ths", True, time.time() - t0)
+                    CACHE.set(cache_key, result, ttl=1.5)
+                    return result
+        except Exception:
+            _record_status("ths", False, time.time() - t0)
+
+    # --- 策略 C: 新浪财经 (备源 2) ---
     t0 = time.time()
     try:
         url = 'https://hq.sinajs.cn/list=' + ','.join(full_codes)
@@ -277,10 +397,10 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
             _record_status("sina", True, time.time() - t0)
             CACHE.set(cache_key, result, ttl=1.5)
             return result
-    except Exception as e:
+    except Exception:
         _record_status("sina", False, time.time() - t0)
 
-    # --- 策略 C: 东方财富 (备源 2) ---
+    # --- 策略 D: 东方财富 (备源 3) ---
     t0 = time.time()
     try:
         for pure, full, secid in norm_list:
@@ -318,7 +438,7 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
             _record_status("eastmoney", True, time.time() - t0)
             CACHE.set(cache_key, result, ttl=1.5)
             return result
-    except Exception as e:
+    except Exception:
         _record_status("eastmoney", False, time.time() - t0)
 
     return result
@@ -337,7 +457,11 @@ def get_intraday_trends(code: str) -> Dict[str, Any]:
     缓存策略：盘中 15 秒缓存；盘后 15:05 后缓存 3600 秒。
     """
     pure, full, secid = normalize_code(code)
-    cache_key = f"trends:{pure}"
+    # 修复 (2026-10-18): 缓存 key 不含日期，而盘前 is_market_closed() 为 True，
+    # 会把「昨日分时」按 3600 秒缓存下来，一路覆盖到 09:30 开盘之后，
+    # 导致开盘后看到的是昨天的分时曲线。把交易日纳入 key 彻底隔离。
+    _qdate = (_is_trading_today()[1] or dt.date.today().strftime('%Y%m%d'))
+    cache_key = f"trends:{pure}:{_qdate}"
     cached = CACHE.get(cache_key)
     if cached is not None:
         return cached
@@ -370,7 +494,6 @@ def get_intraday_trends(code: str) -> Dict[str, Any]:
                 pcts = []
 
                 prev_cum_vol = 0.0
-                prev_cum_amt = 0.0
 
                 for row_str in raw_minutes:
                     parts = row_str.split()
@@ -384,7 +507,6 @@ def get_intraday_trends(code: str) -> Dict[str, Any]:
                         # 计算分钟级成交量
                         delta_vol = max(0.0, cum_vol - prev_cum_vol)
                         prev_cum_vol = cum_vol
-                        prev_cum_amt = cum_amt
 
                         # 计算均价(黄线) = 累计金额 / (累计手 * 100)
                         avg_p = round(cum_amt / (cum_vol * 100), 2) if cum_vol > 0 else p
@@ -416,7 +538,54 @@ def get_intraday_trends(code: str) -> Dict[str, Any]:
         except Exception:
             continue
 
-    # 2. 备选东财 trends 接口
+    # 2. 备选同花顺分时数据接口 (官方逐分钟 VWAP 均价黄线, 极速免密)
+    t0 = time.time()
+    if THSRealtimeQuote:
+        try:
+            trend = THSRealtimeQuote.get_intraday_trend(pure)
+            if trend and trend.get("points"):
+                pts = trend["points"]
+                pre_close = float(trend.get("prev_close") or 0.0)
+                times = []
+                prices = []
+                avg_prices = []
+                volumes = []
+                pcts = []
+                for p in pts:
+                    raw_t = p["time"]
+                    t_str = f"{raw_t[:2]}:{raw_t[2:]}" if len(raw_t) == 4 else raw_t
+                    curr_p = float(p["price"])
+                    avg_p = float(p.get("vwap", curr_p))
+                    vol = round(float(p.get("volume", 0.0)) / 100.0, 1)
+                    pct = round((curr_p - pre_close) / pre_close * 100, 2) if pre_close > 0 else 0.0
+
+                    times.append(t_str)
+                    prices.append(curr_p)
+                    avg_prices.append(avg_p)
+                    volumes.append(vol)
+                    pcts.append(pct)
+
+                if not pre_close and prices:
+                    pre_close = prices[0]
+
+                res = {
+                    'code': pure,
+                    'pre_close': pre_close,
+                    'times': times,
+                    'prices': prices,
+                    'avg_prices': avg_prices,
+                    'volumes': volumes,
+                    'pcts': pcts,
+                    'source': 'ths',
+                    'count': len(times)
+                }
+                _record_status("ths", True, time.time() - t0)
+                CACHE.set(cache_key, res, ttl=ttl)
+                return res
+        except Exception:
+            _record_status("ths", False, time.time() - t0)
+
+    # 3. 备选东财 trends 接口
     try:
         url = (f"https://push2his.eastmoney.com/api/qt/stock/trends2/get"
                f"?secid={secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54,f55,f56,f57,f58"
@@ -566,14 +735,46 @@ def get_capital_breakdown(code: str) -> Dict[str, Any]:
                     'estimated': True
                 }
     except Exception:
-        pass
+        # 修复 (2026-10-18): 原来静默 pass，兜底结果照样按正常 ttl(600s) 缓存。
+        # 一次瞬时故障会把当日资金数据"锁死成 0"长达 10 分钟，且日志无痕。
+        # 现在：记录失败来源，并对兜底结果用短 TTL，让下一次请求有机会拿到真数据。
+        fallback_res['today']['source'] = fallback_res['today'].get('source') or 'fallback_zero'
+        fallback_res['today']['stale'] = True
+        CACHE.set(cache_key, fallback_res, ttl=min(ttl, 30.0))
+        return fallback_res
 
-    # 写入缓存，防止后续重复查询触发网络等待
+    # 拿到真实数据才用正常 TTL
     CACHE.set(cache_key, fallback_res, ttl=ttl)
     return fallback_res
 
 # ==========================================
-# 6. 带缓存的多源日 K 线 (Multi-Source K-line)
+# 6. 个股官方高精盘口快照 (THS Realhead)
+# ==========================================
+def get_stock_quote_detail(code: str) -> Optional[Dict[str, Any]]:
+    """
+    获取同花顺官方高精盘口快照：包含买一卖一档、涨跌停价、全天 VWAP 加权均价、换手率。
+    带有 1.5 秒短缓存。
+    """
+    pure, _, _ = normalize_code(code)
+    cache_key = f"quote_detail:{pure}"
+    cached = CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    if THSRealtimeQuote:
+        t0 = time.time()
+        try:
+            detail = THSRealtimeQuote.get_realhead(pure)
+            if detail:
+                _record_status("ths", True, time.time() - t0)
+                CACHE.set(cache_key, detail, ttl=1.5)
+                return detail
+        except Exception:
+            _record_status("ths", False, time.time() - t0)
+    return None
+
+# ==========================================
+# 7. 带缓存的多源日 K 线 (Multi-Source K-line)
 # ==========================================
 def get_kline_cached(full_code: str, days: int = 160) -> List[List[Any]]:
     cache_key = f"kline:{full_code}:{days}"
@@ -588,7 +789,7 @@ def get_kline_cached(full_code: str, days: int = 160) -> List[List[Any]]:
     return kl
 
 # ==========================================
-# 7. 数据源状态与健康度概览
+# 8. 数据源状态与健康度概览
 # ==========================================
 def get_system_data_status() -> Dict[str, Any]:
     return {

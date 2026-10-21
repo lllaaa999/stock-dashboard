@@ -189,6 +189,31 @@ def fetch_sina(win_start, max_pages=40):
     return out
 
 
+def fetch_ths_fast():
+    """同花顺 AI 实时快讯流 (免密直连)"""
+    try:
+        from ths_extractor import THSNewsFeed
+        rows = THSNewsFeed.fetch_news(limit=60, category='flash')
+        out = []
+        for r in rows:
+            t_sec = r.get('ctime', 0)
+            if t_sec:
+                t_str = dt.datetime.fromtimestamp(t_sec).strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                t_str = _now_str()
+            out.append({
+                'time': t_str,
+                'title': r.get('title') or '',
+                'summary': r.get('summary') or '',
+                'url': r.get('url') or '',
+                'source': '同花顺快讯',
+            })
+        return out
+    except Exception as e:
+        w(f'  [同花顺快讯] 失败: {e}')
+        return []
+
+
 def _norm_title(t):
     t = re.sub(r'^【|】$', '', (t or '').strip())
     return re.sub(r'[^\w\u4e00-\u9fa5]', '', t).lower()
@@ -300,6 +325,16 @@ def load_sector_vocab(date_str=None):
                     pool_names.add(str(x['hybk']))
         except Exception as e:
             w(f'  [板块词表] {kind} 池行业读取失败: {e}')
+    # 融合同花顺官方题材板块词表 (1571+ 题材库)
+    ths_path = DATA_DIR / 'ths_concepts.json'
+    if ths_path.exists():
+        try:
+            j_ths = json.loads(ths_path.read_text(encoding='utf-8'))
+            for c_name in (j_ths.get('concepts') or {}).keys():
+                if len(c_name) >= 2 and not c_name.endswith('板块') and not any(c_name.endswith(x) for x in ['[HK]', '[US]']):
+                    vocab.add(c_name)
+        except Exception as e:
+            w(f'  [板块词表] 同花顺题材库读取失败: {e}')
     # 东财 hybk 会截断成 4 字(如 '房地产服'), 若已有更长名包含它就让位给长名, 避免榜上出现半截词
     vocab |= {n for n in pool_names
               if not any(o != n and len(o) > len(n) and o.startswith(n) for o in (vocab | pool_names))}
@@ -521,7 +556,12 @@ def run(date_str=None, top=15, no_fetch=False, win_start=None, quiet=False):
         w('[采集] --no-fetch：直接用已归档消息重新整理')
     else:
         w(f'[采集] 窗口 {win_start} → {now_str}')
-        parts = [('东财7x24', fetch_em_724(win_start)), ('东财快讯', fetch_em_fast()), ('新浪7x24', fetch_sina(win_start))]
+        parts = [
+            ('东财7x24', fetch_em_724(win_start)),
+            ('东财快讯', fetch_em_fast()),
+            ('新浪7x24', fetch_sina(win_start)),
+            ('同花顺快讯', fetch_ths_fast()),
+        ]
         for name, rows in parts:
             rows = [r for r in rows if win_start <= r['time'] <= now_str and r.get('title')]
             src_counts[name] = len(rows)

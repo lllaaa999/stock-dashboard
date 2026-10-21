@@ -65,10 +65,18 @@ def next_trade_date(date_str):
                 return kd
     except Exception:
         pass
-    # 兜底：若日K未返回，遍历情绪存档，但必须有真实指数涨跌幅校验
-    for r in _sent_records():
+    # 兜底：若日K不可用（如离线运行或网络波动），遍历情绪存档：
+    # 只要 d > ymd 且该记录与前一条记录的 (zt, zb, dt, max_lb) 不完全雷同，就直接返回 d 作为次一有效交易日
+    recs = _sent_records()
+    for i, r in enumerate(recs):
         d = str(r.get('date', ''))
-        if d > ymd and _index_pct(d) is not None:
+        if d > ymd:
+            if i > 0:
+                prev = recs[i - 1]
+                curr_sig = (r.get('zt'), r.get('zb'), r.get('dt'), r.get('max_lb'))
+                prev_sig = (prev.get('zt'), prev.get('zb'), prev.get('dt'), prev.get('max_lb'))
+                if curr_sig == prev_sig and any(x is not None for x in curr_sig):
+                    continue
             return d
     return None
 

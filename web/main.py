@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """股票看盘 · 七层雷达 可视化仪表盘 (FastAPI)"""
 import sys, os, json, datetime, time, re
+dt = datetime
 from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
@@ -9,6 +10,8 @@ import strategies_lib as strat_lib
 import auction_radar as ar
 import data_feed as df_feed
 import strategic_decision as strat_dec
+import backtest_engine as bt_engine
+import paper_trading as paper
 
 def _normalize_stock_code(raw_code: str) -> str:
     """自动将 sh600519 / 600519.SH / sz000001 / ' 600519 ' 归一化为纯6位数字代码"""
@@ -46,6 +49,9 @@ _market_cache = {
     'last_refresh_s': None,
 }
 
+# 交易日历缓存 (上证指数日K日期集合)，避免每个请求都打网络
+_TRADING_DAYS_CACHE = {'dates': None, 'ts': 0.0}
+
 
 def _get_market_ttl() -> float:
     """动态 TTL：交易时段 6 秒, 其余时段 60 秒。
@@ -54,6 +60,29 @@ def _get_market_ttl() -> float:
     都算作盘中, 长假里页面开着会 6 秒一次白刷上游。
     """
     return 60.0 if df_feed.is_market_closed() else 6.0
+
+
+def _is_real_trading_day(ymd):
+    """判断 ymd 是否为真实交易日（以上证指数日K为准）
+
+    上游多个行情接口对非交易日不返回空，而是回吐最近交易日快照，
+    因此"有没有数据"不能作为交易日判据。这里统一走日K日历，
+    并带进程内缓存避免每次请求都打网络。取不到日历则保守返回 False。
+    """
+    now_ts = time.time()
+    if _TRADING_DAYS_CACHE['dates'] is not None and now_ts - _TRADING_DAYS_CACHE['ts'] < 600:
+        return ymd in _TRADING_DAYS_CACHE['dates']
+    try:
+        kl = sd.kline_tx('sh000001', 120)
+        dates = {str(r[0])[:10].replace('-', '') for r in (kl or [])}
+        dates = {d for d in dates if len(d) == 8 and d.isdigit()}
+        if dates:
+            _TRADING_DAYS_CACHE['dates'] = dates
+            _TRADING_DAYS_CACHE['ts'] = now_ts
+            return ymd in dates
+    except Exception:
+        pass
+    return False
 
 
 def read_hist():
@@ -77,27 +106,47 @@ def read_hist():
                 pass
 
     # 若今日情绪已产生且尚未落盘，动态拼入今日点使折线实时连贯
+    # 修复 (2026-10-18): 原先无条件把"今天"拼进曲线。但休市日（周末/节假日）
+    # 上游涨停池接口会回吐最近一个交易日的快照，于是曲线里会凭空多出一个
+    # 周末点，且数值与前一交易日完全重复，同时把真实交易日挤成"缺失"。
+    # 情绪曲线只允许出现真实交易日：先校验今天是否交易日，再用日K核对
+    # 该点数值是否与前一个交易日完全相同（回吐特征），任一不满足则不拼入。
     now_ymd = datetime.date.today().strftime('%Y%m%d')
     if _market_cache.get('data') and _market_cache['data'].get('emotion'):
         emo = _market_cache['data']['emotion']
         if emo.get('score') is not None and now_ymd not in records_by_date:
-            records_by_date[now_ymd] = {
-                'date': now_ymd,
-                'score': emo.get('score'),
-                'band': emo.get('band'),
-                'zt': emo.get('zt_count') or emo.get('zt'),
-                'zb': emo.get('zb_count') or emo.get('zb'),
-                'dt': emo.get('dt_count') or emo.get('dt'),
-                'max_lb': emo.get('max_lb'),
-                'stage': emo.get('stage')
-            }
+            if _is_real_trading_day(now_ymd):
+                _new = {
+                    'date': now_ymd,
+                    'score': emo.get('score'),
+                    'band': emo.get('band'),
+                    'zt': emo.get('zt_count') or emo.get('zt'),
+                    'zb': emo.get('zb_count') or emo.get('zb'),
+                    'dt': emo.get('dt_count') or emo.get('dt'),
+                    'max_lb': emo.get('max_lb'),
+                    'stage': emo.get('stage')
+                }
+                # 回吐检测：与最近一个既有交易日四项全同 -> 视为同一份数据，不重复画点
+                _prev_keys = [k for k in records_by_date if k < now_ymd]
+                _echo = False
+                if _prev_keys:
+                    _p = records_by_date[max(_prev_keys)]
+                    try:
+                        _echo = (int(_p.get('zt') or -1) == int(_new['zt'] or -2)
+                                 and int(_p.get('zb') or -1) == int(_new['zb'] or -2)
+                                 and int(_p.get('dt') or -1) == int(_new['dt'] or -2)
+                                 and int(_p.get('max_lb') or -1) == int(_new['max_lb'] or -2))
+                    except Exception:
+                        _echo = False
+                if not _echo:
+                    records_by_date[now_ymd] = _new
 
     return sorted(records_by_date.values(), key=lambda r: str(r.get('date', '')))
 
 
 @app.get("/")
 def index(request: Request):
-    return templates.TemplateResponse(request=request, name="index.html")
+    return templates.TemplateResponse(request, "index.html")
 
 
 @app.get("/api/market")
@@ -244,6 +293,28 @@ def api_auction(refresh: bool = False):
         _auction_cache['data'] = res
         _auction_cache['timestamp'] = now_ts
         return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse(dict(status="error", error=str(e)), status_code=500)
+
+
+@app.get("/api/auction/audit")
+def api_auction_audit(date: str = None):
+    """收盘竞价自动对账结果 (封板率、溢价与打脸核验)"""
+    try:
+        import auction_audit as aa
+        target_d = date or dt.date.today().strftime('%Y%m%d')
+        res = aa.audit_auction_for_day(target_d)
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse(dict(status="error", error=str(e)), status_code=500)
+
+
+@app.get("/api/auction/audit/ledger")
+def api_auction_audit_ledger(limit: int = 30):
+    """竞价对账累计总账本与胜率曲线"""
+    try:
+        import auction_audit as aa
+        return JSONResponse(aa.get_auction_audit_ledger(limit=limit))
     except Exception as e:
         return JSONResponse(dict(status="error", error=str(e)), status_code=500)
 
@@ -433,7 +504,10 @@ def api_watchlist(codes: str = ""):
                 chg = float(parts[31]) if parts[31] else 0.0
                 open_pct = round((open_p - prev_c) / prev_c * 100, 2)
                 high_pct = round((high_p - prev_c) / prev_c * 100, 2)
-                drop_from_high = round(pct - high_pct, 2)
+                # 日内回撤率：必须以"当日最高价"为基数 (curr-high)/high。
+                # 旧写法 pct - high_pct 是两个不同基数的百分比相减，数值错位，
+                # 在涨停股上偏差被放大以致误触 -4% 大面阈值。
+                drop_from_high = round((curr_p - high_p) / high_p * 100, 2) if high_p > 0 else 0.0
                 vol_ratio = float(parts[49]) if len(parts) > 49 and parts[49] else 1.0
                 turnover = float(parts[38]) if parts[38] else 0.0
                 amount = float(parts[37]) if parts[37] else 0.0
@@ -463,7 +537,7 @@ def api_watchlist(codes: str = ""):
                     'time': parts[30] if len(parts) > 30 else '',
                 })
         return JSONResponse(items)
-    except Exception as e:
+    except Exception:
         return JSONResponse([], status_code=500)
 
 
@@ -483,27 +557,159 @@ def api_data_status():
     return JSONResponse(st)
 
 
+@app.get("/api/backtest/presets")
+def api_backtest_presets():
+    """获取所有预置回测策略元数据"""
+    return JSONResponse(bt_engine.get_available_strategies())
+
+
+@app.get("/api/backtest/run")
+def api_backtest_run(
+    strategy: str = "cycle",
+    code: str = "sh000001",
+    days: int = 120,
+    capital: float = 100000.0,
+):
+    """运行量化回测并返回对账报告与净值曲线"""
+    raw_code = str(code).strip()
+    if raw_code.lower().startswith(('sh', 'sz')):
+        c_target = raw_code
+    else:
+        norm = _normalize_stock_code(raw_code)
+        c_target = norm if norm else ("sh000001" if strategy == "cycle" else "002696")
+    res = bt_engine.run_strategy(strategy=strategy, code=c_target, days=days, initial_capital=capital)
+    return JSONResponse(res)
+
+
+# ============================================================
+# 模拟自动交易 (Paper Trading) —— 不接券商，不下真单
+# ============================================================
+
+@app.get("/api/paper/replay")
+def api_paper_replay(
+    code: str = "000001",
+    strategy: str = "chan",
+    days: int = 250,
+    capital: float = 100000.0,
+):
+    """历史回放模拟自动交易：逐根K线推进，次日开盘成交（无未来函数）"""
+    c = _normalize_stock_code(code) or code
+    res = paper.run_replay(c, strategy=strategy, days=days, initial_cash=capital)
+    return JSONResponse(res)
+
+
+@app.get("/api/paper/tick")
+def api_paper_tick(strategy: str = "chan", codes: str = "", capital: float = None):
+    """执行一次实时纸上交易巡检（不真下单），结果持久化到 data/stock_data/"""
+    code_list = [c.strip() for c in codes.split(',') if c.strip()] or None
+    if code_list:
+        code_list = [_normalize_stock_code(c) or c for c in code_list]
+    res = paper.run_paper_tick(strategy=strategy, codes=code_list, initial_cash=capital)
+    return JSONResponse(res)
+
+
+@app.get("/api/paper/report")
+def api_paper_report():
+    """纸上交易累计报告（成交笔数/胜率/费用/回撤）"""
+    return JSONResponse(paper.paper_report())
+
+
+@app.get("/api/paper/reset")
+def api_paper_reset():
+    """清空纸上交易状态（重新开始模拟）"""
+    import os as _os
+    killed = []
+    for f in (paper.PAPER_STATE, paper.PAPER_TRADES, paper.PAPER_EQUITY):
+        try:
+            if _os.path.exists(f):
+                _os.remove(f)
+                killed.append(_os.path.basename(f))
+        except Exception:
+            pass
+    return JSONResponse({"status": "ok", "cleared": killed})
+
+
 @app.get("/api/stock/{code}")
-def api_stock(code: str):
+def api_stock(code: str, refresh: bool = False):
     code = _normalize_stock_code(code)
+    cache_key = f"api_stock:{code}"
+    if not refresh:
+        cached = df_feed.CACHE.get(cache_key)
+        if cached is not None:
+            return JSONResponse(cached)
+
     full = ('sh' + code) if code.startswith(('6', '5', '9')) else ('sz' + code)
-    
-    # 1. 实时行情 (腾讯 -> 新浪 -> 东财 自动降级与 1.5s 内存缓存)
-    q = None
-    try:
-        quotes = df_feed.get_realtime_quotes([code])
-        q = quotes.get(code)
-    except Exception:
-        pass
 
-    # 2. 日 K 线 (带 60s 盘中缓存 / 盘后永久缓存)
-    kl = None
-    try:
-        kl = df_feed.get_kline_cached(full, 160)
-    except Exception:
-        pass
+    def fetch_quote():
+        try:
+            quotes = df_feed.get_realtime_quotes([code])
+            return quotes.get(code)
+        except Exception:
+            return None
 
-    # 3. 缠论中枢与一二三买卖点诊断
+    def fetch_kline():
+        try:
+            return df_feed.get_kline_cached(full, 160)
+        except Exception:
+            return None
+
+    def fetch_trends():
+        try:
+            return df_feed.get_intraday_trends(code)
+        except Exception:
+            return None
+
+    def fetch_capital():
+        try:
+            return df_feed.get_capital_breakdown(code)
+        except Exception:
+            return {}
+
+    def fetch_announcements():
+        ann_cache_key = f"ann:{code}"
+        cached = df_feed.CACHE.get(ann_cache_key)
+        if cached is not None:
+            return cached
+        ann_list = []
+        try:
+            u = (f'https://np-anotice-stock.eastmoney.com/api/security/ann'
+                 f'?sr=-1&page_size=8&page_index=1&ann_type=A&stock_list={code}')
+            em_hdrs = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'}
+            data = json.loads(sd.http(u, headers=em_hdrs, timeout=2.5, retries=1))
+            for a in (data.get('data') or {}).get('list', []):
+                ann_list.append(dict(date=a.get('notice_date', '')[:10], title=a.get('title', '')))
+            df_feed.CACHE.set(ann_cache_key, ann_list, ttl=300.0)
+        except Exception:
+            pass
+        return ann_list
+
+    tasks = {
+        'quote': fetch_quote,
+        'kline': fetch_kline,
+        'trends': fetch_trends,
+        'capital': fetch_capital,
+        'announcements': fetch_announcements,
+    }
+
+    results = {}
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = {executor.submit(fn): key for key, fn in tasks.items()}
+        for fut in futures:
+            key = futures[fut]
+            try:
+                results[key] = fut.result()
+            except Exception:
+                results[key] = None
+
+    q = results.get('quote')
+    kl = results.get('kline')
+    trends = results.get('trends')
+    cap_info = results.get('capital') or {}
+    fund = cap_info.get('history') or []
+    today_flow = cap_info.get('today') or {}
+    ann = results.get('announcements') or []
+
+    # 缠论中枢与一二三买卖点诊断（纯算力快速计算）
     chan = None
     if kl and len(kl) >= 30:
         try:
@@ -511,35 +717,7 @@ def api_stock(code: str):
         except Exception:
             chan = None
 
-    # 4. 当日分时走势 (黄白线、分时成交量、分钟涨跌幅)
-    trends = None
-    try:
-        trends = df_feed.get_intraday_trends(code)
-    except Exception:
-        trends = None
-
-    # 5. 资金分布 (主力/超大单/大单/中单/小单单笔分布及近5日流向, 零 akshare 阻塞)
-    cap_info = df_feed.get_capital_breakdown(code)
-    fund = cap_info.get('history') or []
-    today_flow = cap_info.get('today') or {}
-
-    # 6. 个股公告 (300秒内存缓存, 2秒短超时防阻塞)
-    ann_cache_key = f"ann:{code}"
-    ann = df_feed.CACHE.get(ann_cache_key)
-    if ann is None:
-        ann = []
-        try:
-            u = (f'https://np-anotice-stock.eastmoney.com/api/security/ann'
-                 f'?sr=-1&page_size=8&page_index=1&ann_type=A&stock_list={code}')
-            em_hdrs = {'User-Agent': 'Mozilla/5.0', 'Referer': 'https://data.eastmoney.com/'}
-            data = json.loads(sd.http(u, headers=em_hdrs, timeout=2.5, retries=1))
-            for a in (data.get('data') or {}).get('list', []):
-                ann.append(dict(date=a.get('notice_date', '')[:10], title=a.get('title', '')))
-            df_feed.CACHE.set(ann_cache_key, ann, ttl=300.0)
-        except Exception:
-            pass
-
-    return JSONResponse(dict(
+    resp_data = dict(
         code=code,
         quote=q,
         kline=kl,
@@ -549,9 +727,12 @@ def api_stock(code: str):
         today_flow=today_flow,
         announcements=ann,
         data_source=q.get('source', 'tencent') if q else 'unknown'
-    ))
+    )
+    ttl = 60.0 if df_feed.is_market_closed() else 3.0
+    df_feed.CACHE.set(cache_key, resp_data, ttl=ttl)
+    return JSONResponse(resp_data)
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="127.0.0.1", port=8001, reload=False)
+    uvicorn.run(app, host="127.0.0.1", port=8001)

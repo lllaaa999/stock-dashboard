@@ -11,7 +11,6 @@
 import sys
 import os
 import json
-import time
 import datetime as dt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -151,21 +150,28 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
 
     # 3. 提取基础事实
     score = float(emo.get('score', 50.0))
-    band = emo.get('band', '中性')
     zt_cnt = int(emo.get('zt') if emo.get('zt') is not None else emo.get('zt_count', 0))
     zb_cnt = int(emo.get('zb') if emo.get('zb') is not None else emo.get('zb_count', 0))
     dt_cnt = int(emo.get('dt') if emo.get('dt') is not None else emo.get('dt_count', 0))
     max_lb = int(emo.get('max_lb', 0))
     effect = emo.get('effect') or {}
     premium = float(effect.get('premium') if effect.get('premium') is not None else emo.get('premium_next_open', 0.0))
-    rate_1to2 = float(effect.get('rate_1to2') if effect.get('rate_1to2') is not None else emo.get('rate_1to2', 0.0))
+    # 修复 (2026-10-18): rate_1to2 在休市/非相邻交易日为 None（晋级率无法计算）。
+    # 旧写法把 None 兜成 0.0，于是"晋级率仅 0.0%"这种结论会被当成真实事实输出，
+    # 与"超强接力"标签并列、自相矛盾。此处保留 None 语义：
+    #   rate_known=False 时不参与阈值判定、文案改用"休市不适用"。
+    _rate_raw = effect.get('rate_1to2')
+    if _rate_raw is None:
+        _rate_raw = emo.get('rate_1to2')
+    rate_known = _rate_raw is not None
+    rate_1to2 = float(_rate_raw) if rate_known else 0.0
+    rate_txt = (f'{rate_1to2:.1f}%' if rate_known else '休市不适用')
     diverge_note = emo.get('diverge')
-    ladder = emo.get('ladder_grouped') or {}
     themes = emo.get('themes_list') or emo.get('themes') or []
 
     # 提取上证与创业板涨跌幅
     sh_pct = 0.0
-    cy_pct = 0.0
+    _cy_pct = 0.0
     for q in idxs:
         c = str(q.get('code', ''))
         n = str(q.get('name', ''))
@@ -173,7 +179,8 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
         if '000001' in c or '上证' in n:
             sh_pct = p
         elif '399006' in c or '创业板' in n:
-            cy_pct = p
+            # 创业板指涨跌幅：当前版本未参与判定（保留供后续"沪强深弱"分化分析）
+            _cy_pct = p
 
     total_z = zt_cnt + zb_cnt
     zb_rate = round((zb_cnt / max(1, total_z)) * 100, 1)
@@ -246,11 +253,14 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     # - rate_1to2 < 12.0%: 初始经验设定（本库带effect样本仅2条，待样本累计）；首板接力过低提示微观梯队断层
     # - premium < 0.3%: 初始经验盈亏平衡线（打板扣除佣金税费生命线，待样本累计）；低于0.3%提示接力资金陷入负收益
     is_divergence = bool(diverge_note)
-    if not is_divergence and sh_pct >= 0 and (rate_1to2 < 12.0 or premium < 0.3):
+    # rate 未知(休市)时不拿 0.0 冒充真实晋级率去触发背离
+    if not is_divergence and sh_pct >= 0 and ((rate_known and rate_1to2 < 12.0) or premium < 0.3):
         is_divergence = True
 
     if is_divergence:
-        diverge_detail = diverge_note or f"上证微幅翻红 ({sh_pct:+.2f}%)，但接力溢价仅 {premium:+.2f}%，1进2晋级率仅 {rate_1to2:.1f}%"
+        diverge_detail = diverge_note or (f"上证微幅翻红 ({sh_pct:+.2f}%)，但接力溢价仅 {premium:+.2f}%，1进2晋级率仅 {rate_txt}"
+                                           if rate_known else
+                                           f"上证微幅翻红 ({sh_pct:+.2f}%)，但接力溢价仅 {premium:+.2f}%，1进2晋级率{rate_txt}")
         evidence.append({
             "dimension": "指数 vs 微观接力",
             "fact": diverge_detail,
@@ -260,8 +270,8 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     else:
         evidence.append({
             "dimension": "大盘接力意愿",
-            "fact": f"昨日涨停今日溢价 {premium:+.2f}%，1进2晋级率 {rate_1to2:.1f}%",
-            "eval": "中性反映" if rate_1to2 >= 15 else "接力低迷",
+            "fact": f"昨日涨停今日溢价 {premium:+.2f}%，1进2晋级率 {rate_txt}",
+            "eval": ("中性反映" if rate_1to2 >= 15 else "接力低迷") if rate_known else "仅溢价口径",
             "comment": "客观数据真实反映短线资金意愿，无虚假放大"
         })
 
@@ -274,10 +284,10 @@ def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, ac
     })
 
     # 证据3: 最高连板与梯队断层
-    if max_lb >= 5 and rate_1to2 < 12.0:
+    if max_lb >= 5 and rate_known and rate_1to2 < 12.0:
         evidence.append({
             "dimension": "梯队结构诊断",
-            "fact": f"空间板打到 {max_lb} 板，但首板进二板晋级率仅 {rate_1to2:.1f}%",
+            "fact": f"空间板打到 {max_lb} 板，但首板进二板晋级率仅 {rate_txt}",
             "eval": "⚠️ 梯队断层",
             "comment": "极度分化结构：‘独木难支’，龙头抱团掩护全线退潮，非核心跟风盘九死一生"
         })
@@ -595,7 +605,7 @@ def format_cli_output(d):
     lines.append(f"  • 市场总矛盾: {c['nature']}")
     lines.append(f"  • 矛盾主要方面 (主战场): 【{c['primary_theme']}】 (持续性: {'高' if c['sustainable'] else '需观察/非持续主线'})")
     lines.append(f"    {c['primary_aspect']}")
-    lines.append(f"  • 警惕次要矛盾 (轮动杂毛):")
+    lines.append("  • 警惕次要矛盾 (轮动杂毛):")
     lines.append(f"    {c['secondary_warning']}")
     lines.append("-" * 68)
     lines.append("【歼灭战三大军令 · 量化硬开关】")

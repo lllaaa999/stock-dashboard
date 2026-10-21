@@ -118,6 +118,42 @@ def load_llm_config(quiet=False):
     return cfg
 
 
+def _build_ledger_reflection(max_records=5):
+    """读取历史打脸账本 ledger.jsonl，生成自省纠偏段落"""
+    ledger_path = LLM_DIR / 'ledger.jsonl'
+    if not ledger_path.exists():
+        return ""
+    try:
+        lines = [json.loads(l) for l in ledger_path.read_text(encoding='utf-8').splitlines() if l.strip()]
+        if not lines:
+            return ""
+        recent = lines[-max_records:]
+        total = len(recent)
+        dir_hits = sum(1 for r in recent if (r.get('direction') or {}).get('hit'))
+        sec_hits = [float((r.get('sectors') or {}).get('hit_rate_pct', 0)) for r in recent if (r.get('sectors') or {}).get('hit_rate_pct') is not None]
+        avg_sec_hit = (sum(sec_hits) / len(sec_hits)) if sec_hits else 0.0
+
+        last_r = recent[-1]
+        last_d = last_r.get('pred_date', '')
+        last_dir = last_r.get('direction', {})
+        last_sec = last_r.get('sectors', {})
+        
+        refl_lines = [
+            f"【历史对账自省纠偏（基于打脸账本近期 {total} 期对账）】",
+            f"  - 战绩总览: 方向胜率 {dir_hits}/{total} ({dir_hits/total*100:.0f}%) | 推荐板块均值命中率 {avg_sec_hit:.1f}%",
+        ]
+        if not last_dir.get('hit'):
+            refl_lines.append(f"  - 上期({last_d})打脸警报: {last_dir.get('reason', '方向误判')}。反思：切忌单凭个别消息线性推断多空，务必结合大盘微结构（炸板率/高位连板梯队）进行阻尼约束！")
+        else:
+            refl_lines.append(f"  - 上期({last_d})方向命中: {last_dir.get('pred')} 判定准确。继续保持对资金真实博弈面的敬畏。")
+        if last_sec and not last_sec.get('hit'):
+            refl_lines.append(f"  - 上期板块失靶反思: 预测 {last_sec.get('pred')} 未能形成合力（实际领涨: {last_sec.get('realized_top10', [])[:4]}）。提示：严禁盲目押注冷门赛道，优先聚焦资金主流认同的题材板块！")
+        return '\n'.join(refl_lines)
+    except Exception as e:
+        w(f'[种子] 打脸账本自省读取异常: {e}')
+        return ""
+
+
 # ==================== 种子 ====================
 def build_seed(date_str=None, top_events=20):
     """把交付①的事件表 + 市场微结构压成一段紧凑提示（≈2k 字符）"""
@@ -191,9 +227,15 @@ def build_seed(date_str=None, top_events=20):
                                                 'max_lb', 'diverge', 'effect') if k in la}
     except Exception as e:
         w(f'[种子] 情绪存档读取失败: {e}')
-    text = '\n'.join([
+    
+    reflection_text = _build_ledger_reflection()
+    seed_blocks = [
         f"【日期】{date_str}（推演目标：{next_ymd or '次一交易日'} | 跨度：{span_desc}）",
         f"【市场微结构】{json.dumps(facts, ensure_ascii=False)}" if facts else '【市场微结构】缺失',
+    ]
+    if reflection_text:
+        seed_blocks.append(reflection_text)
+    seed_blocks.extend([
         f"【两项工程纪律准则】",
         f"  1. 跨期衰减：推演目标相隔 {gap_days} 天（衰减系数 {time_decay}）。长假/跨周末期间海外波动与避险心理会大幅冲淡节前题材热度，严禁将节前脉冲题材线性外推到节后！",
         f"  2. 消化与兑现过滤：标有【日内已反映】的消息，在今日盘面多已被资金交易反映甚至尾盘冲高回落；次日资金常借利好减仓出逃（Sell the news）。唯有【盘后增量】或超预期未定价的重大政策才具备次日开盘增量推力！",
@@ -202,6 +244,7 @@ def build_seed(date_str=None, top_events=20):
         f"【消息面板块榜·正面】{pos or '-'}",
         f"【消息面板块榜·负面】{neg or '-'}",
     ])
+    text = '\n'.join(seed_blocks)
     seed = {
         'date': date_str,
         'next_trade_date': next_ymd,
@@ -210,6 +253,7 @@ def build_seed(date_str=None, top_events=20):
         'facts': facts,
         'events_used': len(lines),
         'deduped_total': p.get('deduped_total'),
+        'reflection': bool(reflection_text),
         'text': text
     }
     seed['sha'] = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
