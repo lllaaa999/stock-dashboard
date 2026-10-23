@@ -7,7 +7,12 @@ __pycache__/
 env/
 build/
 develop-eggs/
-dist/
+/dist/
+frontend/dist/
+node_modules/
+**/node_modules/
+!web/dist/
+!web/dist/**
 downloads/
 eggs/
 .eggs/
@@ -81,3 +86,6 @@ scratch/run_reflect.ps1
 scratch/test_ths_socket.py
 scratch/test_ths_datafeed.py
 scratch/decrypted_strings.txt
+
+# UI 备份快照(大文件, 非源码)
+scratch/index_backup*.html

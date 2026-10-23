@@ -15,9 +15,15 @@
 │   └── emotion.py              # 市场短线情绪指数数学模型（v1/v2 去饱和加权、周期映射）
 │
 ├── scripts/                    # [业务逻辑与数据接入层] 负责实时行情抓取、策略执行与命令行交互
+│   ├── data_layer.py           # 统一数据层（TDX 二进制协议 40ms 极速 + Baostock 前复权 + 腾讯/东财 HTTP 容灾）
+│   ├── abnormal_volatility.py  # 【防守端】A股异常波动监管红线与卡异动最高安全价反推引擎
+│   ├── resonance_engine.py     # 【进攻端】点面共振五态标签引擎 (共振/孤立/逆势/双子星/卡位)
 │   ├── data_feed.py            # 四源容灾矩阵（腾讯 -> 同花顺 -> 新浪 -> 东财）与内存 TTL 缓存
 │   ├── ths_extractor.py        # 同花顺免密接口解析器（带 VWAP 分时黄线与题材库）
 │   ├── stock_dashboard.py      # 大盘主控与命令行 CLI 仪表盘（外观 Facade 模式向下兼容）
+│   ├── paper_cli.py            # 纸上模拟交易 CLI 主程序
+│   ├── paper_trading.py        # 纸上模拟交易撮合与风控引擎
+│   ├── auction_audit.py        # 早盘竞价雷达收盘自动对账与打脸账本引擎
 │   ├── strategic_decision.py   # 战略战术决策中枢（周期判定、量化开火门禁、持仓风控）
 │   ├── auction_radar.py        # 9:25 集合竞价雷达、昨日溢价与亏钱效应大面榜
 │   ├── strategies_lib.py       # 12 种短线交易策略选股库
@@ -28,12 +34,25 @@
 │
 ├── web/                        # [展现与交互层]
 │   ├── main.py                 # FastAPI Web 服务器（RESTful 接口、动态时段 TTL 控制）
+│   ├── static/
+│   │   └── js/
+│   │       └── dashboard.js    # 前端解耦核心交互逻辑 (ECharts渲染/轮询/抽屉/对账账本)
 │   └── templates/
 │       └── index.html          # 现代化前端界面（开盘啦风格连板天梯树 + TradingView 质感）
 │
 ├── tests/                      # [自动化测试套件]
+│   ├── test_abnormal_volatility.py # 异常波动状态机重置与10日全滑动窗口卡价单测 (4大严苛用例)
+│   ├── test_quant_validation.py   # 5道量化硬门禁流水线合成数据校验单测
 │   ├── test_core_algorithms.py     # core/ 纯算力单元测试（9 项核心测试，脱机 0.001s 完成）
 │   └── test_strategic_decision.py  # 战略决策与真实场景回归测试（8 项全真实用例覆盖）
+│
+├── benchmarks/                 # [性能基准与实证分析] 耗时较长的离线压测与实证对比脚本
+│   ├── quant_validation.py     # 【量化裁判所】选股与超短稀疏信号 5 道硬门禁流水线 (IC/单调性/OOS/归因/置换)
+│   ├── benchmark_tdx.py        # 通达信 (TDX) 连接延迟、K 线与竞价分笔吞吐压测
+│   ├── compare_gate.py         # 大盘趋势闸门开闭胜率对比实证
+│   ├── validate_gate_honest.py # 闸门选时 Alpha 统计检验
+│   ├── smoke_paper_live.py     # 模拟盘实盘巡检冒烟脚本
+│   └── smoke_paper_replay.py   # 模拟盘历史回放冒烟脚本
 │
 ├── config/                     # [配置管理]
 │   ├── llm.local.json.example  # LLM 与三方接口配置示例

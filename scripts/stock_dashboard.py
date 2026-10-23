@@ -1116,71 +1116,11 @@ def kline_tx(full_code, days=160):
         if now - ts < eff_ttl:
             return val
 
-    # 1. 优先新浪日 K 线接口（毫秒级、免 WAF 限流、极度稳定）
-    try:
-        raw_code = full_code.lower()
-        if not raw_code.startswith(('sh', 'sz')):
-            raw_code = ('sh' if raw_code.startswith(('6', '5', '9')) else 'sz') + raw_code
-        u = f'http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol={raw_code}&scale=240&ma=no&datalen={days}'
-        raw = http(u, timeout=3.5, retries=1)
-        data = json.loads(raw)
-        if data and isinstance(data, list):
-            out = []
-            for r in data:
-                out.append([r['day'], float(r['open']), float(r['close']), float(r['high']), float(r['low']), float(r['volume'])])
-            if len(out) >= 5:
-                _KLINE_MEM_CACHE[cache_key] = (now, out)
-                return out
-    except Exception:
-        pass
-
-    # 2. 腾讯官方前复权日 K 通道 (web.ifzq.gtimg.cn/appstock/app/fqkline/get)
-    try:
-        raw_code = full_code.lower()
-        if not raw_code.startswith(('sh', 'sz')):
-            raw_code = ('sh' if raw_code.startswith(('6', '5', '9')) else 'sz') + raw_code
-        tx_url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={raw_code},day,,,{days},qfq'
-        tx_raw = http(tx_url, timeout=4.0, retries=1)
-        tx_json = json.loads(tx_raw)
-        target_dict = tx_json.get('data', {}).get(raw_code, {})
-        klines = target_dict.get('qfqday') or target_dict.get('day') or []
-        if klines:
-            out = []
-            for r in klines:
-                out.append([r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])])
-            if len(out) >= 5:
-                _KLINE_MEM_CACHE[cache_key] = (now, out)
-                return out
-    except Exception:
-        pass
-
-    # 3. 东财历史 K 线接口（备用）
-    try:
-        code = full_code[2:] if full_code.lower().startswith(('sh', 'sz')) else full_code
-        market = '1' if full_code.lower().startswith(('sh', '6', '5', '9')) else '0'
-        secid = f'{market}.{code}'
-        em_hdr = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Referer': 'https://www.eastmoney.com/'}
-        url = (f'http://push2his.eastmoney.com/api/qt/stock/kline/get?secid={secid}'
-               f'&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61'
-               f'&klt=101&fqt=1&end=20500101&lmt={days}')
-        j = json.loads(http(url, headers=em_hdr, timeout=2.5, retries=1))
-        klines = (j.get('data') or {}).get('klines') or []
-        if klines:
-            out = []
-            for line in klines:
-                p = line.split(',')
-                out.append([p[0], float(p[1]), float(p[2]), float(p[3]), float(p[4]), float(p[5])])
-            if len(out) >= 5:
-                _KLINE_MEM_CACHE[cache_key] = (now, out)
-                return out
-    except Exception:
-        pass
-
-    # 4. 统一数据层（mootdx / baostock 兜底）
+    # 委托统一数据层 (data_layer: TDX 40ms 极速 -> Baostock 前复权 -> 腾讯 HTTP 容灾)
     try:
         import data_layer
         kl = data_layer.kline(full_code, days)
-        if kl and len(kl) >= 5:
+        if kl and len(kl) >= 1:
             _KLINE_MEM_CACHE[cache_key] = (now, kl)
             return kl
     except Exception:

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="112" fill="#0d0e12"/>
+  <rect x="24" y="24" width="464" height="464" rx="92" stroke="#2a2e39" stroke-width="8"/>
+  <!-- Upward Red Candlestick -->
+  <line x1="152" y1="140" x2="152" y2="380" stroke="#F6465D" stroke-width="14" stroke-linecap="round"/>
+  <rect x="124" y="200" width="56" height="120" rx="8" fill="#F6465D"/>
+  <!-- Downward Green Candlestick -->
+  <line x1="256" y1="170" x2="256" y2="360" stroke="#0ECB81" stroke-width="14" stroke-linecap="round"/>
+  <rect x="228" y="220" width="56" height="90" rx="8" fill="#0ECB81"/>
+  <!-- Breakout Red Candlestick -->
+  <line x1="360" y1="96" x2="360" y2="330" stroke="#F6465D" stroke-width="14" stroke-linecap="round"/>
+  <rect x="332" y="136" width="56" height="148" rx="8" fill="#F6465D"/>
+  <!-- MA Golden Curve -->
+  <path d="M96 340 C 160 310, 220 275, 275 250 C 330 225, 375 165, 424 120" stroke="#F59E0B" stroke-width="12" stroke-linecap="round" fill="none"/>
+</svg>

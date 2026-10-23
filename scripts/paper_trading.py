@@ -304,7 +304,7 @@ def run_replay(code: str, strategy: str = 'chan', days: int = 250,
       · 但与缠论买点叠加后，拦截率高达 96%（买点多落在下跌途中），
         交易几乎停摆，收益"改善"主要来自不交易而非选对时机
       · 因此默认关闭。若要启用，建议先放宽 ADX 阈值或改用更贴合的信号，
-        并用 tests/validate_gate_honest.py 复核，而不是直接打开
+        并用 benchmarks/validate_gate_honest.py 复核，而不是直接打开
     """
     code_clean = str(code).strip()
     full_code = ('sh' + code_clean) if code_clean.startswith(('6', '5', '9')) else ('sz' + code_clean)

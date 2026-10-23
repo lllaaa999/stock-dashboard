@@ -1,0 +1,1623 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A股量化看盘终端 · 七层雷达 v2.2</title>
+<style>
+/* ===== 机构级暗黑量化交易终端设计系统 (Obsidian Quant Terminal v2.2) ===== */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg-base: #06090f;
+  --bg-panel: #0b101b;
+  --bg-card: #0e1525;
+  --bg-card-hover: #141e33;
+  --bg-subtle: #090d16;
+  --bg-elevated: #162035;
+  --bg-active: #1e293b;
+
+  --border: rgba(148, 163, 184, 0.12);
+  --border-strong: rgba(148, 163, 184, 0.22);
+  --border-focus: #38bdf8;
+  --border-subtle: rgba(148, 163, 184, 0.07);
+
+  --text-pure: #ffffff;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+
+  --up: #f43f5e;
+  --up-bright: #fb7185;
+  --up-bg: rgba(244, 63, 94, 0.12);
+  --up-border: rgba(244, 63, 94, 0.32);
+
+  --down: #10b981;
+  --down-bright: #34d399;
+  --down-bg: rgba(16, 185, 129, 0.12);
+  --down-border: rgba(16, 185, 129, 0.32);
+
+  --accent: #38bdf8;
+  --accent-bg: rgba(56, 189, 248, 0.12);
+  --accent-border: rgba(56, 189, 248, 0.32);
+  --accent-hover: #0284c7;
+
+  --gold: #f59e0b;
+  --gold-bg: rgba(245, 158, 11, 0.14);
+  --gold-border: rgba(245, 158, 11, 0.35);
+  --purple: #a855f7;
+  --purple-bg: rgba(168, 85, 247, 0.14);
+
+  --font-sans: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Cascadia Mono', 'DIN Alternate', Consolas, monospace;
+  --shadow-card: 0 4px 20px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg-base);
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(56, 189, 248, 0.06) 0%, transparent 40%),
+    radial-gradient(circle at 85% 0%, rgba(244, 63, 94, 0.05) 0%, transparent 40%);
+  color: var(--text-primary);
+  padding: 14px 20px 28px;
+  font-size: 13.5px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.mono-num {
+  font-family: var(--font-mono) !important;
+  font-variant-numeric: tabular-nums !important;
+}
+
+.container {
+  max-width: 1640px;
+  margin: 0 auto;
+}
+
+/* ===== 顶部指挥栏 (Top Command Bar) ===== */
+.header-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 18px;
+  background: linear-gradient(180deg, #11192b 0%, #0b101b 100%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 12px;
+  gap: 14px;
+  box-shadow: var(--shadow-card);
+  flex-wrap: wrap;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, #0284c7 0%, #2563eb 100%);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.25);
+  flex-shrink: 0;
+}
+
+.header-title {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text-pure);
+  letter-spacing: -0.01em;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  white-space: nowrap;
+}
+
+.header-title .tagline {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: rgba(56, 189, 248, 0.1);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  font-family: var(--font-mono);
+  letter-spacing: 0.02em;
+}
+
+/* 网络数据源状态指示 (无重复绿点) */
+.feed-status {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.feed-pill {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 5px;
+  background: rgba(16, 185, 129, 0.1);
+  color: #34d399;
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.feed-pill::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 6px #10b981;
+  flex-shrink: 0;
+}
+
+.feed-pill.cache-pill {
+  background: rgba(56, 189, 248, 0.1);
+  color: #7dd3fc;
+  border-color: rgba(56, 189, 248, 0.25);
+}
+.feed-pill.cache-pill::before {
+  background: #38bdf8;
+  box-shadow: 0 0 6px #38bdf8;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+}
+
+.updated-badge {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  background: var(--bg-subtle);
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border-subtle);
+  white-space: nowrap;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  padding: 2px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.search-box:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.18);
+}
+.search-box input {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-pure);
+  width: 175px;
+  font-size: 13px;
+  font-family: var(--font-mono);
+}
+.search-box input:focus { outline: none; }
+.search-box input::placeholder { color: var(--text-muted); font-family: var(--font-sans); }
+
+.btn {
+  padding: 6px 13px;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  font-weight: 600;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.btn:hover {
+  background: var(--bg-active);
+  border-color: var(--accent);
+  color: var(--text-pure);
+}
+.btn:active { transform: translateY(1px); }
+
+.btn-primary {
+  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
+  border-color: rgba(56, 189, 248, 0.5);
+  color: #ffffff;
+  box-shadow: 0 2px 10px rgba(2, 132, 199, 0.28);
+}
+.btn-primary:hover {
+  background: linear-gradient(135deg, #0ea5e9 0%, #0284c7 100%);
+  border-color: #7dd3fc;
+}
+
+/* 轮询频率切换按钮组 */
+.poll-control-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-card);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 2px 3px;
+  gap: 2px;
+}
+.poll-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-family: var(--font-mono);
+  padding: 2px 7px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.poll-btn:hover {
+  color: var(--text-pure);
+  background: var(--bg-hover);
+}
+.poll-btn.active {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 700;
+  border-color: var(--accent-border);
+}
+
+/* ===== 主导航分段式标签栏 (Segmented Tab Bar) ===== */
+.tab-bar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  background: var(--bg-panel);
+  padding: 5px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  overflow-x: auto;
+}
+
+.tab-btn {
+  padding: 8px 16px;
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+}
+.tab-btn:hover {
+  color: var(--text-pure);
+  background: rgba(255, 255, 255, 0.03);
+}
+.tab-btn.active {
+  color: var(--text-pure);
+  background: linear-gradient(135deg, rgba(56, 189, 248, 0.16) 0%, rgba(30, 41, 59, 0.9) 100%);
+  border-color: rgba(56, 189, 248, 0.4);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), inset 0 -2px 0 var(--accent);
+}
+.tab-count-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-weight: 800;
+}
+
+/* ===== 游资战况 HUD 能量条 (Sentiment Battle HUD) ===== */
+.battle-bar {
+  background: linear-gradient(90deg, rgba(14, 21, 37, 0.96) 0%, rgba(18, 27, 46, 0.96) 50%, rgba(14, 21, 37, 0.96) 100%);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 18px;
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  box-shadow: var(--shadow-card);
+  flex-wrap: wrap;
+}
+.battle-stage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  font-weight: 800;
+  font-size: 13.5px;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.battle-power-meter {
+  flex: 1;
+  min-width: 260px;
+  max-width: 540px;
+}
+.battle-power-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 700;
+  margin-bottom: 5px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.battle-power-track {
+  height: 8px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.32);
+  display: flex;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+.battle-power-fill-up {
+  background: linear-gradient(90deg, #e11d48 0%, #fb7185 100%);
+  height: 100%;
+  transition: width 0.4s ease;
+  box-shadow: 0 0 10px rgba(244, 63, 94, 0.55);
+}
+.battle-stat-group {
+  display: flex;
+  gap: 18px;
+  align-items: center;
+}
+.battle-stat-item {
+  text-align: right;
+  padding-left: 14px;
+  border-left: 1px solid var(--border-subtle);
+}
+.battle-stat-item:first-child { border-left: none; padding-left: 0; }
+.battle-stat-item .val {
+  font-size: 16px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.battle-stat-item .lbl {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ===== 通用卡片与网格系统 ===== */
+.card {
+  background: var(--bg-card);
+  border-radius: 10px;
+  padding: 15px 18px;
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-card);
+  margin-bottom: 14px;
+}
+.card h3 {
+  font-size: 14.5px;
+  color: var(--text-pure);
+  margin-bottom: 12px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 9px;
+  border-bottom: 1px solid var(--border-subtle);
+  letter-spacing: 0.2px;
+}
+.card-title-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.card-title-left::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--accent);
+  border-radius: 2px;
+  display: inline-block;
+}
+.card-subtitle-tag {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+.grid { display: grid; gap: 12px; margin-bottom: 14px; }
+
+/* 核心指数 6 列等宽矩阵 */
+.idx-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 10px;
+}
+@media(max-width: 1360px) { .idx-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media(max-width: 760px) { .idx-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+
+.idx-card {
+  padding: 12px 14px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #11192c 0%, #0c1220 100%);
+  border: 1px solid var(--border);
+  position: relative;
+  overflow: hidden;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+}
+.idx-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: var(--border-strong);
+}
+.idx-card.is-up::before { background: linear-gradient(90deg, #f43f5e, #fb7185); }
+.idx-card.is-down::before { background: linear-gradient(90deg, #10b981, #34d399); }
+.idx-card:hover {
+  transform: translateY(-1px);
+  border-color: var(--border-strong);
+}
+.idx-card .n {
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  font-weight: 600;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  white-space: nowrap;
+}
+.idx-card .p {
+  font-size: 22px;
+  font-weight: 800;
+  margin: 5px 0 6px;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.idx-card .meta-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+.idx-card .c {
+  font-size: 11.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 1px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.idx-card .amt {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 隔夜外盘 5 列紧凑横条 */
+.global-strip-wrap {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.global-strip-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.global-strip-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  flex: 1;
+}
+@media(max-width: 1100px) { .global-strip-grid { grid-template-columns: repeat(2, 1fr); } }
+.global-mini-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  gap: 8px;
+}
+.global-mini-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.global-mini-val {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+/* 黄金三栏分析区 */
+.analytics-grid {
+  display: grid;
+  grid-template-columns: 1.05fr 1.35fr 1.2fr;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.analytics-grid > .card { margin-bottom: 0; display: flex; flex-direction: column; justify-content: space-between; }
+@media(max-width: 1200px) { .analytics-grid { grid-template-columns: 1fr; } }
+
+.sub-grid {
+  display: grid;
+  grid-template-columns: 1.35fr 1fr 0.95fr;
+  gap: 12px;
+}
+@media(max-width: 1200px) { .sub-grid { grid-template-columns: 1fr; } }
+
+/* 涨跌颜色 */
+.up { color: var(--up); }
+.up-badge { color: var(--up-bright); background: var(--up-bg); border: 1px solid var(--up-border); }
+.down { color: var(--down); }
+.down-badge { color: var(--down-bright); background: var(--down-bg); border: 1px solid var(--down-border); }
+.flat { color: var(--text-secondary); }
+.flat-badge { color: var(--text-secondary); background: rgba(148,163,184,0.1); border: 1px solid var(--border); }
+.cyan-badge { color: var(--accent); background: var(--accent-bg); border: 1px solid var(--accent-border); }
+
+/* 图表容器 */
+.chart-box { width: 100%; height: 250px; position: relative; }
+.chart-tall { width: 100%; height: 360px; position: relative; }
+.chart-sm { width: 100%; height: 195px; position: relative; }
+
+/* 情绪指标紧凑矩阵 */
+.metric-row {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  margin-top: 8px;
+}
+.metric {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 7px 6px;
+  text-align: center;
+}
+.metric .v {
+  font-size: 16px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.metric .l {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-weight: 600;
+  margin-top: 2px;
+}
+.metric-effect-bar {
+  grid-column: 1 / -1;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 6px 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+}
+
+/* 连板天梯树 (开盘啦高密度风格) */
+.ladder-tier {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+}
+.ladder-tier:hover {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(20, 30, 50, 0.55);
+}
+.ladder-tier-badge {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  width: 48px;
+  min-width: 48px;
+  border-radius: 6px;
+  font-weight: 900;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  color: #fff;
+}
+.ladder-tier-badge .sub {
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.9;
+}
+.ladder-cards-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: 1;
+  align-items: center;
+}
+.ladder-stock-ticket {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: pointer;
+  transition: all 0.14s ease;
+  min-width: 126px;
+}
+.ladder-stock-ticket:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+  transform: translateY(-1px);
+}
+.ladder-ticket-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.ladder-ticket-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: #fff;
+  white-space: nowrap;
+}
+.ladder-ticket-time {
+  font-size: 10.5px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--up-bg);
+  color: var(--up-bright);
+  border: 1px solid var(--up-border);
+}
+.ladder-ticket-bottom {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  gap: 6px;
+}
+.ladder-ticket-concept {
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 72px;
+}
+.ladder-ticket-code {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+/* 首板紧凑矩阵 */
+.first-board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+  gap: 6px;
+  max-height: 310px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+.first-board-card {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  padding: 5px 8px;
+  cursor: pointer;
+  transition: all 0.14s;
+}
+.first-board-card:hover {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+/* 新闻与快讯列表 */
+.news-list {
+  max-height: 255px;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+  padding-right: 4px;
+}
+.news-list .t {
+  color: var(--accent);
+  font-size: 11.5px;
+  margin-right: 6px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  background: var(--accent-bg);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+/* 融资余额 */
+.margin-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.margin-row span {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+
+/* 周期横幅 */
+.cycle-banner {
+  background: linear-gradient(135deg, rgba(2, 132, 199, 0.14) 0%, rgba(14, 21, 37, 0.96) 100%);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.cycle-banner .stage-title {
+  font-size: 16.5px;
+  font-weight: 800;
+  color: #38bdf8;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cycle-banner .advice {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  margin-top: 4px;
+}
+
+.strat-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.strat-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.strat-card-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-pure);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.strat-card-badge {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+/* 专业金融数据表格 */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin-top: 4px;
+}
+.data-table th {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 11.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-bottom: 1px solid var(--border-strong);
+  white-space: nowrap;
+}
+.data-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  vertical-align: middle;
+}
+.data-table tbody tr:hover td {
+  background: var(--bg-card-hover);
+}
+
+/* 模拟控制台终端 */
+.sim-box {
+  margin-top: 12px;
+  background: #05080f;
+  color: #34d399;
+  border-radius: 8px;
+  padding: 16px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-x: auto;
+  max-height: 480px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+}
+
+.sim-chip {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.sim-chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-elevated);
+}
+
+.force-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+
+/* 自选股收藏星标 */
+.star-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text-muted);
+  transition: all 0.15s;
+  padding: 1px 4px;
+  border-radius: 4px;
+  vertical-align: middle;
+}
+.star-btn:hover { color: #fbbf24; transform: scale(1.15); }
+.star-btn.active { color: #fbbf24; text-shadow: 0 0 8px rgba(251, 191, 36, 0.5); }
+
+/* 行情变动瞬时闪烁动画 */
+@keyframes flashGreen {
+  0% { background-color: rgba(16, 185, 129, 0.35); color: #fff; }
+  100% { background-color: transparent; }
+}
+@keyframes flashRed {
+  0% { background-color: rgba(244, 63, 94, 0.35); color: #fff; }
+  100% { background-color: transparent; }
+}
+.flash-up { animation: flashRed 1s ease-out; }
+.flash-down { animation: flashGreen 1s ease-out; }
+
+/* 竞价雷达英雄指标网格 */
+.radar-hero-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.radar-hero-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 15px;
+  box-shadow: var(--shadow-card);
+}
+.radar-hero-card .label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+.radar-hero-card .val {
+  font-size: 22px;
+  font-weight: 800;
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.radar-hero-card .sub {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+/* 缠论中枢与买卖点卡片 */
+.chan-card {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(56, 189, 248, 0.05));
+  border: 1px solid rgba(245, 158, 11, 0.32);
+  border-radius: 8px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+}
+.chan-badge {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: var(--font-mono);
+}
+
+/* 五档盘口深度表 (Level-1 Order Book) */
+.orderbook-box {
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-family: var(--font-mono);
+}
+.ob-row {
+  display: grid;
+  grid-template-columns: 38px 1fr 1fr;
+  align-items: center;
+  padding: 2.5px 0;
+  font-size: 12px;
+  position: relative;
+}
+.ob-bar {
+  position: absolute;
+  right: 0;
+  top: 1px;
+  bottom: 1px;
+  pointer-events: none;
+  border-radius: 2px;
+}
+
+/* 模态框遮罩与内容 (严格保留 verify_modal.py 断言契约) */
+.modal-overlay {
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+  background: rgba(0, 0, 0, 0.75); backdrop-filter: blur(4px);
+  display: none; justify-content: center; align-items: center; z-index: 1000;
+}
+.modal-overlay.active {
+  display: flex;
+}
+.modal-content {
+  background: var(--bg-card); border: 1px solid var(--border-strong); border-radius: 10px;
+  width: 90%; max-width: 480px; padding: 20px; box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #26334d; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3b4f75; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- 顶部指挥栏 -->
+  <header class="header-bar">
+    <div class="header-left">
+      <div class="brand-mark" title="Seven-Layer Quant Radar">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="22 7 13.5 15.5 8.5 10.5 2 17"></polyline>
+          <polyline points="16 7 22 7 22 13"></polyline>
+        </svg>
+      </div>
+      <div class="header-title">
+        A股综合看盘系统
+        <span class="tagline">QUANT TERMINAL · 七层雷达 · 12策略</span>
+      </div>
+      <!-- 网络数据源健康状态 (修复双圆点问题) -->
+      <div class="feed-status" id="feedStatusRow">
+        <span class="feed-pill" id="pillTencent" title="毫秒级腾讯批量行情与五档盘口">腾讯极速主源 (28ms)</span>
+        <span class="feed-pill" id="pillSina" title="同花顺/新浪外盘期货与行情热备">同花顺/新浪热备 (45ms)</span>
+        <span class="feed-pill cache-pill" id="pillCache" title="高频接口内存TTL缓存">内存TTL缓存 就绪</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <span id="updated" class="updated-badge">同步行情中...</span>
+      <div class="search-box">
+        <input id="stockCode" placeholder="输入代码 (如 600519)" onkeydown="if(event.key==='Enter')loadStock()">
+        <button class="btn" style="border:none;padding:5px 10px;background:var(--bg-card);" onclick="loadStock()">体检</button>
+      </div>
+      <button class="btn btn-primary" onclick="loadMarket(true)">刷新大盘</button>
+    </div>
+  </header>
+
+  <!-- 个股全维体检与五档盘口抽屉面板 -->
+  <div class="card" id="stockPanel" style="display:none;margin-bottom:16px;border:1px solid var(--accent);box-shadow:0 8px 30px rgba(2,132,199,0.22);">
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);">
+      <div id="stockTitle" style="font-size:17px;font-weight:800;color:var(--text-pure);display:flex;align-items:center;gap:8px;">个股全维体检</div>
+      <button class="btn" onclick="document.getElementById('stockPanel').style.display='none'">✕ 关闭体检</button>
+    </div>
+    <div class="grid idx-grid" id="stockQuote" style="margin-bottom:12px;"></div>
+
+    <!-- 4 大超短微观纯 NumPy 底牌全息体检 -->
+    <div id="ultrashortMetricsCard" class="chan-card" style="display:none;background:linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(99, 102, 241, 0.05));border:1px solid rgba(56, 189, 248, 0.35);">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <div style="font-size:14.5px;font-weight:800;color:#38bdf8;display:flex;align-items:center;gap:8px;">
+          <span>⚡ 超短 4 大微观底牌全息体检 (纯 NumPy 向量化算力)</span>
+          <span id="ultrashortSummaryBadge" class="chan-badge" style="background:rgba(56,189,248,0.18);color:#38bdf8;border:1px solid rgba(56,189,248,0.4);">毫秒级算子</span>
+        </div>
+        <div style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);">杜绝冲天炮骗炮 · 封单撤单预警 · 异动防误杀 · 纯盘中承接</div>
+      </div>
+      <div class="grid idx-grid" id="ultrashortMetricsGrid" style="margin-bottom:0;"></div>
+    </div>
+
+    <!-- 缠论结构化诊断卡片 -->
+    <div id="chanDiagnosisCard" class="chan-card" style="display:none;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+        <div style="font-size:14.5px;font-weight:800;color:#fbbf24;display:flex;align-items:center;gap:8px;">
+          <span>缠论日线中枢与买卖点结构化诊断</span>
+          <span id="chanCurDirBadge" class="chan-badge" style="background:rgba(251,191,36,0.18);color:#fbbf24;border:1px solid rgba(251,191,36,0.4);">计算中</span>
+        </div>
+        <button class="btn" id="btnToggleChanLayer" style="padding:4px 10px;font-size:12px;" onclick="toggleChanLayer()">缠论图层: 笔与中枢 (开)</button>
+      </div>
+      <div id="chanSummaryText" style="font-size:13px;color:var(--text-primary);line-height:1.6;margin-bottom:8px;"></div>
+      <div id="chanBadgesRow" style="display:flex;flex-wrap:wrap;gap:6px;"></div>
+    </div>
+
+    <div class="grid sub-grid">
+      <div class="card" style="margin-bottom:0;background:var(--bg-panel);">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;border-bottom:1px solid var(--border-subtle);padding-bottom:8px;flex-wrap:wrap;gap:8px;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <button class="btn btn-primary" id="btnChartKline" style="padding:4px 10px;font-size:12px;" onclick="switchStockChart('kline')">缠论日K线</button>
+            <button class="btn" id="btnChartTrend" style="padding:4px 10px;font-size:12px;" onclick="switchStockChart('trend')">当日分时 (黄白线)</button>
+          </div>
+          <span id="chartSubHint" style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono);">金色折线=缠论笔 · 虚线框=缠论中枢</span>
+        </div>
+        <div id="klineChart" class="chart-tall"></div>
+        <div id="trendChart" class="chart-tall" style="display:none;"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:0;background:var(--bg-panel);">
+        <h3>
+          <span class="card-title-left">五档盘口与主力资金流</span>
+          <span id="stockCapBadge" style="font-size:11.5px;color:var(--text-secondary);font-family:var(--font-mono);"></span>
+        </h3>
+        <div id="stockOrderBook" class="orderbook-box"></div>
+        <div id="capBreakdownRow" style="display:flex;flex-wrap:wrap;gap:5px;margin-bottom:8px;"></div>
+        <div id="fundChart" style="width:100%;height:195px;position:relative;"></div>
+      </div>
+
+      <div class="card" style="margin-bottom:0;background:var(--bg-panel);">
+        <h3><span class="card-title-left">重要公告与异动追踪</span></h3>
+        <div class="news-list" id="annList" style="max-height:350px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 分段式主导航栏 -->
+  <nav class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('radar')">大盘全景雷达</button>
+    <button class="tab-btn" onclick="switchTab('auction')">9:25 竞价雷达 & 大面榜</button>
+    <button class="tab-btn" onclick="switchTab('watchlist')" title="我的自选盯盘">自选盯盘池 (我的自选盯盘) <span id="wlCount" class="tab-count-pill" style="background:rgba(56,189,248,0.2);color:#38bdf8;border:1px solid rgba(56,189,248,0.35);">0</span></button>
+    <button class="tab-btn" onclick="switchTab('portfolio')">持仓风控账本 <span id="pfCount" class="tab-count-pill" style="background:rgba(16,185,129,0.2);color:#34d399;border:1px solid rgba(16,185,129,0.35);">0</span></button>
+    <button class="tab-btn" onclick="switchTab('screener')">情绪周期 12 策略选股</button>
+    <button class="tab-btn" onclick="switchTab('sim')">九方势力世界模拟</button>
+    <button class="tab-btn" onclick="switchTab('backtest')">🧪 量化回测实验室</button>
+  </nav>
+
+  <!-- ==================== TAB 1: 大盘全景雷达 ==================== -->
+  <section id="tab-radar">
+    <!-- 1. 游资情绪能量对决 HUD 条 -->
+    <div id="sentimentBattleBar"></div>
+
+    <!-- 2. 核心指数 6 列矩阵 -->
+    <div class="grid idx-grid" id="idxCards"></div>
+
+    <!-- 3. 隔夜外盘 5 列紧凑横条 (告别左重右轻) -->
+    <div class="global-strip-wrap">
+      <div class="global-strip-label">
+        <span>GLOBAL</span>
+        <span style="color:var(--text-primary);">隔夜外盘与汇率</span>
+      </div>
+      <div class="global-strip-grid" id="globalCards"></div>
+    </div>
+
+    <!-- 4. 黄金三栏同屏共振：短线情绪仪表盘 + 情绪历史趋势 + 板块主力资金流 -->
+    <div class="analytics-grid">
+      <div class="card">
+        <h3>
+          <span class="card-title-left">市场短线情绪指数</span>
+          <span class="card-subtitle-tag">EMOTION GAUGE v2</span>
+        </h3>
+        <div id="emoGauge" class="chart-sm"></div>
+        <div class="metric-row" id="emoMetrics"></div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <span class="card-title-left">情绪指数历史走势</span>
+          <span class="card-subtitle-tag">30冰点 / 70活跃 / 85高潮</span>
+        </h3>
+        <div id="emoTrend" class="chart-box"></div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <span class="card-title-left">板块主力净流入 TOP (亿元)</span>
+          <span class="card-subtitle-tag">SECTOR FLOW</span>
+        </h3>
+        <div id="sectorChart" class="chart-box"></div>
+      </div>
+    </div>
+
+    <!-- 5. 涨停梯队、首板矩阵与题材热度榜 (开盘啦风格三栏) -->
+    <div class="card">
+      <h3>
+        <span class="card-title-left">涨停梯队全景与主线题材发酵</span>
+        <span class="card-subtitle-tag">点击任意个股卡片一键联动缠论与五档盘口体检</span>
+      </h3>
+      <div id="emoDetail"></div>
+    </div>
+
+    <!-- 6. 战略战术决策指挥舱 (紧凑三栏面板) -->
+    <div id="strategicDecisionBox" style="margin-bottom:14px;"></div>
+
+    <!-- 7. 两市融资余额 + 7×24 实时快讯电报流 -->
+    <div class="grid" style="grid-template-columns: 1fr 1.25fr; gap: 12px; margin-bottom:0;">
+      <div class="card" style="margin-bottom:0;">
+        <h3>
+          <span class="card-title-left">两市融资余额变动</span>
+          <span class="card-subtitle-tag">MARGIN BALANCE</span>
+        </h3>
+        <div class="margin-row" id="marginRow"></div>
+        <div id="marginChart" class="chart-sm"></div>
+      </div>
+      <div class="card" style="margin-bottom:0;">
+        <h3>
+          <span class="card-title-left">7×24 市场核心电报快讯</span>
+          <span class="card-subtitle-tag">点击「推演」一键注入九方沙盘</span>
+        </h3>
+        <div class="news-list" id="newsList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 2: 9:25 集合竞价雷达 + 亏钱效应大面榜 ==================== -->
+  <section id="tab-auction" style="display:none;">
+    <div class="cycle-banner">
+      <div>
+        <div class="stage-title" id="auctionHeroTitle">9:25 早盘集合竞价雷达 & 亏钱效应风险预警</div>
+        <div class="advice" id="auctionHeroAdvice">依托昨日涨停板接力溢价、竞价爆量比率、买一实时封单、五档委比与日内大面深度推演</div>
+      </div>
+      <button class="btn btn-primary" onclick="loadAuction(true)">刷新竞价雷达</button>
+    </div>
+
+    <div class="radar-hero-grid" id="auctionMetricsGrid"></div>
+    <div class="radar-hero-grid" id="auctionPromotionGrid"></div>
+
+    <div class="grid" style="grid-template-columns: 1.15fr 1fr; gap: 12px;">
+      <div class="card">
+        <h3>
+          <span class="card-title-left">弱转强异动池 (超预期接力·打板核心)</span>
+          <span class="card-subtitle-tag">昨炸板/烂板 ➔ 今高开带量</span>
+        </h3>
+        <div id="weakToStrongTable"></div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <span class="card-title-left">亏钱效应大面榜 (日内高台跳水·风险警报)</span>
+          <span class="card-subtitle-tag">冲高大幅回撤 / 跌停核按钮</span>
+        </h3>
+        <div id="bigLossTable"></div>
+      </div>
+    </div>
+
+    <div class="grid" style="grid-template-columns: 1fr 1.1fr; gap: 12px;">
+      <div class="card">
+        <h3>
+          <span class="card-title-left">竞价爆量 & 一字板实时封单池</span>
+          <span class="card-subtitle-tag">量比≥3.0 或一字封死 · 含买一实时封单</span>
+        </h3>
+        <div id="auctionBoomTable"></div>
+      </div>
+
+      <div class="card">
+        <h3>
+          <span class="card-title-left">昨日涨停个股今日接力全景追踪</span>
+          <span class="card-subtitle-tag">溢价率 · 晋级状态 · 五档委比</span>
+        </h3>
+        <div id="yesterdayZtTable" style="max-height: 420px; overflow-y: auto;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 3: 本地自选盯盘池 ==================== -->
+  <section id="tab-watchlist" style="display:none;">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:12px;margin-bottom:14px;padding-bottom:10px;border-bottom:1px solid var(--border-subtle);">
+        <div>
+          <div style="font-size:16px;font-weight:800;color:var(--text-pure);display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <span>本地自选盯盘池</span>
+            <div class="poll-control-wrap">
+              <span style="font-size:11px;color:var(--text-muted);margin:0 4px;display:flex;align-items:center;gap:4px;">
+                <span class="live-dot" style="display:inline-block;width:6px;height:6px;border-radius:50%;background:#10b981;box-shadow:0 0 6px #10b981;"></span>
+                刷新:
+              </span>
+              <button class="poll-btn poll-btn-500" onclick="setPollInterval(500)" title="0.5秒极限超频(物理网络极限)">⚡ 0.5秒</button>
+              <button class="poll-btn poll-btn-1000" onclick="setPollInterval(1000)" title="1秒极速刷新(毫秒级盘口跳动)">1秒</button>
+              <button class="poll-btn poll-btn-2000" onclick="setPollInterval(2000)" title="2秒高频刷新">2秒</button>
+              <button class="poll-btn poll-btn-3000" onclick="setPollInterval(3000)" title="3秒标准刷新(交易所L1周期)">3秒</button>
+              <button class="poll-btn poll-btn-5000" onclick="setPollInterval(5000)" title="5秒省流">5秒</button>
+              <button class="poll-btn poll-btn-0" onclick="setPollInterval(0)" title="暂停自动刷新">⏸ 暂停</button>
+            </div>
+          </div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-top:2px;">
+            <span class="poll-current-speed-text">1 秒极速轮询</span> · 价格跳动红绿呼吸闪烁 · 浏览器本地持久化 · 点击单行开启缠论与五档体检
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+          <input id="addWlInput" placeholder="输入6位股票代码 (如 600519)" style="padding:6px 12px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg-subtle);color:#fff;font-size:13px;width:195px;font-family:var(--font-mono);" onkeydown="if(event.key==='Enter')addFromInput()">
+          <button class="btn btn-primary" onclick="addFromInput()">＋ 添加自选</button>
+          <button class="btn" onclick="initDefaultWatchlist()">导入核心龙头</button>
+          <button class="btn" style="color:var(--up);" onclick="clearWatchlist()">清空自选</button>
+        </div>
+      </div>
+      <div id="watchlistTableBox"></div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 4: 本地持仓风控账本 ==================== -->
+  <section id="tab-portfolio" style="display:none;">
+    <div class="cycle-banner" style="border-color:rgba(16,185,129,0.4);background:linear-gradient(135deg, rgba(16,185,129,0.12) 0%, rgba(14,21,37,0.96) 100%);">
+      <div>
+        <div class="stage-title" style="color:#34d399;">本地持仓风控账本 (100% 浏览器本地存储 · 零隐私泄漏)</div>
+        <div class="advice">记录持仓成本、股数与止损防守价，实时核算日内盈亏、累计浮盈并与战略决策中枢对账</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+        <button class="btn btn-primary" onclick="openAddHoldingModal()">＋ 添加持仓</button>
+        <button class="btn" onclick="openBatchHoldingModal()">批量粘贴导入</button>
+        <button class="btn" onclick="exportHoldingData()">导出 JSON 备份</button>
+        <button class="btn" style="color:var(--up);" onclick="clearPortfolio()">清空持仓</button>
+      </div>
+    </div>
+
+    <div class="radar-hero-grid" id="portfolioSummaryGrid">
+      <div class="radar-hero-card" style="border-top:2px solid var(--accent);">
+        <div class="label">持仓总市值 (元)</div>
+        <div class="val" id="pfTotalMarketVal">¥0.00</div>
+        <div class="sub">总持仓本金: <b id="pfTotalCostVal" style="color:var(--text-primary);font-family:var(--font-mono);">¥0.00</b></div>
+      </div>
+      <div class="radar-hero-card" id="pfTodayPnlCard" style="border-top:2px solid var(--border-strong);">
+        <div class="label">今日预估盈亏 (元)</div>
+        <div class="val" id="pfTodayPnlVal">¥0.00</div>
+        <div class="sub">今日盈亏率: <b id="pfTodayPnlPct" style="font-family:var(--font-mono);">0.00%</b></div>
+      </div>
+      <div class="radar-hero-card" id="pfTotalPnlCard" style="border-top:2px solid var(--border-strong);">
+        <div class="label">累计浮动盈亏 (元)</div>
+        <div class="val" id="pfTotalPnlVal">¥0.00</div>
+        <div class="sub">累计收益率: <b id="pfTotalPnlPct" style="font-family:var(--font-mono);">0.00%</b></div>
+      </div>
+      <div class="radar-hero-card" style="border-top:2px solid var(--gold);">
+        <div class="label">持仓风控预警</div>
+        <div class="val" id="pfRiskCount" style="color:var(--gold);">0 <span style="font-size:13px;color:var(--text-muted);">只触发警戒</span></div>
+        <div class="sub" id="pfRiskDesc">止损防守线自动监控中</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:8px;">
+        <h3>
+          <span class="card-title-left">持仓明细与动态防守线</span>
+          <span class="card-subtitle-tag"><span class="poll-current-speed-text">1 秒极速轮询</span> · 点击单行联动缠论日K体检</span>
+        </h3>
+        <div class="poll-control-wrap">
+          <span style="font-size:11px;color:var(--text-muted);margin:0 4px;">刷新:</span>
+          <button class="poll-btn poll-btn-500" onclick="setPollInterval(500)" title="0.5秒极限超频">⚡ 0.5秒</button>
+          <button class="poll-btn poll-btn-1000" onclick="setPollInterval(1000)" title="1秒极速刷新">1秒</button>
+          <button class="poll-btn poll-btn-2000" onclick="setPollInterval(2000)" title="2秒高频刷新">2秒</button>
+          <button class="poll-btn poll-btn-3000" onclick="setPollInterval(3000)" title="3秒标准刷新">3秒</button>
+          <button class="poll-btn poll-btn-5000" onclick="setPollInterval(5000)" title="5秒省流">5秒</button>
+          <button class="poll-btn poll-btn-0" onclick="setPollInterval(0)" title="暂停">⏸</button>
+        </div>
+      </div>
+      <div id="portfolioTableBox"></div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 5: 12 策略周期选股 ==================== -->
+  <section id="tab-screener" style="display:none;">
+    <div class="cycle-banner" id="stratBanner">
+      <div>
+        <div class="stage-title" id="stratStageTitle">正在同步大盘情绪周期定位...</div>
+        <div class="advice" id="stratAdvice">总开关加载中，将自动适配当前胜率最高的选股模式</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <button class="btn btn-primary" onclick="runStrategies('auto')">运行周期自适应 (Auto)</button>
+        <button class="btn" onclick="runStrategies('all')">12 策略全量扫描 (All)</button>
+        <button class="btn" onclick="runScreen()">经典 8 大形态</button>
+      </div>
+    </div>
+
+    <div id="stratLoading" style="display:none;padding:24px;text-align:center;font-size:14px;color:var(--accent);font-weight:700;background:var(--bg-card);border:1px solid var(--border);border-radius:8px;margin-bottom:12px;">
+      正在结合全市场快照、涨停质量因子与日K线运行策略扫描，请稍候...
+    </div>
+
+    <div id="stratResults"></div>
+    <div id="screenResults"></div>
+  </section>
+
+  <!-- ==================== TAB 6: 九方势力世界模拟 ==================== -->
+  <section id="tab-sim" style="display:none;">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+        <div>
+          <h3 style="margin:0;border:none;padding:0;">
+            <span class="card-title-left">多主体博弈世界模拟 (Multi-Agent Swarm Simulation)</span>
+            <span class="tagline" style="font-size:11px;background:var(--accent-bg);color:var(--accent);padding:2px 8px;border-radius:4px;border:1px solid var(--accent-border);">GOD MODE 沙盘</span>
+          </h3>
+          <div style="font-size:12.5px;color:var(--text-secondary);margin-top:4px;">
+            基于九方资金博弈记忆、自由事件语义注入与 3 轮阻尼交互传染，推演次日多空买卖合力与集合竞价分叉剧本
+          </div>
+        </div>
+      </div>
+
+      <!-- 事件沙盘注入控制区 -->
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <input id="simCustomScenario" style="flex:1;min-width:280px;padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg-card);color:#fff;font-size:13px;" placeholder="自由输入突发事件 / 政策 / 题材催化（例如：央行宣布降准50BP释放1万亿）...">
+          <select id="simScenario" class="btn" style="padding:7px 12px;background:var(--bg-card);font-size:12.5px;" onchange="if(this.value) document.getElementById('simCustomScenario').value = this.value;">
+            <option value="">或选择经典情景...</option>
+            <option value="外盘暴跌">情景: 外盘暴跌</option>
+            <option value="外盘大涨">情景: 外盘大涨</option>
+            <option value="重磅利好">情景: 重磅利好</option>
+            <option value="利空突袭">情景: 利空突袭</option>
+            <option value="流动性收紧">情景: 流动性收紧</option>
+          </select>
+          <input id="simCode" style="padding:8px 12px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg-card);color:#fff;font-size:13px;width:135px;font-family:var(--font-mono);" placeholder="个股代码(可选)">
+          <button class="btn btn-primary" style="padding:8px 18px;font-weight:700;" onclick="runSim()">启动推演</button>
+        </div>
+
+        <!-- 推演引擎选择 -->
+        <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;font-size:12.5px;margin-bottom:10px;padding:7px 10px;background:var(--bg-card);border:1px solid var(--border-subtle);border-radius:6px;">
+          <span style="color:var(--text-secondary);font-weight:700;">推演引擎:</span>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+            <input type="radio" name="simEngine" value="rule" checked onchange="toggleSimEngine()">
+            <span>规则引擎（秒级微结构传染）</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;">
+            <input type="radio" name="simEngine" value="llm" onchange="toggleSimEngine()">
+            <span>LLM 消息面推演（读当日事件表出九方冲击矩阵）</span>
+          </label>
+          <span id="simEngineNote" style="color:var(--text-muted);font-size:12px;">秒级返回：市场微结构 + 九方传染模型</span>
+        </div>
+
+        <!-- 快捷种子事件胶囊 -->
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;margin-bottom:8px;">
+          <span style="color:var(--text-secondary);font-weight:600;">突发事件注入:</span>
+          <button class="sim-chip" onclick="injectScenario('央行宣布全面降准50个基点，释放长期资金约1万亿元')">央行全面降准50BP</button>
+          <button class="sim-chip" onclick="injectScenario('海外地缘突发冲突外盘全线重挫跌超3%')">美股外盘单边暴跌</button>
+          <button class="sim-chip" onclick="injectScenario('华为发布下一代昇腾AI超算集群算力突破')">昇腾AI算力突破</button>
+          <button class="sim-chip" onclick="injectScenario('多只高位连板妖股盘后遭监管特停核查涉嫌操纵')">妖股特停核查</button>
+          <button class="sim-chip" onclick="injectScenario('商务部联合多部门出台超千亿大消费支持政策')">超千亿消费刺激</button>
+          <button class="sim-chip" onclick="injectScenario('')" style="color:var(--text-muted);">清除输入(基准推演)</button>
+        </div>
+
+        <!-- 历史大事件时光机对账 -->
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;padding-top:8px;border-top:1px dashed var(--border);">
+          <span style="color:var(--accent);font-weight:700;">历史大事件时光机:</span>
+          <button class="sim-chip" style="border-color:var(--accent-border);background:var(--accent-bg);" onclick="injectScenario('国新办重磅发布会：降准50BP释放1万亿、降息20BP、创设首期5000亿互换便利与3000亿股票回购增持再贷款')">2024-09-24 国新办组合拳</button>
+          <button class="sim-chip" style="border-color:var(--accent-border);background:var(--accent-bg);" onclick="injectScenario('国庆假期开户暴增，节后首日全市场高开近千股竞价涨停，成交额破纪录达3.45万亿元')">2024-10-08 3.45万亿天量巨震</button>
+          <button class="sim-chip" style="border-color:var(--accent-border);background:var(--accent-bg);" onclick="injectScenario('全国人大常委会批准增加6万亿元地方政府债务限额置换存量隐性债务，合计化债规模达10万亿元')">2024-11-08 10万亿隐性化债</button>
+          <button class="sim-chip" style="border-color:var(--accent-border);background:var(--accent-bg);" onclick="injectScenario('中证500/1000雪球衍生品大面积敲入，小盘微盘流动性枯竭遭遇踩踏，国家队动用大额资金扫货宽基ETF托底')">2024-01-22 雪球冰点与救市</button>
+        </div>
+      </div>
+
+      <div id="simBoard" style="display:none;margin-bottom:14px;"></div>
+      <!-- LLM 推演结构化结果（2026-09-30 新增） -->
+      <div id="llmBoard" style="display:none;margin-bottom:14px;"></div>
+      <div class="sim-box" id="simBox" style="display:none;"></div>
+    </div>
+  </section>
+
+  <!-- ==================== TAB 7: 量化回测实验室 ==================== -->
+  <section id="tab-backtest" style="display:none;">
+    <div class="card" style="margin-bottom:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:12px;">
+        <div>
+          <h3 style="margin:0;border:none;padding:0;">
+            <span class="card-title-left">量化回测实验室 (Quant Backtest Lab)</span>
+            <span class="tagline" style="font-size:11px;background:rgba(16,185,129,0.15);color:#34d399;padding:2px 8px;border-radius:4px;border:1px solid rgba(16,185,129,0.3);">实盘级 T+1 · 摩擦对账</span>
+          </h3>
+          <div style="font-size:12.5px;color:var(--text-secondary);margin-top:4px;">
+            基于真实行情切片、T+1交易制度、万2.5佣金、万5印花税与滑点，毫秒级验证短线战法胜率、盈亏比与净值曲线
+          </div>
+        </div>
+      </div>
+
+      <!-- 参数控制条 -->
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:14px;">
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:12px;color:var(--text-secondary);">回测策略:</span>
+            <select id="btStrategySelect" class="btn" style="background:var(--bg-card);font-size:12.5px;padding:6px 12px;" onchange="onBtStrategyChange()">
+              <option value="cycle">92科比情绪周期宏观择时策略</option>
+              <option value="chan" selected>缠论分型与中枢结构突破战法</option>
+              <option value="ma">经典量化双均线放量趋势战法</option>
+              <option value="zt">龙头首板/连板次日冲高溢价战法</option>
+            </select>
+          </div>
+
+          <div style="display:flex;align-items:center;gap:6px;" id="btCodeWrap">
+            <span style="font-size:12px;color:var(--text-secondary);">标的代码:</span>
+            <input id="btCodeInput" style="width:110px;padding:6px 10px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg-card);color:#fff;font-size:12.5px;font-family:var(--font-mono);" value="002696" placeholder="如 002696">
+          </div>
+
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:12px;color:var(--text-secondary);">初始资金:</span>
+            <input id="btCapitalInput" style="width:100px;padding:6px 10px;border:1px solid var(--border-strong);border-radius:6px;background:var(--bg-card);color:#fff;font-size:12.5px;font-family:var(--font-mono);" value="100000" placeholder="100000">
+          </div>
+
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:12px;color:var(--text-secondary);">回测天数:</span>
+            <select id="btDaysSelect" class="btn" style="background:var(--bg-card);font-size:12.5px;padding:6px 10px;">
+              <option value="60">近 60 个交易日</option>
+              <option value="120" selected>近 120 个交易日</option>
+              <option value="160">近 160 个交易日</option>
+            </select>
+          </div>
+
+          <button class="btn btn-primary" onclick="triggerRunBacktest()" style="background:#0284c7;color:#fff;padding:6px 16px;font-weight:600;display:flex;align-items:center;gap:6px;">
+            <span>▶ 运行实测</span>
+          </button>
+        </div>
+
+        <!-- 快捷标的预设药丸 -->
+        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;font-size:12px;padding-top:8px;border-top:1px dashed var(--border);">
+          <span style="color:var(--accent);font-weight:700;">经典实操案例:</span>
+          <button class="sim-chip" onclick="quickRunBacktest('cycle', 'sh000001', 100000, 160)">📈 92科比情绪周期宏观择时(上证)</button>
+          <button class="sim-chip" onclick="quickRunBacktest('chan', '002696', 100000, 120)">🐟 百洋股份 · 缠论分型突破</button>
+          <button class="sim-chip" onclick="quickRunBacktest('chan', '600519', 200000, 120)">🍶 贵州茅台 · 缠论中枢突破</button>
+          <button class="sim-chip" onclick="quickRunBacktest('zt', '002696', 100000, 120)">⚡ 连板打板 · 次日冲高套利</button>
+          <button class="sim-chip" onclick="quickRunBacktest('ma', '300750', 100000, 120)">🔋 宁德时代 · 双均线放量趋势</button>
+        </div>
+      </div>
+
+      <!-- 提示横幅 -->
+      <div id="btWarningBox" style="display:none;background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:6px;padding:8px 12px;font-size:12px;color:#f59e0b;margin-bottom:12px;"></div>
+
+      <!-- 指标卡片网格 -->
+      <div class="grid" id="btMetricsGrid" style="grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px;"></div>
+
+      <!-- 净值走势图容器 -->
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+          <div style="font-size:13px;font-weight:700;color:var(--text-pure);">策略净值走势 vs 基准对比 (Equity Curve)</div>
+          <div style="font-size:11.5px;color:var(--text-secondary);display:flex;gap:12px;">
+            <span><span style="display:inline-block;width:10px;height:3px;background:#38bdf8;margin-right:4px;"></span>策略净值</span>
+            <span><span style="display:inline-block;width:10px;height:3px;background:#94a3b8;margin-right:4px;"></span>标的/基准走势</span>
+          </div>
+        </div>
+        <div id="btChartBox" style="width:100%;height:260px;position:relative;"></div>
+      </div>
+
+      <!-- 交易流水明细表 -->
+      <div style="background:var(--bg-subtle);border:1px solid var(--border);border-radius:8px;padding:14px;">
+        <div style="font-size:13px;font-weight:700;color:var(--text-pure);margin-bottom:10px;">交易对账流水明细 (Trade Records)</div>
+        <div id="btTradeTableBox" style="max-height:360px;overflow-y:auto;"></div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="/static/js/dashboard.js"></script>
+
+<!-- 持仓弹窗 Modal (添加 / 编辑) -->
+<div id="holdingModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal('holdingModal')">
+  <div class="modal-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h3 id="holdingModalTitle" style="margin:0;border:none;padding:0;">添加持仓股票</h3>
+      <button type="button" onclick="closeModal('holdingModal')" style="background:none;border:none;color:var(--text-muted);font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <form id="holdingForm" onsubmit="event.preventDefault();saveHoldingFromModal();">
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">股票代码 (6位代码，如 600519)</label>
+        <input id="modalHoldingCode" required placeholder="600519" maxlength="6" style="width:100%;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border-strong);border-radius:6px;color:#fff;font-family:var(--font-mono);font-size:14px;">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">持仓股数 (股，如 1000)</label>
+        <input id="modalHoldingShares" type="number" step="100" min="1" required placeholder="1000" style="width:100%;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border-strong);border-radius:6px;color:#fff;font-family:var(--font-mono);font-size:14px;">
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">买入成本均价 (元，如 1450.00)</label>
+        <input id="modalHoldingCost" type="number" step="0.01" min="0.01" required placeholder="1450.00" style="width:100%;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border-strong);border-radius:6px;color:#fff;font-family:var(--font-mono);font-size:14px;">
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="display:block;font-size:12px;color:var(--text-secondary);margin-bottom:4px;">止损防守价 (元，选填，默认成本 -5%)</label>
+        <input id="modalHoldingStopLoss" type="number" step="0.01" placeholder="选填，如 1380.00" style="width:100%;padding:8px 10px;background:var(--bg-subtle);border:1px solid var(--border-strong);border-radius:6px;color:#fff;font-family:var(--font-mono);font-size:14px;">
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button type="button" class="btn" onclick="closeModal('holdingModal')">取消</button>
+        <button type="submit" class="btn btn-primary">保存持仓</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<!-- 批量导入持仓 Modal -->
+<div id="batchHoldingModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this)closeModal('batchHoldingModal')">
+  <div class="modal-content" style="max-width:520px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+      <h3 style="margin:0;border:none;padding:0;">批量粘贴导入持仓</h3>
+      <button type="button" onclick="closeModal('batchHoldingModal')" style="background:none;border:none;color:var(--text-muted);font-size:22px;cursor:pointer;line-height:1;">&times;</button>
+    </div>
+    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;line-height:1.5;">
+      支持每行一条记录，格式：<b>代码 股数 成本价 [止损价]</b><br>
+      示例：<span class="mono-num" style="color:var(--accent);">600519 200 1450.00 1380.00</span>
+    </div>
+    <textarea id="batchHoldingText" rows="5" placeholder="请在此粘贴..." style="width:100%;padding:10px;background:var(--bg-subtle);border:1px solid var(--border-strong);border-radius:6px;color:#fff;font-family:var(--font-mono);font-size:13px;resize:vertical;margin-bottom:14px;"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:8px;">
+      <button type="button" class="btn" onclick="closeModal('batchHoldingModal')">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveBatchHolding()">立即导入</button>
+    </div>
+  </div>
+</div>
+</body>
+</html>

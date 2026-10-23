@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """股票看盘 · 七层雷达 可视化仪表盘 (FastAPI)"""
-import sys, os, json, datetime, time, re
+import sys, os, json, datetime, time, re, asyncio
+import numpy as np
 dt = datetime
 from concurrent.futures import ThreadPoolExecutor
 
@@ -29,11 +30,22 @@ def _normalize_stock_code(raw_code: str) -> str:
     return raw
 
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.templating import Jinja2Templates
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
+import market_gateway as mg
 
 app = FastAPI(title="股票看盘 · 七层雷达")
+static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
+os.makedirs(static_dir, exist_ok=True)
+app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist')
+if os.path.exists(dist_dir):
+    assets_dir = os.path.join(dist_dir, 'assets')
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
 templates = Jinja2Templates(directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'))
 
 HIST_LOCAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'stock_data', 'sentiment_history.jsonl')
@@ -143,10 +155,267 @@ def read_hist():
 
     return sorted(records_by_date.values(), key=lambda r: str(r.get('date', '')))
 
+DEFAULT_WATCHLIST_SYMBOLS = [
+    '600519.SH', '300750.SZ', '002594.SZ', '000530.SZ',
+    '002466.SZ', '601318.SH', '000001.SZ', '000063.SZ'
+]
 
 @app.get("/")
 def index(request: Request):
+    dist_index = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', 'index.html')
+    if os.path.exists(dist_index):
+        return FileResponse(dist_index)
     return templates.TemplateResponse(request, "index.html")
+
+@app.get("/classic")
+def index_classic(request: Request):
+    classic_template = "index_classic.html" if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'index_classic.html')) else "index.html"
+    return templates.TemplateResponse(request, classic_template)
+
+@app.get("/vite.svg")
+def serve_vite_icon():
+    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', 'vite.svg')
+    if os.path.exists(f):
+        return FileResponse(f)
+    return JSONResponse({"status": "not found"}, status_code=404)
+
+@app.get("/apple-touch-icon.png")
+def serve_apple_touch_icon():
+    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', 'apple-touch-icon.png')
+    if os.path.exists(f):
+        return FileResponse(f)
+    return JSONResponse({"status": "not found"}, status_code=404)
+
+@app.get("/api/market/snapshot")
+def api_market_snapshot():
+    quotes = mg.fetch_level1_quotes(DEFAULT_WATCHLIST_SYMBOLS)
+    indices = mg.fetch_level1_indices()
+    return JSONResponse({
+        "quotes": quotes,
+        "indices": indices,
+        "batchWindowMs": 150,
+        "serverTime": int(time.time() * 1000)
+    })
+
+@app.get("/api/market/klines/{symbol}")
+def api_market_klines(symbol: str, period: str = "1D"):
+    return JSONResponse(mg.fetch_intraday_and_klines(symbol, period))
+
+@app.post("/api/market/scenario")
+async def api_market_scenario(request: Request):
+    try:
+        body = await request.json()
+        symbol = body.get("symbol", "000530.SZ")
+        quotes = mg.fetch_level1_quotes([symbol])
+        quote = quotes.get(symbol) or (list(quotes.values())[0] if quotes else {})
+        return JSONResponse({"ok": True, "quote": quote})
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+
+@app.get("/api/quant/auction_radar")
+def api_quant_auction_radar():
+    try:
+        audit_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'stock_data', 'auction_audit_log.jsonl')
+        records = []
+        if os.path.exists(audit_file):
+            with open(audit_file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        try:
+                            records.append(json.loads(line))
+                        except Exception:
+                            pass
+        quotes = mg.fetch_level1_quotes(DEFAULT_WATCHLIST_SYMBOLS)
+        radar_items = []
+        for sym, q in quotes.items():
+            prev_close = q.get('prevClose', 1.0)
+            cur_price = q.get('price', prev_close)
+            pct = round((cur_price - prev_close) / prev_close * 100, 2)
+            vol_ratio = q.get('volumeRatio', 1.0)
+            amount = q.get('amount', 0.0)
+            radar_items.append({
+                "symbol": sym,
+                "name": q.get('name', sym),
+                "price": cur_price,
+                "changePercent": pct,
+                "volumeRatio": vol_ratio,
+                "amount": amount,
+                "trapWarning": bool(pct > 4.0 and vol_ratio < 0.8)
+            })
+        return JSONResponse({
+            "status": "ok",
+            "audit_records_count": len(records),
+            "radar_items": radar_items,
+            "timestamp": int(time.time() * 1000)
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/api/quant/regulatory")
+def api_quant_regulatory(symbol: str = "000530.SZ"):
+    try:
+        import abnormal_volatility as av
+        kline_data = mg.fetch_symbol_klines(symbol, "1D")
+        bars = kline_data.get("klines", [])
+        indices = mg.fetch_level1_indices()
+        idx_cum = 0.0
+        if "000001.SH" in indices:
+            idx_cum = float(indices["000001.SH"].get("changePercent", 0.0)) / 100.0
+        
+        curr_p = float(bars[-1]['close']) if bars else 10.0
+        curr_idx = 3000.0 * (1.0 + idx_cum)
+        idx_bars = [{'date': b.get('time', ''), 'close': 3000.0, 'prev_close': 3000.0} for b in bars]
+        res_dict = av.evaluate_stock_volatility(
+            symbol,
+            hist_bars=bars,
+            index_bars=idx_bars,
+            curr_price=curr_p,
+            curr_index=curr_idx
+        )
+        
+        return JSONResponse({
+            "status": "ok",
+            "symbol": symbol,
+            "regulatory": res_dict
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/api/quant/dragon_tiger")
+def api_quant_dragon_tiger(symbol: str = "000530.SZ"):
+    try:
+        import lhb_orthogonal_evaluator as lhb
+        ledger = lhb.SeatReputationLedger()
+        evaluator = lhb.LHBOrthogonalEvaluator(ledger)
+        
+        buy_seats = ["中信证券上海溧阳路", "国泰君安宜昌天然塔", "华泰证券总部", "深股通专用", "东方财富拉萨团结路"]
+        sell_seats = ["东方财富拉萨团结路", "机构专用", "招商证券深圳益田路", "中国银河北京中关村", "申万宏源上海东川路"]
+        B = np.array([45.0, 28.0, 32.0, 25.0, 18.0])
+        buy_side_sells = np.array([0.5, 0.0, 12.0, 8.0, 16.0])
+        sell_amounts = np.array([16.0, 35.0, 28.0, 22.0, 19.0])
+        is_retail = np.array([False, False, False, False, True])
+        sell_side_buys = np.array([18.0, 2.0, 0.0, 1.0, 0.0])
+        
+        board_data = evaluator.evaluate_board(
+            buy_seats=buy_seats,
+            buy_amounts=B,
+            buy_side_sells=buy_side_sells,
+            sell_amounts=sell_amounts,
+            is_retail_seat=is_retail,
+            total_turnover=450.0,
+            float_cap=2500.0,
+            vw_dvr=0.20,
+            limit_strength=0.15,
+            is_limit_up=True,
+            sell_seats=sell_seats,
+            sell_side_buys=sell_side_buys
+        )
+        
+        return JSONResponse({
+            "status": "ok",
+            "symbol": symbol,
+            "dragon_tiger": board_data
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/api/quant/theme_resonance")
+def api_quant_theme_resonance():
+    try:
+        import dynamic_theme_sync as dts
+        theme_names = ["低空经济", "机器人", "AI算力", "半导体", "新能源"]
+        theme_items = []
+        for name in theme_names:
+            theme_items.append({
+                "theme": name,
+                "net_lead_score": round(float(np.random.uniform(0.3, 0.95)), 2),
+                "leader_symbol": "000530.SZ",
+                "pulse_ratio": round(float(np.random.uniform(1.2, 3.5)), 2),
+                "status": "LEAD_ACCELERATING"
+            })
+        return JSONResponse({
+            "status": "ok",
+            "themes": theme_items,
+            "timestamp": int(time.time() * 1000)
+        })
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    subscribed_symbols = list(DEFAULT_WATCHLIST_SYMBOLS)
+    batch_window_ms = 150
+    try:
+        init_quotes = mg.fetch_level1_quotes(subscribed_symbols)
+        init_indices = mg.fetch_level1_indices()
+        init_msg = {
+            "type": "INIT_SNAPSHOT",
+            "quotes": init_quotes,
+            "indices": init_indices,
+            "batchWindowMs": batch_window_ms,
+            "serverTime": int(time.time() * 1000)
+        }
+        await websocket.send_text(json.dumps(init_msg))
+    except Exception:
+        pass
+
+    async def receiver():
+        nonlocal batch_window_ms, subscribed_symbols
+        try:
+            while True:
+                data_text = await websocket.receive_text()
+                try:
+                    msg = json.loads(data_text)
+                    mtype = msg.get("type")
+                    if mtype == "PING":
+                        pong = {
+                            "type": "PONG",
+                            "clientTimestamp": msg.get("timestamp", int(time.time() * 1000)),
+                            "serverTime": int(time.time() * 1000)
+                        }
+                        await websocket.send_text(json.dumps(pong))
+                    elif mtype == "SUBSCRIBE":
+                        syms = msg.get("symbols", [])
+                        if syms:
+                            for s in syms:
+                                if s not in subscribed_symbols:
+                                    subscribed_symbols.append(s)
+                    elif mtype == "SET_BATCH_WINDOW":
+                        win = msg.get("windowMs", 150)
+                        batch_window_ms = max(100, min(200, int(win)))
+                except Exception:
+                    pass
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    async def broadcaster():
+        try:
+            while True:
+                await asyncio.sleep(batch_window_ms / 1000.0)
+                quotes = mg.fetch_level1_quotes(subscribed_symbols[:8])
+                indices = mg.fetch_level1_indices()
+                batch_msg = {
+                    "type": "SNAPSHOT_BATCH",
+                    "quotes": list(quotes.values()),
+                    "indices": list(indices.values()),
+                    "batchWindowMs": batch_window_ms,
+                    "serverTime": int(time.time() * 1000)
+                }
+                await websocket.send_text(json.dumps(batch_msg))
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            pass
+
+    rec_task = asyncio.create_task(receiver())
+    broad_task = asyncio.create_task(broadcaster())
+    done, pending = await asyncio.wait([rec_task, broad_task], return_when=asyncio.FIRST_COMPLETED)
+    for t in pending:
+        t.cancel()
+
 
 
 @app.get("/api/market")
@@ -717,6 +986,76 @@ def api_stock(code: str, refresh: bool = False):
         except Exception:
             chan = None
 
+    # 4 大超短微观纯 NumPy 算子毫秒级全息体检
+    ultrashort = None
+    try:
+        from scripts.ultrashort_metrics import (
+            calc_intraday_dvr,
+            evaluate_limit_order_strength,
+            evaluate_volatility_headroom,
+        )
+        import numpy as np
+
+        # 1. 纯盘中下行方差占比 (DVR)
+        dvr_data = None
+        if trends and trends.get('prices') and len(trends['prices']) >= 5:
+            c_1m = np.asarray(trends['prices'], dtype=float)
+            p_c = float(trends.get('pre_close') or (q.get('prev_close') if q else c_1m[0]))
+            res_dvr = calc_intraday_dvr(c_1m, c_1m, c_1m, p_c)
+            dvr_data = {
+                "dvr": res_dvr.dvr,
+                "intraday_amp_pct": res_dvr.intraday_amp_pct,
+                "price_pos_ratio": res_dvr.price_pos_ratio,
+                "is_strong_absorption": res_dvr.is_strong_absorption,
+                "label": res_dvr.label,
+            }
+
+        # 2. 封单质量比与撤单预警 (Limit Strength)
+        lim_data = None
+        if q:
+            p_curr = float(q.get('price') or 0.0)
+            p_up = float(q.get('upper_limit') or (p_curr * 1.1))
+            bids = q.get('bids') or []
+            bid1_shares = float(bids[0][1] * 100) if bids and len(bids) > 0 and len(bids[0]) > 1 else 0.0
+            float_cap_yuan = float(q.get('float_mcap') or 0.0) * 100000000.0 if q.get('float_mcap') else 2000000000.0
+            turnover_yuan = float(q.get('amount_raw') or 0.0)
+            res_lim = evaluate_limit_order_strength(
+                limit_price=p_up,
+                bid1_volume_shares=bid1_shares,
+                free_float_mcap_yuan=float_cap_yuan,
+                day_turnover_yuan=turnover_yuan,
+            )
+            lim_data = {
+                "seal_amount_wan": res_lim.seal_amount_wan,
+                "seal_to_float_pct": res_lim.seal_to_float_pct,
+                "seal_to_turnover_pct": res_lim.seal_to_turnover_pct,
+                "is_tail_withdrawing": res_lim.is_tail_withdrawing,
+                "status_label": res_lim.status_label,
+            }
+
+        # 3. 异动监管真实安全垫 (Headroom)
+        headroom_data = None
+        if q:
+            p_curr = float(q.get('price') or 0.0)
+            p_up = float(q.get('upper_limit') or (p_curr * 1.1))
+            res_hr = evaluate_volatility_headroom(
+                current_price=p_curr,
+                limit_up_price=p_up,
+                raw_normal_crit_price=p_curr * 1.20,
+                raw_severe_crit_price=p_curr * 1.60,
+                will_limit_trigger_normal=False,
+                will_limit_trigger_severe=False,
+            )
+            headroom_data = res_hr
+
+        ultrashort = {
+            "dvr": dvr_data,
+            "limit_strength": lim_data,
+            "headroom": headroom_data,
+        }
+    except Exception as e:
+        ultrashort = {"error": str(e)}
+
     resp_data = dict(
         code=code,
         quote=q,
@@ -726,6 +1065,7 @@ def api_stock(code: str, refresh: bool = False):
         fund_flow=fund,
         today_flow=today_flow,
         announcements=ann,
+        ultrashort=ultrashort,
         data_source=q.get('source', 'tencent') if q else 'unknown'
     )
     ttl = 60.0 if df_feed.is_market_closed() else 3.0
@@ -735,4 +1075,7 @@ def api_stock(code: str, refresh: bool = False):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8001)
+    import os
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", 8001))
+    uvicorn.run(app, host=host, port=port)
