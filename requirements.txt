@@ -4,7 +4,6 @@
 # === Web 仪表盘 ===
 fastapi>=0.100.0
 uvicorn>=0.23.0
-jinja2>=3.1.0
 
 # === 网络层 ===
 # 伪装 Chrome TLS 指纹，突破东方财富等站点的反爬（RemoteDisconnected）
