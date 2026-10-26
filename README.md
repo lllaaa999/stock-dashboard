@@ -1,10 +1,10 @@
-# 股票综合看盘系统 · 七层雷达 + 多主体模拟
+# 股票综合看盘系统 · 七层雷达
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/lllaaa999/stock-dashboard)](https://github.com/lllaaa999/stock-dashboard/releases)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 
-A股综合看盘工具，覆盖大盘行情、隔夜外盘、情绪指数、板块资金、两融、快讯、个股体检、K线图、缠论、情绪周期定位、九方势力多主体推演、世界模拟、形态选股。
+A股综合看盘工具，覆盖大盘行情、隔夜外盘、情绪指数、板块资金、两融、快讯、个股体检、K线图、缠论、情绪周期定位、形态选股。
 
 > **如果这个项目对你有帮助，欢迎点个 ⭐ Star —— 它能被更多做 A 股量化研究的人看到。**
 
@@ -12,7 +12,6 @@ A股综合看盘工具，覆盖大盘行情、隔夜外盘、情绪指数、板�
 
 - **一次调用拿到全景**：`python stock_dashboard.py market` 约 2-3 秒聚合 7 类数据源，省掉在多个财经网站间反复切换。
 - **把"情绪"变成可算的数字**：0-100 分情绪指数有独立加权算法并可存档回溯，情绪周期定位（冰点→修复→主升→亢奋→退潮）不靠感觉，靠数据。
-- **多主体博弈推演**：九方势力（国家队/机构/游资/团伙控盘/散户/北向/量化/产业资本/大散户）加权建模 + 3 轮交互传染 + 情景注入，用于生成次日剧本。
 - **工程上抗限流**：curl_cffi 伪装 Chrome TLS → urllib 双通道回退 + host 级熔断 + 三域名轮换，接口抖动不会直接打断看盘。
 - **纯本地运行**：不依赖付费行情 API，数据取自公开接口，持仓与配置留在自己机器上。
 
@@ -32,14 +31,47 @@ pip install -r requirements.txt
 
 ### 2. 启动 Web 仪表盘
 
+需要 **Python 3.10+**（3.9 会因 dataclass slots 报错）。本机实测可用解释器是 `py -3.12`：
+
 ```bash
+# Windows（推荐，等价于双击「一键启动股票看盘.bat」）
+set STOCK_DATA_HOME=D:\股票看盘\data
+py -3.12 web/main.py
+
+# 或手动跑 uvicorn
 cd web
-python main.py
+set STOCK_DATA_HOME=D:\股票看盘\data
+py -3.12 -m uvicorn main:app --port 8001
 ```
 
 然后浏览器打开 **http://127.0.0.1:8001**
 
 桌面也有「启动股票看盘.bat」一键启动。
+
+服务端只托管 React 构建产物 `web/dist`（已随仓库提供，无需先构建）。改动前端源码后需要重新构建：
+
+```bash
+cd frontend
+bun install      # 首次
+bun run build    # vite build 结束会自动同步 dist → ../web/dist
+```
+
+`GET /api/health` 可确认前端产物是否就绪（`frontend: "react-dist"`）。
+
+### 2.5 跑测试
+
+```bash
+py -3.12 -m unittest discover -s tests -t .    # 51 个用例，约 3 秒
+```
+
+### 2.8 K线图上的缠论图层
+
+日/周/月K 主图上可叠加缠论结构（默认开启，工具栏「缠论」按钮可一键开关）：
+
+- **金色折线** = 缠论笔（分型 → 笔，含顶/底分型圆点）
+- **金色虚线框** = 中枢区间（标注 `中枢 lo~hi`）
+- **红/绿箭头 + 标签** = 买卖点（底背驰 / 一买候选 / 顶背驰 / 一卖警戒）
+- 数据来自 `/api/quant/chan/{symbol}`（`core/chan.py` 纯算力 + 同源日K，按 symbol 缓存 5 分钟）
 
 ### 3. 命令行使用
 
@@ -67,14 +99,6 @@ python stock_dashboard.py cycle
 # 缠论日线结构化分析（分型包含合并/笔/中枢/三买三卖/顶底背驰）
 python stock_dashboard.py chan 600664
 
-# 九方势力多主体推演（无参=大盘；带代码=个股资金博弈）
-python stock_dashboard.py agents
-python stock_dashboard.py agents 600664
-
-# 世界模拟v2（势力记忆+交互传染+情景注入）
-python stock_dashboard.py sim
-python stock_dashboard.py sim 外盘暴跌
-
 # 四策略选股（龙头梯队/主力介入/异动放量/龙虎榜）
 python stock_dashboard.py screener all
 
@@ -84,7 +108,17 @@ python strategies_lib.py all    # 全策略跑一遍（复盘用）
 
 # 八形态选股（涨停首板/连板/均线多头/金叉/放量突破等）
 python screener.py
+
+# 7x24 消息面采集与事件结构化（落盘 data/news/）
+python stock_dashboard.py news
+
+# 预判闭环：存档自己的判断，次日自动对账（save / check / stats）
+python stock_dashboard.py pred save --dir 多 --score-lo 55 --score-hi 70
+python stock_dashboard.py pred check
+python stock_dashboard.py pred stats
 ```
+
+`stock_dashboard.py` 全部子命令：`market / stock / auction / emotion / cycle / chan / screener / news / pred`。
 
 ---
 
@@ -102,12 +136,13 @@ python screener.py
 | 7 | 个股体检 | 腾讯+东财+akshare |
 
 ### 情绪指数算法
-`基准10 + 涨停广度30 + 连板高度25 + 封板质量20 - 跌停惩罚15`
+**主用 v2**：`基准10 + 广度18(平方根去饱和,饱和点120家) + 高度17(平方根) + 封板质量12 + 赚钱效应25 - 跌停惩罚15`
+赚钱效应 = `0.6×昨日涨停今均溢价(±5%缩尾归一) + 0.4×1进2晋级率`。
 
-分档：`<30冰点 / 30-50退潮 / 50-70中性 / 70-85活跃 / >85亢奋`
+v1（`基准10 + 广度30 + 高度25 + 封板质量20 - 跌停惩罚15`）仅作历史对照留档。
 
-### 多主体模拟（九方势力）
-国家队 / 机构 / 游资 / 团伙控盘 / 散户 / 北向 / 量化 / 产业资本 / 大散户，各有加权。世界模拟v2 三机制：势力记忆 + 交互传染（3轮阻尼）+ 情景注入。
+分档：`<30冰点 / 30-50退潮 / 50-70中性 / 70-85活跃 / ≥85亢奋`
+> 已知缺口：v2 权重合计上限为 82 分，85 分亢奋线实际不可达（详见 `PROJECT_STRUCTURE.md` 第 6 节 #12）。
 
 ### 选股系统
 - **strategies_lib.py**（12策略，推荐）：E低位首板 / F断板反包 / G超跌反弹 / H N字反包 / I均线趋势加速 / J板块梯队+中军 / K撬板地天板 / L游资接力 + M情绪周期总开关
@@ -118,39 +153,65 @@ python screener.py
 ## 目录结构
 
 ```
-finance-stock-dashboard/
-├── README.md                 ← 本文件
-├── requirements.txt          ← Python 依赖
-├── SKILL.md                  ← 开发文档（面向 Agent/开发者）
-├── data/
-│   ├── stock_list.json       ← 股票代码表（每日自动缓存）
-│   └── stock_data/
-│       ├── sentiment_history.jsonl  ← 情绪指数历史存档
-│       └── agents_state.json        ← 九方势力记忆存档
-├── scripts/
-│   ├── stock_dashboard.py    ← 主程序（七层雷达+缠论+模拟+选股）
-│   ├── strategies_lib.py     ← 十二策略选股库（推荐日常用）
-│   ├── screener.py           ← 八形态选股器
-│   ├── stock_daily_note.py   ← 每日看盘笔记→Obsidian
-│   └── sync_check.ps1        ← 多拷贝同步检查（SHA256校验）
-└── web/
-    ├── main.py               ← FastAPI 后端
-    └── templates/
-        └── index.html        ← ECharts 可视化仪表盘
+D:\股票看盘\
+├── README.md                 ← 本文件（面向使用者）
+├── SKILL.md                  ← 开发文档与踩坑记录（面向 Agent/开发者）
+├── PROJECT_STRUCTURE.md      ← 项目地图 + 现状体检（唯一权威结构说明）
+├── requirements.txt          ← Python 依赖（需 Python 3.10+，本机用 py -3.12）
+├── core/                     ← 纯算力层：缠论 / 涨停质量分 / 情绪打分（无网络无 IO）
+├── scripts/                  ← 数据接入 + 业务决策（24 个模块）
+│   ├── stock_dashboard.py    ← 主采集器（七层雷达 + 情绪 + 梯队 + 选股 + 战略决策）
+│   ├── data_feed.py          ← 四源容灾 + TTL/LRU 缓存
+│   ├── data_layer.py         ← 日K四级降级（TDX→baostock→AKShare→腾讯）
+│   ├── auction_radar.py      ← 9:25 竞价雷达；auction_audit.py 收盘对账
+│   ├── strategies_lib.py     ← 12 策略选股库（auto 按情绪周期自动启停）
+│   ├── screener.py           ← 8 形态选股
+│   ├── abnormal_volatility.py← 异动红线与最高安全价反推
+│   ├── position_gate.py      ← 仓位闸门；strategic_decision.py 决策中枢
+│   ├── paper_trading.py      ← 纸上交易；backtest_engine.py 回测
+│   └── daily_auto_iteration.py ← 盘后全自动流水线
+├── web/                      ← FastAPI 服务端（28 个 /api + /ws）
+│   ├── main.py               ← 路由 / 缓存 / 字段映射
+│   ├── market_gateway.py     ← L1 五档与逐笔、K线网关
+│   ├── quant_data_service.py ← 梯队 / 题材 / 龙虎榜加工
+│   └── dist/                 ← 前端构建产物（唯一线上 UI）
+├── frontend/                 ← React 19 + Vite + Tailwind 源码（15 组件）
+│   └── src/utils/ultraShortQuant.ts ← 超短计算内核（3171 行）
+├── tests/                    ← 19 文件 / 51 用例（unittest）
+├── benchmarks/               ← 离线压测与实证脚本
+├── config/                   ← 本地配置（llm.local.json 已 gitignore）
+└── data/                     ← 字典库与运行档案（情绪存档 / 竞价台账 / 纸上交易）
 ```
 
 ---
 
 ## Web API
 
+共 28 个 `/api/*` + 1 个 `/ws` 实时推流。常用：
+
 | 接口 | 说明 |
 |---|---|
-| `GET /` | 仪表盘首页 |
+| `GET /` | 看盘首页（React 构建产物 `web/dist`） |
+| `GET /api/health` | 健康检查（前端产物是否就绪） |
 | `GET /api/market` | 大盘全景（指数+情绪+外盘+板块+两融+快讯） |
-| `GET /api/emotion/history` | 情绪指数历史曲线 |
-| `GET /api/screen?patterns=` | 形态选股（约1-2分钟） |
-| `GET /api/sim?scenario=&code=` | 多主体模拟/情景注入 |
-| `GET /api/stock/{code}` | 个股体检（行情+K线+资金流+公告） |
+| `GET /api/market/quote/{symbol}` | 单只 L1 报价（五档、委比） |
+| `GET /api/market/klines/{symbol}` | K线/分时 |
+| `GET /api/quant/ladder` | 连板梯队、断层诊断、晋级率 |
+| `GET /api/quant/auction_radar` | 9:25 竞价雷达 |
+| `GET /api/quant/theme_resonance` | 题材共振 |
+| `GET /api/quant/regulatory` | 法定异动监管逆推 |
+| `GET /api/quant/dragon_tiger` | 龙虎榜席位正交验身 |
+| `GET /api/emotion/history` | 情绪指数历史曲线（返回数组） |
+| `GET /api/strategic_decision` | 周期阶段 / 仓位 / 开火门禁 |
+| `GET /api/screen?patterns=` | 形态选股（约 1-2 分钟） |
+| `GET /api/strategies?mode=auto` | 12 策略选股（120s 缓存） |
+| `GET /api/stock/{code}` | 个股体检（行情+K线+缠论+资金+公告） |
+| `GET /api/data_status` | 数据源健康度与缓存命中 |
+| `GET /api/backtest/presets` `GET /api/backtest/run` | 回测预置与执行（仅 GET） |
+| `GET /api/paper/{replay,tick,report,reset}` | 纸上交易 |
+| `GET /api/auction` `/api/auction/audit` `/api/auction/audit/ledger` | 竞价雷达 / 收盘对账 / 累计台账 |
+
+> 前端目前只接入了其中 9 个，其余端点有数据但无视图（见 `PROJECT_STRUCTURE.md` 第 6 节 #7）。
 
 ---
 

@@ -31,22 +31,18 @@ def _normalize_stock_code(raw_code: str) -> str:
 
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.templating import Jinja2Templates
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import market_gateway as mg
+import quant_data_service as qds
 
 app = FastAPI(title="股票看盘 · 七层雷达")
-static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static')
-os.makedirs(static_dir, exist_ok=True)
-app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
-dist_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist')
-if os.path.exists(dist_dir):
-    assets_dir = os.path.join(dist_dir, 'assets')
-    if os.path.exists(assets_dir):
-        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
-templates = Jinja2Templates(directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates'))
+# 唯一前端：React 构建产物 (frontend/ -> vite build -> 自动同步到 web/dist)
+WEB_DIR = os.path.dirname(os.path.abspath(__file__))
+dist_dir = os.path.join(WEB_DIR, 'dist')
+if os.path.exists(os.path.join(dist_dir, 'assets')):
+    app.mount("/assets", StaticFiles(directory=os.path.join(dist_dir, 'assets')), name="assets")
 
 HIST_LOCAL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'stock_data', 'sentiment_history.jsonl')
 HIST = HIST_LOCAL if os.path.exists(HIST_LOCAL) else os.path.join(sd.DATA_DIR, 'sentiment_history.jsonl')
@@ -161,34 +157,144 @@ DEFAULT_WATCHLIST_SYMBOLS = [
 ]
 
 @app.get("/")
-def index(request: Request):
-    dist_index = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', 'index.html')
+def index():
+    dist_index = os.path.join(dist_dir, 'index.html')
     if os.path.exists(dist_index):
         return FileResponse(dist_index)
-    return templates.TemplateResponse(request, "index.html")
+    return JSONResponse(
+        {
+            "status": "error",
+            "message": "前端产物缺失: web/dist/index.html。请在 frontend/ 执行 bun run build（构建后会自动同步到 web/dist）。",
+        },
+        status_code=503,
+    )
 
-@app.get("/classic")
-def index_classic(request: Request):
-    classic_template = "index_classic.html" if os.path.exists(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'index_classic.html')) else "index.html"
-    return templates.TemplateResponse(request, classic_template)
+
+@app.get("/api/health")
+def api_health():
+    dist_ok = os.path.isfile(os.path.join(dist_dir, 'index.html'))
+    return JSONResponse(
+        {
+            "status": "ok" if dist_ok else "degraded",
+            "frontend": "react-dist" if dist_ok else "missing",
+            "dist_dir": dist_dir,
+            "server_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    )
 
 @app.get("/vite.svg")
-def serve_vite_icon():
-    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', 'vite.svg')
-    if os.path.exists(f):
+@app.get("/apple-touch-icon.png")
+@app.get("/registerSW.js")
+@app.get("/sw.js")
+@app.get("/manifest.webmanifest")
+@app.get("/icon.svg")
+@app.get("/pwa-192x192.png")
+@app.get("/pwa-512x512.png")
+@app.get("/pwa-maskable-512x512.png")
+def serve_pwa_static_file(request: Request):
+    filename = request.url.path.lstrip('/')
+    f = os.path.join(dist_dir, filename)
+    if os.path.isfile(f):
         return FileResponse(f)
     return JSONResponse({"status": "not found"}, status_code=404)
 
-@app.get("/apple-touch-icon.png")
-def serve_apple_touch_icon():
-    f = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist', 'apple-touch-icon.png')
-    if os.path.exists(f):
+@app.get("/workbox-{wb_hash:path}")
+def serve_workbox(wb_hash: str):
+    f = os.path.join(dist_dir, f"workbox-{wb_hash}")
+    if os.path.isfile(f):
         return FileResponse(f)
     return JSONResponse({"status": "not found"}, status_code=404)
+
+@app.get("/api/market/search")
+def api_market_search(q: str = ""):
+    q = q.strip()
+    if not q:
+        return JSONResponse({"status": "ok", "results": []})
+    try:
+        import urllib.request, urllib.parse
+        encoded_q = urllib.parse.quote(q)
+        url = f"https://searchapi.eastmoney.com/api/suggest/get?type=14&token=4f22e26c03c09e1f3e9f416a787d5f72&input={encoded_q}"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=3.0) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+        items = (data.get('QuotationCodeTable') or {}).get('Data') or []
+        results = []
+        syms_to_fetch = []
+        for x in items[:15]:
+            c = str(x.get('Code', '')).strip()
+            name = str(x.get('Name', '')).strip()
+            pinyin = str(x.get('PinYin', '')).strip()
+            if not c or len(c) != 6:
+                continue
+            suffix = '.SH' if c.startswith(('6', '9')) else ('.BJ' if c.startswith(('4', '8')) else '.SZ')
+            symbol = f"{c}{suffix}"
+            syms_to_fetch.append(symbol)
+            results.append({
+                "symbol": symbol,
+                "code": c,
+                "name": name,
+                "pinyin": pinyin,
+                "market": suffix[1:],
+                "securityType": x.get('SecurityTypeName', '')
+            })
+        if syms_to_fetch:
+            quotes = mg.fetch_level1_quotes(syms_to_fetch)
+            for r in results:
+                q_obj = quotes.get(r['symbol'])
+                if q_obj:
+                    r['price'] = q_obj.get('price', 0.0)
+                    r['changePercent'] = q_obj.get('changePercent', 0.0)
+                    r['change'] = q_obj.get('change', 0.0)
+                    r['volume'] = q_obj.get('volume', 0)
+                    r['amount'] = q_obj.get('amount', 0)
+                    r['turnoverRate'] = q_obj.get('turnoverRate', 0.0)
+                    r['quote'] = q_obj
+        return JSONResponse({"status": "ok", "results": results})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e), "results": []}, status_code=500)
+
+def _attach_ultra_short(quotes: dict) -> dict:
+    """给 L1 报价补上 ultraShort（连板身位/首封时间/封单/竞价开盘等真实字段）。
+
+    为什么必须补：前端 ultraShortQuant 的连板梯队、身位、晋级率全部读
+    quote.ultraShort.consecutiveBoards，缺这个字段时一律退化成 0（"最高 0 连板"）。
+    数据全部来自东财涨停池/炸板池，取不到就**不塞**该字段（前端保留旧值），
+    绝不用 0 或硬编码常量冒充。
+    """
+    for sym, q in list(quotes.items()):
+        if not isinstance(q, dict):
+            continue
+        try:
+            us = qds.get_ultra_short_profile(sym, q)
+        except Exception:
+            us = None
+        if us:
+            q['ultraShort'] = us
+    return quotes
+
+
+@app.get("/api/market/quote/{symbol}")
+def api_market_quote(symbol: str):
+    try:
+        clean_sym = symbol.strip()
+        if not ('.' in clean_sym):
+            suffix = '.SH' if clean_sym.startswith(('6', '9')) else ('.BJ' if clean_sym.startswith(('4', '8')) else '.SZ')
+            clean_sym = f"{clean_sym}{suffix}"
+        quotes = mg.fetch_level1_quotes([clean_sym])
+        quote = quotes.get(clean_sym)
+        if not quote and quotes:
+            quote = list(quotes.values())[0]
+        if not quote:
+            return JSONResponse({"status": "not_found", "message": "Quote not available"}, status_code=404)
+        _attach_ultra_short({clean_sym: quote})
+        return JSONResponse({"status": "ok", "symbol": clean_sym, "quote": quote})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 @app.get("/api/market/snapshot")
 def api_market_snapshot():
     quotes = mg.fetch_level1_quotes(DEFAULT_WATCHLIST_SYMBOLS)
+    _attach_ultra_short(quotes)
     indices = mg.fetch_level1_indices()
     return JSONResponse({
         "quotes": quotes,
@@ -212,134 +318,398 @@ async def api_market_scenario(request: Request):
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
+_auction_radar_cache = {"data": None, "ts": 0}
+
 @app.get("/api/quant/auction_radar")
 def api_quant_auction_radar():
+    global _auction_radar_cache
+    now = time.time()
+    if _auction_radar_cache["data"] and (now - _auction_radar_cache["ts"] < 5.0):
+        return JSONResponse(_auction_radar_cache["data"])
+
     try:
-        audit_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data', 'stock_data', 'auction_audit_log.jsonl')
-        records = []
-        if os.path.exists(audit_file):
-            with open(audit_file, 'r', encoding='utf-8') as f:
-                for line in f:
-                    if line.strip():
-                        try:
-                            records.append(json.loads(line))
-                        except Exception:
-                            pass
-        quotes = mg.fetch_level1_quotes(DEFAULT_WATCHLIST_SYMBOLS)
+        def to_sym(c):
+            c = str(c).strip().zfill(6)
+            if c.startswith(('6', '9')):
+                return c + '.SH'
+            elif c.startswith(('4', '8')):
+                return c + '.BJ'
+            return c + '.SZ'
+
+        r = ar.get_auction_radar() or {}
         radar_items = []
-        for sym, q in quotes.items():
-            prev_close = q.get('prevClose', 1.0)
-            cur_price = q.get('price', prev_close)
-            pct = round((cur_price - prev_close) / prev_close * 100, 2)
-            vol_ratio = q.get('volumeRatio', 1.0)
-            amount = q.get('amount', 0.0)
+        seen = set()
+        # 金额口径：'auction' = 真正的 9:25 竞价额；'intraday' = 开盘后累计成交额（占昨比含义不同）
+        _basis = r.get('amount_basis') or 'auction'
+        _amt_label = '竞价占昨比' if _basis == 'auction' else '当日成交占昨比'
+
+        # 顺序即优先级：核按钮/大面榜先入，避免「跌停放巨量」被 boom 榜当成抢筹后
+        # 因 symbol 已存在被去重跳过（2026-10-26 三峡新材 600293 实证）。
+        for item in r.get('big_loss', []):
+            code = str(item.get('code')).zfill(6)
+            sym = to_sym(code)
+            if sym in seen: continue
+            seen.add(sym)
+            amt_yi = float(item.get('amount_yi', 0.0) or 0.0)
+            ratio_pct = float(item.get('amount_ratio_pct', 0.0) or 0.0)
             radar_items.append({
-                "symbol": sym,
-                "name": q.get('name', sym),
-                "price": cur_price,
-                "changePercent": pct,
-                "volumeRatio": vol_ratio,
-                "amount": amount,
-                "trapWarning": bool(pct > 4.0 and vol_ratio < 0.8)
+                'symbol': sym,
+                'code': code,
+                'name': item.get('name', code),
+                'auctionPrice': float(item.get('price', 0.0) or 0.0),
+                'auctionChangePercent': float(item.get('pct', 0.0) or 0.0),
+                'auctionAmount': round(amt_yi * 1e8, 2),
+                'yesterdayAmount': round((amt_yi * 1e8) / (ratio_pct / 100.0), 2) if ratio_pct > 0 else 0.0,
+                'amountToYesterdayRatio': ratio_pct,
+                'auctionVolumeRatio': float(item.get('vol_ratio', 1.0) or 1.0),
+                'unmatchedHands': int((item.get('total_bid_vol', 0) or 0) - (item.get('total_ask_vol', 0) or 0)),
+                'amountBasis': _basis,
+                'signal': 'NUCLEAR_BUTTON',
+                'signalLabel': '竞价核按钮',
+                'signalReason': item.get('reason') or f"深水大面踩踏，竞价重挫 {item.get('pct')}%",
+                'trapWarning': True,
             })
-        return JSONResponse({
+
+
+        for item in r.get('weak_to_strong', []):
+            code = str(item.get('code')).zfill(6)
+            sym = to_sym(code)
+            if sym in seen: continue
+            seen.add(sym)
+            amt_yi = float(item.get('amount_yi', 0.0) or 0.0)
+            ratio_pct = float(item.get('amount_ratio_pct', 0.0) or 0.0)
+            radar_items.append({
+                'symbol': sym,
+                'code': code,
+                'name': item.get('name', code),
+                'auctionPrice': float(item.get('price', 0.0) or 0.0),
+                'auctionChangePercent': float(item.get('pct', 0.0) or 0.0),
+                'auctionAmount': round(amt_yi * 1e8, 2),
+                'yesterdayAmount': round((amt_yi * 1e8) / (ratio_pct / 100.0), 2) if ratio_pct > 0 else 0.0,
+                'amountToYesterdayRatio': ratio_pct,
+                'auctionVolumeRatio': float(item.get('vol_ratio', 1.0) or 1.0),
+                'unmatchedHands': int((item.get('total_bid_vol', 0) or 0) - (item.get('total_ask_vol', 0) or 0)),
+                'amountBasis': _basis,
+                'signal': 'WEAK_TO_STRONG',
+                'signalLabel': '分歧弱转强',
+                'signalReason': item.get('reason') or f"昨分歧释放，今竞价高开反包，{_amt_label} {ratio_pct}%",
+                'trapWarning': bool(item.get('is_fake_high_open', False)),
+            })
+
+        for item in r.get('auction_boom', []):
+            code = str(item.get('code')).zfill(6)
+            sym = to_sym(code)
+            if sym in seen: continue
+            seen.add(sym)
+            is_locked = bool(item.get('is_one_word') or float(item.get('order_ratio', 0) or 0) >= 99.0)
+            amt_yi = float(item.get('amount_yi', 0.0) or 0.0)
+            ratio_pct = float(item.get('amount_ratio_pct', 0.0) or 0.0)
+            radar_items.append({
+                'symbol': sym,
+                'code': code,
+                'name': item.get('name', code),
+                'auctionPrice': float(item.get('price', 0.0) or 0.0),
+                'auctionChangePercent': float(item.get('pct', 0.0) or 0.0),
+                'auctionAmount': round(amt_yi * 1e8, 2),
+                'yesterdayAmount': round((amt_yi * 1e8) / (ratio_pct / 100.0), 2) if ratio_pct > 0 else 0.0,
+                'amountToYesterdayRatio': ratio_pct,
+                'auctionVolumeRatio': float(item.get('vol_ratio', 1.0) or 1.0),
+                'unmatchedHands': int((item.get('total_bid_vol', 0) or 0) - (item.get('total_ask_vol', 0) or 0)),
+                'amountBasis': _basis,
+                'signal': 'LOCKED_LIMIT_UP' if is_locked else 'SUPER_GRAB',
+                'signalLabel': '一字巨封顶板' if is_locked else '超预期抢筹',
+                'signalReason': item.get('reason') or f"抢筹异动，{_amt_label} {ratio_pct}%",
+                'trapWarning': bool(item.get('is_fake_high_open', False)),
+            })
+
+        grabCount = sum(1 for it in radar_items if it['signal'] in ('SUPER_GRAB', 'LOCKED_LIMIT_UP'))
+        nuclearCount = sum(1 for it in radar_items if it['signal'] == 'NUCLEAR_BUTTON')
+        weakToStrongCount = sum(1 for it in radar_items if it['signal'] == 'WEAK_TO_STRONG')
+        highlightStocks = radar_items[:6]  # signal 从未赋值 'NORMAL'，原过滤恒真
+
+        resp = {
             "status": "ok",
-            "audit_records_count": len(records),
             "radar_items": radar_items,
+            "grabCount": grabCount,
+            "nuclearCount": nuclearCount,
+            "weakToStrongCount": weakToStrongCount,
+            # 原来写死 0，前端"竞价砸盘"卡片永远是 0。这里改为按实际信号统计
+            # （当前映射未产出 OVERHEAT_DUMP 分类，所以仍为 0，但至少是算出来的，不是常量）
+            "dumpCount": sum(1 for it in radar_items if it['signal'] == 'OVERHEAT_DUMP'),
+            "highlightStocks": highlightStocks,
+            "amount_basis": _basis,
+            "promotion_metrics": r.get('promotion_metrics', {}),
+            "premium_summary": r.get('premium_summary', {}),
             "timestamp": int(time.time() * 1000)
-        })
+        }
+        _auction_radar_cache["data"] = resp
+        _auction_radar_cache["ts"] = now
+        return JSONResponse(resp)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
+
+# ---------- 全市场竞价扫描（独立于接力雷达，两套并行） ----------
+_full_scan_cache = {"data": None, "ts": 0}
+
+@app.get("/api/quant/full_market_scan")
+def api_quant_full_market_scan():
+    """全市场竞价扫描：东财clist一次拉全A股，严格阈值信号判定。
+    与接力雷达完全独立，5秒缓存。
+    """
+    global _full_scan_cache
+    now = time.time()
+    if _full_scan_cache["data"] and (now - _full_scan_cache["ts"] < 5.0):
+        return JSONResponse(_full_scan_cache["data"])
+
+    try:
+        result = ar.get_full_market_auction_scan()
+        _full_scan_cache["data"] = result
+        _full_scan_cache["ts"] = now
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+_REG_CACHE: dict = {}          # {symbol: (ts, payload)}
+_REG_TTL_OPEN = 60.0           # 交易时段 60s
+_REG_TTL_CLOSED = 1800.0       # 休市 30min（日K不变，监管仓位无需频繁重算）
+
+
 @app.get("/api/quant/regulatory")
 def api_quant_regulatory(symbol: str = "000530.SZ"):
+    # 该端点每次都要拉 160 根日K + 全量指数（实测冷启动 2.5s），
+    # 而结果在同一天的收盘价不变，故按 symbol 做 TTL 缓存。
+    _now = time.time()
+    _hit = _REG_CACHE.get(symbol)
+    if _hit:
+        _ts, _payload = _hit
+        _ttl = _REG_TTL_CLOSED if df_feed.is_market_closed() else _REG_TTL_OPEN
+        if _now - _ts < _ttl:
+            return JSONResponse(_payload)
     try:
         import abnormal_volatility as av
-        kline_data = mg.fetch_symbol_klines(symbol, "1D")
+        clean_sym = symbol.strip().upper()
+        code = clean_sym.split('.')[0]
+        if code.startswith(('6', '9')) or clean_sym.endswith('.SH'):
+            idx_symbol = "000001.SH"
+        elif code.startswith(('0', '3')) or clean_sym.endswith('.SZ'):
+            idx_symbol = "399001.SZ"
+        elif code.startswith(('8', '4')) or clean_sym.endswith('.BJ'):
+            idx_symbol = "899050.BJ"
+        else:
+            raise ValueError(f"无法识别标的市场板块: {symbol}，暂不支持该市场基准指数对齐 (支持6/9沪市, 0/3深市, 8/4北交所)")
+
+        kline_data = mg.fetch_symbol_klines(clean_sym, "1D")
+        if not kline_data or not isinstance(kline_data, dict):
+            raise ValueError(f"无法获取股票日K线数据: {clean_sym}")
         bars = kline_data.get("klines", [])
+        if not bars:
+            raise ValueError(f"股票日K线数据为空: {clean_sym}")
+
+        raw_idx_kline = mg.fetch_symbol_klines(idx_symbol, "1D")
+        raw_idx_bars = raw_idx_kline.get("klines", []) if isinstance(raw_idx_kline, dict) else []
+        if not raw_idx_bars:
+            raise ValueError(f"无法获取基准指数日K线数据: {idx_symbol}")
+
         indices = mg.fetch_level1_indices()
-        idx_cum = 0.0
-        if "000001.SH" in indices:
-            idx_cum = float(indices["000001.SH"].get("changePercent", 0.0)) / 100.0
-        
-        curr_p = float(bars[-1]['close']) if bars else 10.0
-        curr_idx = 3000.0 * (1.0 + idx_cum)
-        idx_bars = [{'date': b.get('time', ''), 'close': 3000.0, 'prev_close': 3000.0} for b in bars]
+        if idx_symbol in indices and indices[idx_symbol].get("price") is not None:
+            curr_idx = float(indices[idx_symbol]["price"])
+        else:
+            curr_idx = float(raw_idx_bars[-1]["close"])
+
+        curr_p = float(bars[-1]['close'])
+
+        idx_by_date = {}
+        for i, b in enumerate(raw_idx_bars):
+            d = str(b.get("time", "")).split()[0]
+            prev_c = float(raw_idx_bars[i - 1]["close"]) if i > 0 else float(b.get("open", b["close"]))
+            c = float(b["close"])
+            idx_by_date[d] = (prev_c, c)
+
+        idx_bars = []
+        last_idx_val = None
+        fill_count = 0
+        match_count = 0
+        for b in bars:
+            d = str(b.get("time", "")).split()[0]
+            if d in idx_by_date:
+                p_val, c_val = idx_by_date[d]
+                last_idx_val = (p_val, c_val)
+                match_count += 1
+            else:
+                fill_count += 1
+                p_val, c_val = (last_idx_val[1], last_idx_val[1]) if last_idx_val else (curr_idx, curr_idx)
+            idx_bars.append({"date": d, "close": c_val, "prev_close": p_val})
+
+        if match_count == 0:
+            raise ValueError(f"基准指数 {idx_symbol} 与标的 {clean_sym} 无任何重叠交易日，无法计算异动偏离")
+
+        fill_ratio = fill_count / len(bars)
+        hist_bars = [
+            {
+                "date": str(b.get("time", "")).split()[0],
+                "close": float(b["close"]),
+                "prev_close": float(bars[i - 1]["close"] if i > 0 else b.get("open", b["close"])),
+                "volume": float(b.get("volume", 1.0))
+            }
+            for i, b in enumerate(bars)
+        ]
+
+        # T-1 / T-2 真实涨跌幅（供前端 2/3 日模型使用，替换掉那边的 ?? 5.2 / ?? 4.8 默认值）。
+        # 数据就来自上面已经取到的 K 线，不额外发请求。
+        def _pct(a: float, b: float):
+            return round((a / b - 1.0) * 100.0, 2) if b else None
+
+        _closes = {str(b.get("time", "")).split()[0]: float(b["close"]) for b in bars}
+        _idx_closes = {d: v[1] for d, v in idx_by_date.items()}
+        _dates = sorted(_closes)
+        _hist = {"source": "kline", "dates": _dates[-3:]}
+        if len(_dates) >= 3:
+            _d_today, _d_t1, _d_t2 = _dates[-1], _dates[-2], _dates[-3]
+            _hist["stock_return_t1"] = _pct(_closes[_d_t1], _closes[_d_t2])
+            _hist["stock_return_t2"] = (
+                _pct(_closes[_d_t2], _closes[_dates[-4]]) if len(_dates) >= 4 else None
+            )
+            _hist["index_return_t1"] = (
+                _pct(_idx_closes[_d_t1], _idx_closes[_d_t2])
+                if _d_t1 in _idx_closes and _d_t2 in _idx_closes else None
+            )
+            _hist["index_return_t2"] = (
+                _pct(_idx_closes[_d_t2], _idx_closes[_dates[-4]])
+                if len(_dates) >= 4 and _d_t2 in _idx_closes and _dates[-4] in _idx_closes else None
+            )
+            # 今日基准指数涨幅：优先用实时指数价对昨收
+            if _d_today in _idx_closes:
+                _hist["index_return_today"] = _pct(curr_idx, _idx_closes[_d_today])
+            _hist["date_t2"], _hist["date_t1"], _hist["date_today"] = _d_t2, _d_t1, _d_today
+
         res_dict = av.evaluate_stock_volatility(
-            symbol,
-            hist_bars=bars,
+            clean_sym,
+            hist_bars=hist_bars,
             index_bars=idx_bars,
             curr_price=curr_p,
             curr_index=curr_idx
         )
-        
-        return JSONResponse({
+
+        res_data = res_dict.to_dict() if hasattr(res_dict, 'to_dict') else res_dict
+        import math
+        def sanitize_floats(obj):
+            if isinstance(obj, float):
+                if math.isinf(obj) or math.isnan(obj):
+                    return None
+                return round(obj, 4)
+            elif isinstance(obj, dict):
+                return {k: sanitize_floats(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [sanitize_floats(v) for v in obj]
+            return obj
+        clean_res = sanitize_floats(res_data)
+
+        payload = {
             "status": "ok",
             "symbol": symbol,
-            "regulatory": res_dict
-        })
+            "regulatory": clean_res,
+            "history": sanitize_floats(_hist)
+        }
+        _REG_CACHE[symbol] = (time.time(), payload)
+        return JSONResponse(payload)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
-
 @app.get("/api/quant/dragon_tiger")
 def api_quant_dragon_tiger(symbol: str = "000530.SZ"):
     try:
-        import lhb_orthogonal_evaluator as lhb
-        ledger = lhb.SeatReputationLedger()
-        evaluator = lhb.LHBOrthogonalEvaluator(ledger)
-        
-        buy_seats = ["中信证券上海溧阳路", "国泰君安宜昌天然塔", "华泰证券总部", "深股通专用", "东方财富拉萨团结路"]
-        sell_seats = ["东方财富拉萨团结路", "机构专用", "招商证券深圳益田路", "中国银河北京中关村", "申万宏源上海东川路"]
-        B = np.array([45.0, 28.0, 32.0, 25.0, 18.0])
-        buy_side_sells = np.array([0.5, 0.0, 12.0, 8.0, 16.0])
-        sell_amounts = np.array([16.0, 35.0, 28.0, 22.0, 19.0])
-        is_retail = np.array([False, False, False, False, True])
-        sell_side_buys = np.array([18.0, 2.0, 0.0, 1.0, 0.0])
-        
-        board_data = evaluator.evaluate_board(
-            buy_seats=buy_seats,
-            buy_amounts=B,
-            buy_side_sells=buy_side_sells,
-            sell_amounts=sell_amounts,
-            is_retail_seat=is_retail,
-            total_turnover=450.0,
-            float_cap=2500.0,
-            vw_dvr=0.20,
-            limit_strength=0.15,
-            is_limit_up=True,
-            sell_seats=sell_seats,
-            sell_side_buys=sell_side_buys
-        )
-        
-        return JSONResponse({
-            "status": "ok",
-            "symbol": symbol,
-            "dragon_tiger": board_data
-        })
+        res = qds.get_real_dragon_tiger(symbol)
+        return JSONResponse(res)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
-@app.get("/api/quant/theme_resonance")
-def api_quant_theme_resonance():
+@app.get("/api/quant/ladder")
+def api_quant_ladder():
     try:
-        import dynamic_theme_sync as dts
-        theme_names = ["低空经济", "机器人", "AI算力", "半导体", "新能源"]
-        theme_items = []
-        for name in theme_names:
-            theme_items.append({
-                "theme": name,
-                "net_lead_score": round(float(np.random.uniform(0.3, 0.95)), 2),
-                "leader_symbol": "000530.SZ",
-                "pulse_ratio": round(float(np.random.uniform(1.2, 3.5)), 2),
-                "status": "LEAD_ACCELERATING"
-            })
-        return JSONResponse({
-            "status": "ok",
-            "themes": theme_items,
-            "timestamp": int(time.time() * 1000)
-        })
+        res = qds.get_real_ladder()
+        return JSONResponse(res)
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+# 缠论结构缓存: symbol -> (ts, payload)，纯算力但日K要拉网络，故按 symbol 缓存 5 分钟
+_CHAN_CACHE = {}
+_theme_resonance_cache = {"data": None, "ts": 0}
+
+@app.get("/api/quant/theme_resonance")
+def api_quant_theme_resonance():
+    global _theme_resonance_cache
+    now = time.time()
+    if _theme_resonance_cache["data"] and (now - _theme_resonance_cache["ts"] < 10.0):
+        return JSONResponse(_theme_resonance_cache["data"])
+    try:
+        res = qds.get_real_theme_resonance()
+        _theme_resonance_cache["data"] = res
+        _theme_resonance_cache["ts"] = now
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+@app.get("/api/quant/chan/{symbol}")
+def api_quant_chan(symbol: str, days: int = 200, period: str = "1D"):
+    """缠论结构（分型/笔/中枢/背驰/买卖点）。
+
+    为什么要单独一个端点：K线接口 /api/market/klines 只给 OHLC，缠论要另外算；
+    这里用与图表同源的日K喂给 core.chan，保证"图上画的笔"和"报出的买卖点"是同一批数据。
+    纯 CPU 计算（200 根约几毫秒），按 symbol+period 缓存 5 分钟。
+    """
+    valid_periods = {"5m", "15m", "30m", "60m", "1D", "1W", "1M"}
+    safe_period = period if period in valid_periods else "1D"
+    _now = time.time()
+    try:
+        clean_sym = (symbol or '').strip().upper()
+        if '.' not in clean_sym:
+            suffix = '.SH' if clean_sym.startswith(('6', '9')) else ('.BJ' if clean_sym.startswith(('4', '8')) else '.SZ')
+            clean_sym = f"{clean_sym}{suffix}"
+        _cache_key = f"{clean_sym}:{safe_period}"
+        # 缓存TTL按周期分级：分钟K新笔可能几分钟内形成，短TTL及时反映；
+        # 日/周/月K结构变化慢，长TTL省CPU（原硬编码300s对5分钟K太长）。
+        _CHAN_TTL = {"5m": 60, "15m": 120, "30m": 180, "60m": 180,
+                     "1D": 300, "1W": 600, "1M": 1200}
+        _ttl = _CHAN_TTL.get(safe_period, 300)
+        _hit = _CHAN_CACHE.get(_cache_key)
+        if _hit and _now - _hit[0] < _ttl:
+            return JSONResponse(_hit[1])
+        # 简单上限：超过 200 个 key 时清掉最早的 50 个，防止长时间运行内存膨胀
+        if len(_CHAN_CACHE) > 200:
+            for _k in sorted(_CHAN_CACHE, key=lambda k: _CHAN_CACHE[k][0])[:50]:
+                _CHAN_CACHE.pop(_k, None)
+        kd = mg.fetch_symbol_klines(clean_sym, safe_period) or {}
+        bars = kd.get("klines") or []
+        if len(bars) < 30:
+            raise ValueError(f"{safe_period} K线不足30根({len(bars)})，无法构建缠论结构: {clean_sym}")
+        # core.chan 入参格式: [时间, 开, 收, 高, 低, 量]
+        # 时间字段保留完整格式：日/周/月K为 YYYY-MM-DD，分钟K为 YYYY-MM-DD HH:mm。
+        # 之前 split()[0] 会把分钟K截成纯日期，导致同一天多根K的笔端点被前端错误对齐到当日首根。
+        kl = []
+        for b in bars[-max(30, min(int(days or 200), 500)):]:
+            kl.append([
+                str(b.get("time", "")),
+                float(b["open"]), float(b["close"]),
+                float(b["high"]), float(b["low"]),
+                float(b.get("volume", 0) or 0),
+            ])
+        _period_label = {"5m": "5分钟", "15m": "15分钟", "30m": "30分钟",
+                         "60m": "60分钟", "1D": "日线", "1W": "周线", "1M": "月线"}.get(safe_period, "日线")
+        chan = sd.chan_analysis_structured(kl, clean_sym, period_label=_period_label)
+        payload = {
+            "status": "ok",
+            "symbol": clean_sym,
+            "period": safe_period,
+            "bars": len(kl),
+            "chan": chan,
+            "updatedAt": int(time.time() * 1000),
+        }
+        _CHAN_CACHE[_cache_key] = (_now, payload)
+        return JSONResponse(payload)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -348,17 +718,22 @@ async def websocket_endpoint(websocket: WebSocket):
     batch_window_ms = 150
     try:
         init_quotes = mg.fetch_level1_quotes(subscribed_symbols)
+        _attach_ultra_short(init_quotes)
         init_indices = mg.fetch_level1_indices()
         init_msg = {
             "type": "INIT_SNAPSHOT",
-            "quotes": init_quotes,
-            "indices": init_indices,
+            "quotes": list(init_quotes.values()),
+            "indices": list(init_indices.values()),
             "batchWindowMs": batch_window_ms,
             "serverTime": int(time.time() * 1000)
         }
         await websocket.send_text(json.dumps(init_msg))
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[WS] INIT_SNAPSHOT 发送失败: {e}", flush=True)
+        try:
+            await websocket.send_text(json.dumps({"type": "ERROR", "message": f"初始化失败: {e}"}))
+        except Exception:
+            pass
 
     async def receiver():
         nonlocal batch_window_ms, subscribed_symbols
@@ -379,8 +754,9 @@ async def websocket_endpoint(websocket: WebSocket):
                         syms = msg.get("symbols", [])
                         if syms:
                             for s in syms:
-                                if s not in subscribed_symbols:
-                                    subscribed_symbols.append(s)
+                                if s in subscribed_symbols:
+                                    subscribed_symbols.remove(s)
+                                subscribed_symbols.insert(0, s)
                     elif mtype == "SET_BATCH_WINDOW":
                         win = msg.get("windowMs", 150)
                         batch_window_ms = max(100, min(200, int(win)))
@@ -395,7 +771,7 @@ async def websocket_endpoint(websocket: WebSocket):
         try:
             while True:
                 await asyncio.sleep(batch_window_ms / 1000.0)
-                quotes = mg.fetch_level1_quotes(subscribed_symbols[:8])
+                quotes = mg.fetch_level1_quotes(subscribed_symbols[:50])
                 indices = mg.fetch_level1_indices()
                 batch_msg = {
                     "type": "SNAPSHOT_BATCH",
@@ -415,7 +791,6 @@ async def websocket_endpoint(websocket: WebSocket):
     done, pending = await asyncio.wait([rec_task, broad_task], return_when=asyncio.FIRST_COMPLETED)
     for t in pending:
         t.cancel()
-
 
 
 @app.get("/api/market")
@@ -635,112 +1010,6 @@ def api_strategies(mode: str = "auto", refresh: bool = False):
         return JSONResponse(res)
     except Exception as e:
         return JSONResponse(dict(status="error", error=str(e)), status_code=500)
-
-
-@app.get("/api/sim")
-def api_sim(scenario: str = "", code: str = "", engine: str = "rule"):
-    """多主体模拟：世界模拟v2 + 可选 LLM 消息面推演
-
-    engine=rule（默认，纯规则引擎）| engine=llm（LLM 读当日事件表出九方冲击矩阵,
-    再交给同一个规则引擎做传染与加权 —— LLM 只给判断, 不碰算术）。
-    无密钥/调用失败时自动回落 rule，并在返回里标 engine=rule(fallback)。
-    """
-    import io
-    from contextlib import redirect_stdout
-    code = _normalize_stock_code(code)
-    buf = io.StringIO()
-    llm_payload = None
-    llm_impact = None
-    if engine == "llm" and not code:
-        try:
-            import sim_llm as _simllm
-            llm_payload = _simllm.run(dry_run=False, quiet=True)
-        except Exception as e:
-            llm_payload = {"ok": False, "reason": "exception", "hint": f"{type(e).__name__}: {e}"}
-        if llm_payload.get("ok"):
-            llm_impact = dict(llm_payload.get("impact") or {})
-            llm_impact["theme_priority"] = llm_payload.get("theme_priority") or []
-        else:
-            llm_payload = dict(llm_payload, fallback=True)
-    try:
-        with redirect_stdout(buf):
-            if code:
-                sd.agent_sim(code)
-                mode = "agents"
-            else:
-                sd.sim_world(scenario.strip() or None, llm_impact=llm_impact,
-                             llm_note="LLM 消息面推演")
-                mode = "sim"
-        text = buf.getvalue()
-        m_stage = re.search(r"定位: 【(.+?)】", text)
-        m_net = re.search(r"加权合力:\s*([+-]?\d+)", text)
-        m_meta_domain = re.search(r"【事件智能研判】属性:\s*(.+?)\s*\|", text)
-        m_meta_desc = re.search(r"【事件智能研判】.*?逻辑:\s*(.+)", text)
-        m_path = re.search(r">> 推演.*?: (.+)", text)
-        m_pos = re.search(r"• 仓位指引:\s*(.+)", text)
-        m_atk = re.search(r"• 进攻方向:\s*(.+)", text)
-        
-        forces = []
-        for line in text.split('\n'):
-            m_f = re.search(r"^\s+([\u4e00-\u9fa5\(\)]+)\s+([+-]?\d+)分\s+\[(.+?)\]\s+动作:\s*(.+)", line)
-            if m_f:
-                forces.append({
-                    'name': m_f.group(1).strip(),
-                    'score': int(m_f.group(2)),
-                    'attitude': m_f.group(3).strip(),
-                    'action': m_f.group(4).strip(),
-                })
-        rounds = re.findall(r"【传染R\d】.+", text)
-
-        net_val = int(m_net.group(1)) if m_net else 0
-        if mode == "agents":
-            domain_str = f"个股资金博弈 ({code})"
-            desc_str = f"针对个股 {code} 展开的九方多主体博弈合力推演"
-        else:
-            domain_str = m_meta_domain.group(1).strip() if m_meta_domain else ''
-            desc_str = m_meta_desc.group(1).strip() if m_meta_desc else None
-        
-        beneficiary = None
-        branching = None
-        if mode == "sim":
-            try:
-                beneficiary = sd.get_event_beneficiary_stocks(scenario.strip(), domain_str, net_val)
-            except Exception:
-                pass
-            try:
-                branching = sd.get_branching_scenarios(scenario.strip(), domain_str, net_val)
-            except Exception:
-                pass
-            
-        history_review = None
-        try:
-            history_review = sd.get_historical_review(scenario.strip())
-        except Exception:
-            pass
-
-        stage_val = m_stage.group(1) if m_stage else (m_path.group(1).strip() if m_path else None)
-
-        return JSONResponse(dict(
-            status="ok", mode=mode, code=code, text=text,
-            engine=("llm" if (llm_payload and llm_payload.get("ok")) else
-                    ("rule(fallback)" if llm_payload else "rule")),
-            llm=llm_payload,
-            stage=stage_val,
-            net=("加权合力: " + m_net.group(1)) if m_net else None,
-            net_value=net_val,
-            domain=domain_str or None,
-            desc=desc_str,
-            path=m_path.group(1).strip() if m_path else None,
-            playbook={'position': m_pos.group(1).strip() if m_pos else None, 'attack': m_atk.group(1).strip() if m_atk else None},
-            forces=forces,
-            rounds=rounds,
-            beneficiary=beneficiary,
-            branching=branching,
-            history_review=history_review,
-            historical_benchmarks=getattr(sd, '_HISTORICAL_BENCHMARKS', []),
-        ))
-    except Exception as e:
-        return JSONResponse(dict(status="error", error=str(e), text=buf.getvalue()), status_code=500)
 
 
 @app.get("/api/watchlist")

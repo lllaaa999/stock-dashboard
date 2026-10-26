@@ -14,6 +14,7 @@ import {
 } from '../utils/marketCalc';
 
 export const StockQuoteHeader: React.FC = () => {
+  const selectedSymbol = useMarketStore((s) => s.selectedSymbol);
   const quote = useMarketStore((s) => s.quotes[s.selectedSymbol]);
   const watchlist = useMarketStore((s) => s.watchlist);
   const alertRules = useMarketStore((s) => s.alertRules);
@@ -39,7 +40,16 @@ export const StockQuoteHeader: React.FC = () => {
     prevPriceRef.current = quote.price;
   }, [quote?.price, quote]);
 
-  if (!quote) return null;
+  if (!quote) {
+    return (
+      <div className="bg-[#1e222d] border-b border-[#2a2e39] px-3 py-2 select-none flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <span className="text-base font-bold text-white tracking-tight font-mono">{selectedSymbol}</span>
+          <span className="text-xs text-[#2962ff] animate-pulse">正在穿透网关加载 Level-1 权威盘口与实时分时...</span>
+        </div>
+      </div>
+    );
+  }
 
   const isStarred = watchlist.includes(quote.symbol);
   const stockAlerts = alertRules.filter((r) => r.symbol === quote.symbol);
@@ -154,7 +164,7 @@ export const StockQuoteHeader: React.FC = () => {
           <div className="flex items-center justify-between gap-2 whitespace-nowrap">
             <span className="text-[#787b86] text-[11px]">换手</span>
             <span className="font-mono tabular-nums font-medium text-[#d1d4dc]">
-              {quote.turnoverRate.toFixed(2)}%
+              {typeof quote.turnoverRate === 'number' ? `${quote.turnoverRate.toFixed(2)}%` : '--'}
             </span>
           </div>
           <div className="flex items-center justify-between gap-2 whitespace-nowrap">

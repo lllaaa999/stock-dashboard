@@ -13,6 +13,8 @@ node_modules/
 **/node_modules/
 !web/dist/
 !web/dist/**
+# 前端构建同步的临时目录（vite 插件先写这里再整体换名）
+web/.dist-tmp/
 downloads/
 eggs/
 .eggs/
@@ -89,3 +91,9 @@ scratch/decrypted_strings.txt
 
 # UI 备份快照(大文件, 非源码)
 scratch/index_backup*.html
+
+# 本地 Agent/工具工作目录(不入库)
+.office-claw/
+.team/
+.workbuddy-ai/
+scratch/

@@ -67,30 +67,25 @@ python "<skill_dir>/scripts/strategies_lib.py" all    # 全策略跑一遍（复
 1. **大盘**：指数表格 → 外盘包（A50 定调）→ 情绪指数（含周期定位）→ 板块资金 → 两融 → 快讯精选（只留市场相关的）
 2. **个股**：行情 → 趋势/区间 → 缠论结构 → 资金/融资/席位画像 → 公告（异动/减持/业绩公告必须点出）→ 结合当日情绪周期给结论
 3. **情绪指数**：0-100 分。`<30冰点 30-50退潮 50-70中性 70-85活跃 >85亢奋`；退潮期提示控仓、冰点期提示关注新题材试错信号（谁先走出4连板）
-4. **多主体模拟解读**：合力>30 修复反弹倾向 / <-40 恐慌加速风险 / 中间 磨底观望；情景注入是假设推演不写入记忆；存档<8条时定位置信度低要注明
-5. **免责**：报告尾注"不构成投资建议"
-6. 周末/节假日运行时注明数据为最近交易日收盘
+4. **免责**：报告尾注"不构成投资建议"
+5. 周末/节假日运行时注明数据为最近交易日收盘
 
 ## 情绪指数算法（脚本内置）
 `基准10 + 涨停广度30(涨停数/80封顶) + 连板高度25(最高板/8封顶) + 封板质量20(1-炸板率) - 跌停惩罚15(跌停数/15封顶)`
 > ⚠️ 上面是 **v1 公式**（`_emotion_score_v1`，2026-09-30 起仅作对照留档）。**主用 v2**：`基准10 + 广度18(平方根, 饱和点120家) + 高度17(平方根) + 封板质量12 + 赚钱效应25 + 跌停惩罚15`，详见文末「收口更新」。
+> ⚠️ **v2 量程缺口（2026-10-25 复核确认）**：v2 各项权重合计上限 = 10+18+17+12+25 = **82 分**，而 `emotion_band` 的亢奋线是 **85**，因此「亢奋」在 v2 下**永不触发**（`cycle_position` 的亢奋分支是死代码，`M 情绪总开关` 的亢奋档同理）。极端牛市样本实测顶到 82.0。**不要**靠抬权重来修——那会让 39 条历史存档与 42/68/65 等实证阈值全部失效（20261023 会从 65.02 变 81.0）。正确修法二选一：①把亢奋线降到 80（改动最小）；②权重改 100 分制并同时把 `algo` 升到 `v3`、重算全部阈值。
 历史自动存档：sentiment_history.jsonl（date/score/band/zt/zb/dt/max_lb），复盘周报可直接读。
 
 ## 周期定位规则（cycle_position）
 亢奋(score≥85) / 冰点(score<30 或 涨停≤15且高度≤2) / 退潮(MA3<MA7 且 高度回落2板或涨停缩至7成或score<45) / 主升(MA3≥MA7 且 高度≥4板或5日均涨停≥55) / 其余=修复震荡。
 存档不足8条时会输出置信度警告——此时不要把定位当确定性结论写进报告。
 
-## 多主体模拟架构（agents/sim）
-- 九方势力：国家队/机构/游资/团伙控盘/散户/北向/量化/产业资本/大散户，各有加权(国家1.2最高)
-- 大盘模式输入：情绪分/连板高度/炸板率/两融环比/A50日内位置/大宗交易折溢价
-- 世界模拟v2三机制：①势力记忆(昨日立场惯性0.3) ②交互传染(邻接矩阵3轮阻尼0.6) ③情景注入(_SCN表)
-- 记忆存档 agents_state.json：仅无情景推演写入（情景是假设，防污染）
-
-## 可视化仪表盘（D:\股票看盘\web，端口8013测试/8001正式）
-FastAPI+ECharts。页面含：指数卡片/外盘卡/情绪仪表盘+历史曲线/板块资金/两融/快讯/
-**多主体模拟面板(/api/sim)**：下拉选情景或填个股代码→终端风格输出推演全过程/形态选股面板。
+## 可视化仪表盘（D:\股票看盘\web 服务端 + D:\股票看盘\frontend React 前端，端口8013测试/8001正式）
+前端为 React 19 + Vite + Tailwind（WebSocket 实时推流），服务端只托管 `frontend` 的构建产物 `web/dist`。页面含：指数滚动条/自选股列表/个股报价头/超短五维诊断条/原生 Canvas 主图（分时·5/15分·日/周/月K，MA/EMA/BOLL，VOL/MACD/KDJ/RSI）/五档盘口与委比委差/成交明细与基本面/09:25 竞价雷达/超短作战室（总览·竞价·梯队·龙虎榜·共振·异动·VW-DVR 承接）/预警弹窗与键盘精灵；<768px 自动降级为单列 + 分屏 + 抽屉。
+**`/api/sim` 与九方推演已整体摘除**（2026-10-25 复核：`grep /api/sim web/` = 0 命中，`scripts/sim_llm.py` / `sim_score.py` / `stock_dashboard.py sim` 均已删）。`data/llm/` 下残留的 `sim-*.json`、`ledger.jsonl` 属历史归档，不再产生新数据；`config/llm.local.json` 目前无代码读取。
 后端直接 import stock_dashboard，依赖四个采集函数的返回值(global_markets/sector_flow/margin_total/news 已返回结构化数据)。
-启动：桌面「启动股票看盘.bat」或 `$env:STOCK_DATA_HOME='D:\股票看盘\data'; python -m uvicorn main:app --port 8001`(workdir=D:\股票看盘\web)
+启动服务：桌面「启动股票看盘.bat」或 `$env:STOCK_DATA_HOME='D:\股票看盘\data'; python -m uvicorn main:app --port 8001`(workdir=D:\股票看盘\web，需 Python 3.10+，3.9 会因 dataclass slots 报错)。
+改前端：`cd frontend && bun install && bun run build`，构建结束自动同步 `dist → ../web/dist`；健康检查 `GET /api/health`。
 
 ## 数据源清单（均已验证 2026-08）
 | 数据 | 源 | 备注 |
@@ -123,7 +118,7 @@ FastAPI+ECharts。页面含：指数卡片/外盘卡/情绪仪表盘+历史曲�
 
 ## 扩展点（未实现，按需加）
 - 自选股池监控（放量突破/公告雷提醒）
-- 情绪指数历史曲线图导出PNG（web 已有 ECharts 曲线）
+- 情绪指数历史曲线图导出PNG（旧 Jinja/ECharts 曲线已随旧 UI 删除，React 前端待补，数据仍在 `GET /api/emotion/history`）
 - 可转债溢价率作为投机情绪先行指标
 - 模拟器回测：用历史存档逐日跑 agents/sim，统计「合力>30次日上涨概率」等命中率校准权重
 
@@ -157,12 +152,22 @@ FastAPI+ECharts。页面含：指数卡片/外盘卡/情绪仪表盘+历史曲�
   - `12.0% 1进2晋级率` / `0.3% 次日开盘溢价`：属于短线打板经典盈亏平衡经验线（本库带 $effect$ 样本仅 2 天，诚实标注为先验规则，杜绝伪称本库实证）。
 - **推演引擎进阶迭代：跨节降权 + 日内消化过滤 + 账本双刻度（同日 · 推演迭代）**：
   - **跨期衰减**：`sim_llm.py` 计算距目标次一有效交易日的日历天数 `gap_days`；长假跨期（>3天，如国庆8天）自动计算衰减系数 `time_decay = max(0.25, 1.0 / (1.0 + 0.25 * (gap_days - 1)))`（约 0.36），周末衰减 0.75。Prompt 明确告诫长假避险与海外波动，最终输出折现合力 `decayed_net / decayed_net_pct`。
-  - **前端与CLI可视化可见**：Web 页面（`web/templates/index.html`）当 `time_decay < 1.0` 时自动渲染醒目金色微章 `⏱️ 跨期N天衰减 X折 → 折现合力 Y`，彻底告别“只能翻JSON”；CLI `sim` 亦同步打印折现对比。
+  - **CLI 可视化可见**：`stock_dashboard.py sim` 在 `time_decay < 1.0` 时打印 `⏱️ 跨期N天衰减 X折 → 折现合力 Y`，彻底告别“只能翻JSON”。（旧 Jinja 前端已删除；当前 React 前端尚未接管九方推演视图，Web 侧暂无这块展示，属待补功能。）
   - **日内消化过滤**：事件表甄别时效，15:00 收盘前的事件标注 `[日内已反映/警惕兑现]`，盘后标注 `[盘后增量]`；Prompt 注入博弈铁律“日内已反映多已 price in 甚至炸板，次日谨防借利好出逃”，严禁把日内已消化的利好当成次日推力。
   - **打脸账本双刻度并行（科学对账）**：`sim_score.py` 的 `ledger.jsonl` 与 `score-*.json` 同时独立记录 `raw`（原始未衰减）与 `decayed`（折现后）两套方向与强度判定（输出 `direction` 与 `direction_raw`），并在累计统计中汇报 `direction_hit_pct` 与 `raw_direction_hit_pct`，回答“跨期折现究竟能否提高长期胜率”。验证：`scratch/verify_sim_decay.py` 16 项全过。
 
-
-
-
-
-
+## 收口更新（2026-10-25 · 结构梳理 + P0 假数据清理）
+- **`ultraShort` 由后端真值提供**（此前前端读 `quote.ultraShort` 恒为空 → 「连板梯队最高 0 板」）：`web/quant_data_service.get_ultra_short_profile()` 用东财涨停池/炸板池 + L1 快照构建，字段含 `consecutiveBoards / yesterdayBoards / firstSealTime / dragonRole / sealOrderAmount / sealRatioPct / brokenTimes / isIntradayTouchedLimitUp / auctionPrice / auctionChangePercent / yesterdayPerformanceNote / poolDate / isCurrentSession`。挂载点：`/api/market/quote/{symbol}`、`/api/market/snapshot`、WS `INIT_SNAPSHOT`、`/api/quant/ladder` 的每只成分股。**取不到池子时返回 `None`（不塞字段），绝不返回 0 冒充"没连板"**。
+- **口径日必须看 `poolDate`**：盘前/周末最新池仍是上一交易日，`isCurrentSession=false` 时 `consecutiveBoards` 描述的是那天，不是"此刻"。
+- **前端禁止再合成 ultraShort**：工作台原来的 `auctionVolume=12000 / yesterdayAmount=1.5亿 / cumDeviation 按板数查表` 已删除。`types/market.ts` 里已用注释区分「真实可算」与「后端不给（显示—）」两组字段。
+- **WS 快照必须合并而不是替换**：`applySnapshotBatch` 改成 `{...旧, ...新}`，否则每帧 L1 都会把 `ultraShort` 冲掉，页面 3 秒后回到 0 板。
+- **题材共振的领涨股不再编造**：不在涨停池里的领涨股，`firstSealTime/consecutiveBoards/amount` 一律 `None`（旧版写死 `09:35:00`、`amount=turnover*0.15`）。
+- **前端构建要跑类型检查**：`bun run build`（vite）不做 tsc，`bun run lint` 才是。此前 `OrderBookLevel` 缺 `level`、`asks: []` 长度不符都能静默进产物。
+- **监管异动面板已接真实端点（2026-10-25 第三轮）**：`/api/quant/regulatory` 返回体新增 `history`（`stock_return_t1/t2`、`index_return_t1/t2/today`，取自该端点已拉的日K，零额外请求）。前端 `calculateRegulatoryDeviation(quote, indexPct?, history?)` 用它替换掉原来的 `?? 5.2 / ?? 4.8` 占位值，并在结果里带 `historySource: 'kline' | 'estimated'`；面板顶部新增「交易所法规口径（真实引擎）」区块（安全价/剩余空间/绑定窗口/9日内触发/建议），估算时打「估算 · 未接真实日K」标。
+- **两处「连板梯队」必须共用一份数据**：主图页顶部六维条（`UltraShortStockDiagnosticStrip`）和作战室（`UltraShortQuantWorkbench`）原本各自 `calculateBoardLadderSummary(allQuotes)` —— 只扫自选股，自选里没涨停就恒显示「最高标 0板」。现统一走 `hooks/useRealQuantData.ts` 的 `useRealLadder()` / `useRealRegulatory()`（60s 模块级缓存）。**以后新增面板读梯队/监管，一律用这两个钩子，不要再本地算。**
+- **竞价「抢筹」判定必须带方向门禁（2026-10-26 · 三峡新材 600293 实证）**：原 `auction_boom` 是一条纯量能表达式（`量比>=3 or 一字 or 封单>=0.3亿 or 占昨比>=5%`），**完全不看方向**，于是 600293 一字跌停（-9.98%、买盘全空、卖一压 31 万手）被判成「超预期抢筹」，理由还写着"竞价占昨比 513%"。现抽出纯函数 `is_auction_boom()` 加三道门禁：①非跌停 ②`pct>=0` ③`order_ratio>-40`。另修两处连带问题：①`big_loss` 排序只按 `drop_from_high`，一字跌停的 high==low 恒为 0 会被挤出前 12 → 改成「跌停优先→跌幅→回撤」复合键；②`main.py` 信号组装顺序原为 弱转强→抢筹→核按钮，先入先得导致"跌停放巨量"被抢筹标签占住 → 改为**核按钮优先**。
+- **金额口径必须标明（同日）**：`amount` 在 9:30 之后是**当日累计成交额**，不是竞价额。`/api/quant/auction_radar` 新增 `amount_basis`（`pre`/`auction`/`intraday`），前端金额标签按口径切换「09:25竞价额 / 当日累计成交」；不在雷达里的个股（如茅台）竞价额是按系数估的，标「竞价额(估算)」。**看到"竞价额 3.56 亿 / 占昨 513%"先看口径，那多半是盘中累计。**
+- **缠论图层曾经"整块消失"（2026-10-26 补回）**：React 迁移时只搬了 K线/五档/竞价，**缠论笔与中枢没搬**（旧 Jinja 的 `dashboard.js` 里有，`git log -S"缠论" -- frontend/src` 查不到任何提交）。后端 `core/chan.py` 与 `/api/stock/{code}.chan` 一直是好的。现补：`/api/quant/chan/{symbol}`（同源日K + 缓存 5 分钟）→ Canvas 画金色笔折线 + 中枢虚线框 + 买卖点箭头，工具栏「缠论」可开关。**教训：UI 迁移要按「后端已有能力清单」逐项核对，别只看页面上还剩下什么。**
+- **「打脸账本」曾整体前视偏差（2026-10-26 实锤）**：`auction_audit.audit_auction_for_day` 在快照缺失时会**拿当前雷达现场补一份**，而 `auction_radar` 的快照又是用 `dt.date.today()` 归档的。结果：①快照全是**收盘后**抓的（`recorded_at` 全在 15:00 之后/深夜），里面 12 只"竞价爆量"推荐 `pct` 全是 +10、`is_zt=True` —— **用收盘已涨停的票去核验"9:25 的推荐"，封板率 100% 是自证**；②周六 20261025 也生成了一条"封板率33.3%/胜率33.3%"的假对账并进了账本。**这套账本过去不能用于阈值校准。**
+- **现在的四条护栏**：①非交易日 `not_trading_day` 直接拒绝对账（`_is_trading_day`）；②快照缺失**不许**用当前雷达补录（除非显式 `allow_synthetic=True`）；③`save_auction_candidates_snapshot(phase=...)` 只有 9:15~9:35 抓的才是 `auction`，其余时点一律 `phase='post_close'` + `synthetic=True`；④账本统计只算 `synthetic=False` 的样本，并返回 `excluded_synthetic_days`。现有历史档案已全部标记为合成样本（备份在 `scratch/backup_audit_cleanup_20261026/`），**真实样本目前为 0，需从下一个交易日的 9:15~9:35 开始重新积累**。
+- **归档日期必须用 t_date 不能用 today**：`auction_radar` 的快照归档原来用 `dt.date.today()`，休市日会把最近交易日的盘面存成"今天"。与情绪存档 20261001 假记录同源——**默认怀疑"今天"**。

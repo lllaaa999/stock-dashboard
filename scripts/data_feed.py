@@ -180,6 +180,31 @@ def normalize_code(c: str) -> tuple[str, str, str]:
     secid = ('1.' if is_sh else '0.') + code
     return code, full, secid
 
+_QUOTE_FULL_FIELDS = {
+    'code': None, 'name': '', 'price': 0.0, 'prev_close': 0.0,
+    'open': 0.0, 'high': 0.0, 'low': 0.0, 'pct': 0.0, 'chg': 0.0,
+    'volume': 0.0, 'amount': '-', 'upper_limit': None, 'lower_limit': None,
+    'is_zt': None, 'is_dt': None, 'bid1': None, 'ask1': None,
+    'bids': None, 'asks': None, 'total_bid_vol': None, 'total_ask_vol': None,
+    'order_ratio': None, 'weibi': None, 'bid1_amount_yi': None,
+    'ask1_amount_yi': None, 'seal_amount_yi': None, 'seal_wan': None,
+    'dt_pressure_yi': None, 'dt_wan': None, 'updated_at': '',
+}
+
+_DEGRADATION_LEVELS = {
+    'tencent': 'full', 'ths': 'partial', 'sina': 'basic', 'eastmoney': 'basic',
+}
+
+def _normalize_quote(q: Dict[str, Any], source: str) -> Dict[str, Any]:
+    """归一化行情字段：缺失字段标注为None，记录降级级别和缺失字段列表。"""
+    normalized = dict(_QUOTE_FULL_FIELDS)
+    normalized.update(q)
+    normalized['source'] = source
+    degraded = [k for k in _QUOTE_FULL_FIELDS if k not in q]
+    normalized['degraded_fields'] = degraded
+    normalized['degradation_level'] = _DEGRADATION_LEVELS.get(source, 'unknown')
+    return normalized
+
 def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     批量获取实时行情，优先腾讯，故障时秒切新浪，再备选东财。
@@ -291,10 +316,13 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                     'source': 'tencent',
                     'updated_at': f[30] if len(f) > 30 else ''
                 }
-        if len(result) >= len(full_codes) * 0.8:
+        if len(result) >= len(full_codes):
             _record_status("tencent", True, time.time() - t0)
             CACHE.set(cache_key, result, ttl=1.5)
             return result
+        if len(result) > 0:
+            _record_status("tencent", True, time.time() - t0)
+            # 未全取，继续尝试备源补齐缺失代码（不再80%静默丢码）
     except Exception:
         _record_status("tencent", False, time.time() - t0)
 
@@ -346,10 +374,13 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                     for pure, item in executor.map(_fetch_ths, missing_codes):
                         if item:
                             result[pure] = item
-                if len(result) >= len(full_codes) * 0.8:
+                if len(result) >= len(full_codes):
                     _record_status("ths", True, time.time() - t0)
                     CACHE.set(cache_key, result, ttl=1.5)
                     return result
+                if len(result) > 0:
+                    _record_status("ths", True, time.time() - t0)
+                    # 未全取，继续尝试备源补齐
         except Exception:
             _record_status("ths", False, time.time() - t0)
 
@@ -378,25 +409,28 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                 pct = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0
                 chg = round(price - prev_close, 2)
 
-                result[c] = {
-                    'code': c,
-                    'name': name,
-                    'price': price,
-                    'prev_close': prev_close,
-                    'open': open_p,
-                    'high': high,
-                    'low': low,
-                    'pct': pct,
-                    'chg': chg,
-                    'volume': vol,
-                    'amount': amts,
-                    'source': 'sina',
-                    'updated_at': parts[31] if len(parts) > 31 else ''
-                }
-        if result:
+                if c not in result:
+                    result[c] = {
+                        'code': c,
+                        'name': name,
+                        'price': price,
+                        'prev_close': prev_close,
+                        'open': open_p,
+                        'high': high,
+                        'low': low,
+                        'pct': pct,
+                        'chg': chg,
+                        'volume': vol,
+                        'amount': amts,
+                        'source': 'sina',
+                        'updated_at': parts[31] if len(parts) > 31 else ''
+                    }
+        if len(result) >= len(full_codes):
             _record_status("sina", True, time.time() - t0)
             CACHE.set(cache_key, result, ttl=1.5)
             return result
+        if result:
+            _record_status("sina", True, time.time() - t0)
     except Exception:
         _record_status("sina", False, time.time() - t0)
 
@@ -434,13 +468,28 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                 'source': 'eastmoney',
                 'updated_at': ''
             }
-        if result:
+        if len(result) >= len(full_codes):
             _record_status("eastmoney", True, time.time() - t0)
             CACHE.set(cache_key, result, ttl=1.5)
             return result
+        if result:
+            _record_status("eastmoney", True, time.time() - t0)
     except Exception:
         _record_status("eastmoney", False, time.time() - t0)
 
+    # --- 最终归一化：确保所有字段存在，缺失代码添加占位 ---
+    for pure, _, _ in norm_list:
+        if pure not in result:
+            result[pure] = {
+                'code': pure, 'name': '', 'price': None, 'prev_close': None,
+                'source': 'none', 'degraded_fields': list(_QUOTE_FULL_FIELDS.keys()),
+                'degradation_level': 'missing',
+            }
+        else:
+            src = result[pure].get('source', 'unknown')
+            result[pure] = _normalize_quote(result[pure], src)
+
+    CACHE.set(cache_key, result, ttl=1.5)
     return result
 
 # ==========================================
@@ -800,3 +849,31 @@ def get_system_data_status() -> Dict[str, Any]:
         "quote_date": _is_trading_today()[1],
         "timestamp": dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
+
+def get_degradation_info(codes: Optional[List[str]] = None) -> Dict[str, Any]:
+    """查询指定代码的降级级别和缺失字段。
+    若 codes 为 None，返回系统级降级摘要。
+    """
+    if codes is None:
+        levels = {}
+        for src, info in SOURCE_HEALTH.items():
+            levels[src] = {
+                'status': info['status'],
+                'degradation_level': _DEGRADATION_LEVELS.get(src, 'unknown'),
+            }
+        return {
+            'sources': levels,
+            'level_order': ['full', 'partial', 'basic', 'missing'],
+            'timestamp': dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    result = get_realtime_quotes(codes)
+    info = {}
+    for code in codes:
+        pure = normalize_code(code)[0]
+        q = result.get(pure, {})
+        info[pure] = {
+            'source': q.get('source', 'none'),
+            'degradation_level': q.get('degradation_level', 'missing'),
+            'degraded_fields': q.get('degraded_fields', []),
+        }
+    return info

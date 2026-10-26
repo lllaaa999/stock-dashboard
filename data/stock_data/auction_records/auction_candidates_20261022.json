@@ -3,5 +3,7 @@
   "recorded_at": "2026-10-22 01:22:15",
   "weak_to_strong": [],
   "auction_boom": [],
-  "fake_high_opens": []
+  "fake_high_opens": [],
+  "phase": "post_close",
+  "synthetic": true
 }

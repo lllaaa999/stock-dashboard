@@ -149,7 +149,7 @@ export interface MarketIndexQuote {
   flatCount: number; // 平盘家数
 }
 
-export type ChartPeriod = 'intraday' | '5m' | '15m' | '1D' | '1W' | '1M';
+export type ChartPeriod = 'intraday' | '5m' | '15m' | '30m' | '60m' | '1D' | '1W' | '1M';
 
 export type MainIndicator = 'MA' | 'EMA' | 'BOLL' | 'NONE';
 
@@ -181,35 +181,57 @@ export type DragonRoleTag =
   | 'FOLLOWER'; // 板块后排跟风/套利
 
 /**
- * 个股超短游资量化扩展元数据（严格基于 L1 快照、日K历史与 09:25 竞价切片计算）
+ * 个股超短游资量化扩展元数据（严格基于 L1 快照、涨停池/炸板池与日K历史计算）
+ *
+ * ⚠️ 字段分两类：
+ *  ① 真实可算（后端 /api/market/quote 与 /api/quant/ladder 提供）：
+ *     poolDate / consecutiveBoards / yesterdayBoards / firstSealTime / dragonRole /
+ *     sealOrderAmount / sealRatioPct / brokenTimes / auctionPrice / auctionChangePercent 等
+ *  ② 免费源拆不出来（后端不给，前端显示"—"，**不允许再写硬编码常量冒充**）：
+ *     auctionVolume / auctionAmount / auctionUnmatchedHands / auctionVolumeRatio /
+ *     stockReturnT1·T2 / indexReturnT1·T2 / indexReturnToday / cumDeviation10d / abnormalCount10d
  */
 export interface UltraShortProfile {
-  // 09:25 竞价核心原始数据
-  auctionPrice: number; // 09:25 撮合开盘价
-  auctionChangePercent: number; // 09:25 竞价涨跌幅 (%)
-  auctionVolume: number; // 09:25 竞价成交手数
-  auctionAmount: number; // 09:25 竞价成交金额 (元)
-  yesterdayAmount: number; // 昨日全天成交总额 (元)
-  auctionUnmatchedHands: number; // 09:25 竞价未匹配手数 (正数为买一未匹配封单，负数为卖一未匹配压单)
-  auctionVolumeRatio: number; // 09:25 竞价量比
-  yesterdayPerformanceNote: string; // 昨日形态描述（如 "昨烂板分歧"、"昨缩量一字"、"昨冲高回落"）
+  // —— 口径日：这套身位数据描述的是哪一个交易日（盘前/周末会落后于实时报价）——
+  poolDate?: string; // 如 '20261023'
+  prevPoolDate?: string | null;
+  isCurrentSession?: boolean; // poolDate 是否就是今天
+  source?: string; // 'eastmoney_pool'
+
+  // 09:25 竞价核心原始数据（免费源只能可靠拿到开盘价，其余为估算，故可选）
+  auctionPrice?: number | null; // 09:25 撮合开盘价 = 当日开盘价
+  auctionChangePercent?: number | null; // 09:25 竞价涨跌幅 (%)
+  auctionVolume?: number; // 竞价成交手数（后端不提供）
+  auctionAmount?: number; // 竞价成交金额（后端不提供）
+  yesterdayAmount?: number | null; // 昨日全天成交总额（昨日在池子里时才有）
+  auctionUnmatchedHands?: number; // 竞价未匹配手数（后端不提供）
+  auctionVolumeRatio?: number; // 竞价量比（后端不提供）
+  yesterdayPerformanceNote?: string; // 昨日形态描述（昨炸板分歧/昨N连板/昨首板/昨未涨停）
 
   // 连板梯队与身位数据
   consecutiveBoards: number; // 当前连板高度（0 表示非连板，1 表示首板，>=2 表示连板高度）
   yesterdayBoards: number; // 昨日连板数（用于计算 N进N+1 晋级率）
   isIntradayTouchedLimitUp: boolean; // 今日是否曾触及涨停（用于计算封板率/炸板率）
-  firstSealTime: string | null; // 首次封死涨停时间（如 '09:25:00', '09:31:12'，未封板为 null）
+  isSealed?: boolean; // 是否封死涨停（在涨停池内）
+  firstSealTime?: string | null; // 首次封死涨停时间（如 '09:25:00'，未封板为 null）
   dragonRole: DragonRoleTag; // 身位定性
+  sealOrderAmount?: number; // 封单金额（元）
+  sealRatioPct?: number | null; // 封单额 / 流通市值 (%)
+  brokenTimes?: number; // 当日炸板次数
+  sector?: string | null;
+  limitUpPrice?: number | null;
+  poolChangePercent?: number | null; // 池子口径（那个交易日）的涨幅
+  changePercent?: number | null; // 优先取实时报价涨幅
 
-  // 法定复利异动监管逆推历史输入 (k ∈ {2, 3})
+  // 法定复利异动监管逆推历史输入 (k ∈ {2, 3}) —— 免费源拆不出来，缺省时前端显示"—"
   boardRuleType: 'MAIN_20' | 'CHINEXT_STAR_30'; // 主板 20% 偏离阈值 vs 创业板/科创板 30% 偏离阈值
-  stockReturnT1: number; // T-1 日个股涨跌幅 (%)
-  stockReturnT2: number; // T-2 日个股涨跌幅 (%)
-  indexReturnT1: number; // T-1 日对应基准指数涨跌幅 (%)
-  indexReturnT2: number; // T-2 日对应基准指数涨跌幅 (%)
-  indexReturnToday: number; // 今日对应基准指数实时涨跌幅 (%)
-  cumDeviation10d: number; // 近 10 个交易日累计涨跌幅偏离值 (%)，逼近 100% 触发严重异动/特停预警
-  abnormalCount10d: number; // 近 10 日已触发同向异动次数
+  stockReturnT1?: number; // T-1 日个股涨跌幅 (%)
+  stockReturnT2?: number; // T-2 日个股涨跌幅 (%)
+  indexReturnT1?: number; // T-1 日对应基准指数涨跌幅 (%)
+  indexReturnT2?: number; // T-2 日对应基准指数涨跌幅 (%)
+  indexReturnToday?: number; // 今日对应基准指数实时涨跌幅 (%)
+  cumDeviation10d?: number; // 近 10 个交易日累计涨跌幅偏离值 (%)
+  abnormalCount10d?: number; // 近 10 日已触发同向异动次数
 }
 
 /**
@@ -230,6 +252,14 @@ export interface AuctionRadarMetrics {
   signal: AuctionSignalType;
   signalLabel: string;
   signalReason: string;
+  /**
+   * 金额口径：'auction' = 真正的 9:25 集合竞价成交额；
+   * 'intraday' = 开盘后累计成交额（此时"占昨比"是当日成交/昨日全天，不是竞价占昨）；
+   * 'pre' = 竞价还没开始。后端 /api/quant/auction_radar 提供。
+   */
+  amountBasis?: 'auction' | 'intraday' | 'pre';
+  /** true = 该股不在后端雷达结果里，竞价额/占昨比是按"昨日成交×系数"估算出来的，不是真实竞价数据 */
+  estimated?: boolean;
 }
 
 /**
@@ -251,6 +281,7 @@ export interface BoardTierGroup {
     firstSealTime: string;
     sealOrderAmount: number; // 买一封单金额 (元)
     dragonRole: DragonRoleTag;
+    ultraShort?: UltraShortProfile | null; // 后端 /api/quant/ladder 直出的真实身位档案
   }[];
 }
 
@@ -429,10 +460,10 @@ export interface RegulatoryDeviationResult {
   isTriggeredToday: boolean; // 当前价格是否已触及或突破 k∈{2,3} 法定异动线
 
   // 10日 100% 严重异动与 10日 4次同向异动特停锁死预警
-  cumDeviation10dPercent: number; // 实时10日累计偏离值 (%)
-  remainingTo100Percent: number; // 距离 100% 严重异动红线剩余空间 (%)
-  abnormalCount10d: number; // 近10个交易日已触发异动次数 (满4次触发严重异动)
-  remainingAbnormalTimes10d: number; // 距10日4次严重异动剩余次数
+  cumDeviation10dPercent: number | null; // 实时10日累计偏离值 (%)，无真实值时为 null → 显示 '—'
+  remainingTo100Percent: number | null; // 距离 100% 严重异动红线剩余空间 (%)，无真实值时为 null
+  abnormalCount10d: number | null; // 近10个交易日已触发异动次数 (满4次触发严重异动)，未知为 null
+  remainingAbnormalTimes10d: number | null; // 距10日4次严重异动剩余次数，未知为 null
   severeSuspensionLockWarning: boolean; // 是否触发严重异动/特停锁死高危预警
   suspensionRiskScore: number; // 特停风险综合指数 (0 ~ 100)
 
@@ -442,6 +473,97 @@ export interface RegulatoryDeviationResult {
   alertLightReason: string;
   tacticalPlaybook: string;
   statusSummary: string;
+
+  /**
+   * T-1/T-2 涨跌幅的来源：
+   *  'kline'     = 来自 /api/quant/regulatory 返回的真实日K（可放心用）
+   *  'estimated' = 后端没给（该股不在当前请求里），前端用的是占位默认值，必须打「估算」标
+   */
+  historySource: 'kline' | 'estimated';
+}
+
+/**
+ * 交易所法规引擎（后端 /api/quant/regulatory 的 regulatory 段）—— 真实口径
+ * 与前端本地 2/3 日模型不同：这里是按交易所规则（偏离度/10日4次/严重异动）+ 真实指数基准算的。
+ */
+export interface RegulatoryEngineResult {
+  stock_code: string;
+  board_name: string; // '沪深主板(10cm)' 等
+  prev_close: number;
+  curr_price: number;
+  limit_up_price: number;
+  safe_price: number; // 今日不触发异动的最高安全价
+  normal_safe_price: number;
+  severe_safe_price: number;
+  headroom_pct: number; // 距安全价的剩余空间 (小数，0.1732 = 17.32%)
+  severe_headroom_pct: number;
+  is_unconstrained_today: boolean;
+  is_severe_unconstrained_today: boolean;
+  is_normal_triggered_now: boolean;
+  is_severe_triggered_now: boolean;
+  is_severe_locked: boolean;
+  normal_triggers_in_prev_9d: number;
+  will_Upgrade_to_severe_on_normal: boolean;
+  binding_window: {
+    window_type: string;
+    window_days: number;
+    start_date: string;
+    base_price_adj: number;
+    base_index: number;
+    threshold: number;
+    safe_price: number;
+    exact_trigger_price: number;
+    curr_cum_dev: number;
+  } | null;
+  action_advice: string;
+}
+
+/** 后端返回的 T-1/T-2 真实涨跌幅（供本地 2/3 日模型用） */
+export interface RegulatoryHistory {
+  source: string; // 'kline'
+  dates: string[];
+  date_t2?: string;
+  date_t1?: string;
+  date_today?: string;
+  stock_return_t1?: number | null;
+  stock_return_t2?: number | null;
+  index_return_t1?: number | null;
+  index_return_t2?: number | null;
+  index_return_today?: number | null;
+}
+
+/** 缠论分型/笔端点：[日期, 价格, '顶'|'底', K线索引] */
+export type ChanBiPoint = [string, number, string, number];
+
+export interface ChanZhongshu {
+  lo: number;
+  hi: number;
+  start_date: string;
+  end_date: string;
+  pos?: string; // 现价相对中枢位置: 内部 / 上方 / 下方
+}
+
+export interface ChanSignal {
+  date: string;
+  price: number;
+  type: string; // 底背驰 / 一买候选 / 顶背驰 / 一卖警戒 …
+  desc: string;
+  color?: string;
+}
+
+/** 缠论结构分析（后端 /api/quant/chan/{symbol} → core.chan.chan_analysis_structured） */
+export interface ChanAnalysis {
+  status: string;
+  cur_dir?: string;
+  trail?: string;
+  bi_points: ChanBiPoint[];
+  bi_list?: ChanBiPoint[];
+  zhongshu_list: ChanZhongshu[];
+  last_zhongshu: ChanZhongshu | null;
+  signals: ChanSignal[];
+  divergence?: string | null;
+  hint?: string;
+  summary?: string;
 }
 
 /**
@@ -544,6 +666,7 @@ export interface DragonTigerAnalysis {
   synergyLabel: string;
   nextDayPremiumScore: number; // 次日溢价预期评分 (0 ~ 100)
   actionablePlaybook: string; // 次日集合竞价与分时应对策略
+  isSimulated: boolean; // 龙虎榜席位数据是否为前端模拟（true=非真实接口数据）
 }
 
 /**
@@ -631,6 +754,44 @@ export interface DragonTigerNetworkData {
   totalHotMoneyBuyAmount: number;
 }
 
+/**
+ * 全市场竞价扫描信号类型（与接力雷达的 AuctionSignalType 不同，新增 FAKE_HIGH）
+ */
+export type FullScanSignalType =
+  | 'SUPER_GRAB'       // 超预期抢筹
+  | 'NUCLEAR_BUTTON'   // 竞价核按钮
+  | 'LOCKED_LIMIT_UP'  // 一字封单
+  | 'FAKE_HIGH';       // 缩量假高开
+
+/**
+ * 全市场竞价扫描单标的信号项
+ */
+export interface FullMarketScanItem {
+  code: string;
+  name: string;
+  price: number;
+  open_pct: number;   // 开盘涨幅 (%)
+  pct: number;        // 涨跌幅 (%)
+  vol_ratio: number;  // 量比
+  amount: number;     // 成交额 (元)
+  signal: FullScanSignalType;
+  signalLabel: string;
+}
+
+/**
+ * 全市场竞价扫描 API 响应 (/api/quant/full_market_scan)
+ */
+export interface FullMarketScanData {
+  status: string;
+  scan_items: FullMarketScanItem[];
+  grabCount: number;
+  nuclearCount: number;
+  fakeHighCount: number;
+  lockedCount: number;
+  total_scanned: number;
+  updated_at: string;
+}
+
 export type QuantModuleTabId =
   | 'overview'
   | 'auction'
@@ -686,8 +847,8 @@ export interface TriggeredAlertEvent {
 export type WSServerMessage =
   | {
       type: 'INIT_SNAPSHOT';
-      quotes: Record<string, TickData>;
-      indices: Record<string, MarketIndexQuote>;
+      quotes: TickData[];
+      indices: MarketIndexQuote[];
       batchWindowMs: number;
       serverTime: number;
     }

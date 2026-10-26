@@ -11,9 +11,11 @@ import {
 import type {
   RegulatoryAlertLight,
   RegulatoryDeviationResult,
+  RegulatoryEngineResult,
   RegulatoryMonitorOverview,
 } from '../types/market';
 import {
+  formatNullable,
   formatPrice,
   formatSignedPercent,
   getSignedColorClass,
@@ -22,6 +24,8 @@ import {
 interface RegulatoryMonitorPanelProps {
   overview: RegulatoryMonitorOverview;
   activeRegDeviation: RegulatoryDeviationResult;
+  /** 后端交易所法规引擎的真实口径（安全价/剩余空间/绑定窗口/9日内触发次数），未就绪时为 null */
+  realRegulatory?: RegulatoryEngineResult | null;
   selectedSymbol: string;
   onSelectSymbol: (symbol: string) => void;
   simulatedIndexPct: number | null;
@@ -64,6 +68,7 @@ function getAlertLightStyles(light: RegulatoryAlertLight) {
 export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
   overview,
   activeRegDeviation,
+  realRegulatory,
   selectedSymbol,
   onSelectSymbol,
   simulatedIndexPct,
@@ -432,8 +437,9 @@ export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
                   <span className={`w-2 h-2 rounded-full ${stMeta.dotClass}`} />
                   <span className="font-bold">{st.name}</span>
                   <span className="font-mono tabular-nums text-[10px]">
+                    {st.historySource === 'estimated' ? '≈' : ''}
                     {st.severeSuspensionLockWarning
-                      ? `10日${st.cumDeviation10dPercent}%·${st.abnormalCount10d}次异动`
+                      ? `10日${formatNullable(st.cumDeviation10dPercent, 1, '%')}·${formatNullable(st.abnormalCount10d, 0)}次异动`
                       : `k=${st.bindingWindowK}偏离${
                           st.bindingWindowK === 2
                             ? st.dev2DayCurrentPercent
@@ -479,13 +485,81 @@ export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
           </div>
         </div>
 
+        {/* 交易所法规引擎真实口径（后端 /api/quant/regulatory）—— 安全价/剩余空间/绑定窗口/9日内触发 */}
+        {realRegulatory && (
+          <div
+            data-testid="real-regulatory-engine"
+            className="p-2.5 rounded bg-[#101a16] border border-[#0ECB81]/30 space-y-1.5"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+              <span className="font-bold text-[#0ECB81]">
+                交易所法规口径（真实引擎 · {realRegulatory.board_name}）
+              </span>
+              <span className="font-mono tabular-nums text-[#787b86]">
+                {realRegulatory.binding_window
+                  ? `绑定窗口 ${realRegulatory.binding_window.window_type} · ${realRegulatory.binding_window.window_days}日 · 起算 ${realRegulatory.binding_window.start_date}`
+                  : '无绑定窗口'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-1 text-center font-mono tabular-nums">
+              <div className="p-1 rounded bg-[#131722] border border-[#2a2e39]/70">
+                <div className="text-[10px] text-[#787b86]">今日安全价</div>
+                <div className="text-xs font-bold text-[#0ECB81]">
+                  {formatPrice(realRegulatory.safe_price)}
+                </div>
+              </div>
+              <div className="p-1 rounded bg-[#131722] border border-[#2a2e39]/70">
+                <div className="text-[10px] text-[#787b86]">今日涨停价</div>
+                <div className="text-xs font-bold text-[#F6465D]">
+                  {formatPrice(realRegulatory.limit_up_price)}
+                </div>
+              </div>
+              <div className="p-1 rounded bg-[#131722] border border-[#2a2e39]/70">
+                <div className="text-[10px] text-[#787b86]">距安全价空间</div>
+                <div
+                  className={`text-xs font-bold ${
+                    realRegulatory.headroom_pct <= 0.05 ? 'text-[#F6465D]' : 'text-[#d1d4dc]'
+                  }`}
+                >
+                  {(realRegulatory.headroom_pct * 100).toFixed(2)}%
+                </div>
+              </div>
+              <div className="p-1 rounded bg-[#131722] border border-[#2a2e39]/70">
+                <div className="text-[10px] text-[#787b86]">近9日已触发异动</div>
+                <div
+                  className={`text-xs font-bold ${
+                    realRegulatory.normal_triggers_in_prev_9d >= 3 ? 'text-[#F59E0B]' : 'text-[#d1d4dc]'
+                  }`}
+                >
+                  {realRegulatory.normal_triggers_in_prev_9d} 次
+                </div>
+              </div>
+            </div>
+
+            <div className="text-[11px] leading-relaxed text-[#d1d4dc]">
+              {realRegulatory.action_advice}
+            </div>
+          </div>
+        )}
+
         {/* 四维核心监控卡片：2/3日涨跌幅明细 | k=2窗口 | k=3窗口 | 压线安全价与10日特停红线 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
           {/* 1. 个股 2/3 个交易日涨跌幅实时监控 */}
           <div className="p-2.5 rounded bg-[#1e222d] border border-[#2a2e39] space-y-1.5">
             <div className="flex items-center justify-between text-[11px] text-[#787b86] whitespace-nowrap">
               <span>2/3个交易日涨跌幅实时监控</span>
-              <span className="font-mono tabular-nums text-[#38bdf8]">复利累计</span>
+              {activeRegDeviation.historySource === 'estimated' ? (
+                <span
+                  data-testid="reg-history-estimated"
+                  className="px-1.5 py-0.5 rounded border border-[#F59E0B]/50 bg-[#F59E0B]/15 text-[10px] text-[#F59E0B]"
+                  title="该标的 T-1/T-2 涨跌幅未取到真实日K，下面数字为占位估算，不可作为决策依据"
+                >
+                  估算 · 未接真实日K
+                </span>
+              ) : (
+                <span className="font-mono tabular-nums text-[#38bdf8]">真实日K · 复利累计</span>
+              )}
             </div>
 
             <div className="grid grid-cols-3 gap-1 pt-0.5 text-center font-mono tabular-nums">
@@ -675,15 +749,15 @@ export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
             <div className="flex items-baseline justify-between font-mono tabular-nums text-[11px] whitespace-nowrap">
               <span className="text-[#9ca3af]">10日偏离 (100%特停线):</span>
               <span className="font-bold text-[#F6465D]">
-                +{activeRegDeviation.cumDeviation10dPercent.toFixed(2)}% (余
-                {activeRegDeviation.remainingTo100Percent.toFixed(1)}%)
+                +{formatNullable(activeRegDeviation.cumDeviation10dPercent, 2, '%')} (余
+                {formatNullable(activeRegDeviation.remainingTo100Percent, 1, '%')})
               </span>
             </div>
 
             <div className="flex items-baseline justify-between font-mono tabular-nums text-[11px] whitespace-nowrap">
               <span className="text-[#9ca3af]">近10日已触发异动:</span>
               <span className="font-bold text-white">
-                {activeRegDeviation.abnormalCount10d} / 4 次{' '}
+                {formatNullable(activeRegDeviation.abnormalCount10d, 0)} / 4 次{' '}
                 <span className="text-[10px] text-[#9ca3af]">
                   (满4次触发严重异动)
                 </span>
@@ -841,10 +915,10 @@ export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
                           : 'text-[#d1d4dc]'
                       }`}
                     >
-                      +{row.cumDeviation10dPercent.toFixed(1)}%
+                      +{formatNullable(row.cumDeviation10dPercent, 1, '%')}
                     </span>
                     <span className="ml-1.5 text-[10px] text-[#9ca3af]">
-                      ({row.abnormalCount10d}/4次)
+                      ({formatNullable(row.abnormalCount10d, 0)}/4次)
                     </span>
                     {row.severeSuspensionLockWarning ? (
                       <span className="ml-1.5 px-1.5 py-0.5 rounded bg-[#F6465D]/20 text-[#F6465D] border border-[#F6465D]/40 text-[10px] font-semibold">
@@ -857,7 +931,7 @@ export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
                     ) : (
                       <span className="ml-1.5 inline-flex items-center text-[10px] text-[#0ECB81]">
                         <CheckCircle2 className="w-3 h-3 mr-0.5" />
-                        余{row.remainingTo100Percent.toFixed(0)}%
+                        余{formatNullable(row.remainingTo100Percent, 0, '%')}
                       </span>
                     )}
                   </td>

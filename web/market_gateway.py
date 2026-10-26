@@ -8,12 +8,41 @@ import os
 import time
 import math
 import datetime
+import json
 import urllib.request
 from typing import Dict, List, Optional, Any
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'scripts'))
 import data_feed as df_feed
 import stock_dashboard as sd
+
+# ---------------------------------------------------------------
+# K线结果缓存：腾讯 ifzq 接口已被 WAF 封禁(HTTP 501)，每次冷启动都要
+# 走完整三级降级（实测 22s）。这里缓存最终结果，避免重复踩坑。
+# 交易时段 TTL 60s，休市 TTL 30min（休市期间日K不会变）。
+_KLINE_RESULT_CACHE: Dict[str, Any] = {}   # key -> (ts, payload)
+_KLINE_TTL_OPEN = 60.0
+_KLINE_TTL_CLOSED = 1800.0
+
+
+def _kline_cache_get(key: str):
+    item = _KLINE_RESULT_CACHE.get(key)
+    if not item:
+        return None
+    ts, payload = item
+    ttl = _KLINE_TTL_CLOSED if df_feed.is_market_closed() else _KLINE_TTL_OPEN
+    if time.time() - ts < ttl:
+        return payload
+    _KLINE_RESULT_CACHE.pop(key, None)
+    return None
+
+
+def _kline_cache_put(key: str, payload: Any):
+    # 只缓存有真实数据的响应，空结果不缓存（避免把失败固化）
+    if payload and payload.get('klines'):
+        _KLINE_RESULT_CACHE[key] = (time.time(), payload)
+    return payload
+
 
 DEFAULT_WATCHLIST_SYMBOLS = [
     '600519.SH', '300750.SZ', '002594.SZ', '688981.SH',
@@ -48,6 +77,101 @@ def _tx_code_to_symbol(tx_code: str) -> str:
     return tx_code
 
 
+def _fetch_quotes_via_easyquotation(symbols: List[str]) -> Dict[str, Any]:
+    """easyquotation 备用通道：腾讯 qt 接口不可用时的降级方案。
+
+    单位换算（已与主通道逐字段实测对齐）：
+      - easyquotation 的成交量类字段单位是【股】，主通道是【手】 -> 必须 ÷100
+      - 其余价格 / 市值 / 涨跌幅字段口径一致，直接使用
+    """
+    try:
+        import easyquotation
+    except ImportError:
+        return {}
+
+    codes = [s.split('.')[0] for s in symbols]
+    try:
+        raw = easyquotation.use('tencent').stocks(codes)
+    except Exception:
+        return {}
+    if not raw:
+        return {}
+
+    now_ms = int(time.time() * 1000)
+
+    def _f(v, d=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return d
+
+    out: Dict[str, Any] = {}
+    for code, r in raw.items():
+        code = str(code).strip().zfill(6)
+        if not code or code == '000000':
+            continue
+        market = 'SH' if code.startswith(('6', '5', '9')) else 'SZ'
+        symbol = f"{code}.{market}"
+
+        price = _f(r.get('now'))
+        prev_close = _f(r.get('close'))
+        limit_up = _f(r.get('涨停价')) or round(prev_close * 1.10, 2)
+        limit_down = _f(r.get('跌停价')) or round(prev_close * 0.90, 2)
+
+        phase = 'TRADING'
+        if limit_up > 0 and price >= limit_up - 0.01:
+            phase = 'LIMIT_UP'
+        elif limit_down > 0 and price <= limit_down + 0.01:
+            phase = 'LIMIT_DOWN'
+
+        bids, asks = [], []
+        for lv in range(1, 6):
+            bp = _f(r.get(f'bid{lv}') or 0)
+            bv = _f(r.get(f'bid{lv}_volume') or 0)
+            ap = _f(r.get(f'ask{lv}') or 0)
+            av = _f(r.get(f'ask{lv}_volume') or 0)
+            bids.append({"level": lv, "price": bp if bp > 0 else None,
+                         "volume": int(bv / 100) if bv else None})
+            asks.append({"level": lv, "price": ap if ap > 0 else None,
+                         "volume": int(av / 100) if av else None})
+
+        out[symbol] = {
+            'symbol': symbol,
+            'code': code,
+            'market': market,
+            'name': str(r.get('name') or code),
+            'pinyin': '',
+            'sector': 'A股精选',
+            'price': price,
+            'prevClose': prev_close,
+            'open': _f(r.get('open')),
+            'high': _f(r.get('high')),
+            'low': _f(r.get('low')),
+            'change': _f(r.get('涨跌')),
+            'changePercent': _f(r.get('涨跌(%)')),
+            'volume': int(_f(r.get('成交量(手)')) / 100),      # 股 -> 手
+            'amount': _f(r.get('成交额(万)')),
+            'turnoverRate': _f(r.get('turnover')),
+            'volumeRatio': _f(r.get('量比')),
+            'amplitude': _f(r.get('振幅')),
+            'peTtm': _f(r.get('PE')),
+            'pb': _f(r.get('PB')),
+            'marketCap': _f(r.get('总市值')),
+            'floatMarketCap': _f(r.get('流通市值')),
+            'outerVolume': int(_f(r.get('bid_volume')) / 100),  # 股 -> 手
+            'innerVolume': int(_f(r.get('ask_volume')) / 100),
+            'limitUpPrice': limit_up,
+            'limitDownPrice': limit_down,
+            'phase': phase,
+            'orderBook': {'bids': bids, 'asks': asks},
+            'recentTrades': [],
+            'updatedAt': now_ms,
+            '_src': 'easyquotation',
+        }
+    return out
+
+
+
 def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
     """从腾讯官方接口批量拉取 Level-1 真实五档盘口与快照指标"""
     if not symbols:
@@ -62,7 +186,8 @@ def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=3.5) as resp:
             content = resp.read().decode('gbk', errors='ignore')
     except Exception:
-        return quotes
+        # 腾讯 qt 不可用（被封/超时/网络异常）：降级到 easyquotation
+        return _fetch_quotes_via_easyquotation(symbols)
 
     now_ms = int(time.time() * 1000)
     for line in content.split(';'):
@@ -222,13 +347,17 @@ def fetch_level1_indices(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
 
 def fetch_symbol_klines(symbol: str, period: str = '1D') -> Dict[str, Any]:
     """获取指定标的的 K 线或分时图序列 (TDX 缓存 + 腾讯分时)"""
+    _ck = f"{symbol}:{period}"
+    _hit = _kline_cache_get(_ck)
+    if _hit is not None:
+        return _hit
     tx_code = _symbol_to_tx_code(symbol)
     pure_code = symbol.split('.')[0] if '.' in symbol else tx_code[2:]
 
     if period == 'intraday':
         trends = df_feed.get_intraday_trends(pure_code)
         if not trends or 'prices' not in trends or not trends['prices']:
-            return {'symbol': symbol, 'period': 'intraday', 'prevClose': 0, 'intraday': []}
+            return _kline_cache_put(_ck, {'symbol': symbol, 'period': 'intraday', 'prevClose': 0, 'intraday': []})
 
         pre_close = float(trends.get('pre_close') or trends['prices'][0])
         times = trends.get('times', [])
@@ -252,12 +381,122 @@ def fetch_symbol_klines(symbol: str, period: str = '1D') -> Dict[str, Any]:
                 'change': round(p - pre_close, 2),
                 'changePercent': round((p - pre_close) / pre_close * 100, 2) if pre_close > 0 else 0.0,
             })
-        return {
+        return _kline_cache_put(_ck, {
             'symbol': symbol,
             'period': 'intraday',
             'prevClose': pre_close,
             'intraday': pts,
-        }
+        })
+    elif period in ('5m', '15m', '30m', '60m'):
+        m_map = {'5m': 'm5', '15m': 'm15', '30m': 'm30', '60m': 'm60'}
+        p = m_map.get(period, 'm5')
+        url = f'https://ifzq.gtimg.cn/appstock/app/kline/mkline?param={tx_code},{p},,160'
+        try:
+            raw = sd.http(url)
+        except Exception:
+            # 腾讯 K线接口被 WAF 拦截(HTTP 501)时不能冒泡成 500,
+            # 置空后交给下方降级链路(df_feed / data_layer 多级容灾)兜底
+            raw = None
+        bars = []
+        if raw:
+            try:
+                data = json.loads(raw).get('data', {}).get(tx_code, {})
+                rows = data.get(p) or []
+                for r in rows:
+                    t_str = str(r[0])
+                    dt_str = f'{t_str[:4]}-{t_str[4:6]}-{t_str[6:8]} {t_str[8:10]}:{t_str[10:12]}' if len(t_str) == 12 else t_str
+                    ts = int(datetime.datetime.strptime(t_str, '%Y%m%d%H%M').timestamp()) if len(t_str) == 12 else 0
+                    o, c, h, l = float(r[1]), float(r[2]), float(r[3]), float(r[4])
+                    v = float(r[5]) if len(r) > 5 else 0.0
+                    bars.append({
+                        'time': dt_str,
+                        'timestamp': ts,
+                        'open': o,
+                        'high': h,
+                        'low': l,
+                        'close': c,
+                        'volume': v,
+                        'amount': round(v * c * 100, 2),
+                    })
+            except Exception:
+                pass
+        return _kline_cache_put(_ck, {
+            'symbol': symbol,
+            'period': period,
+            'klines': bars,
+        })
+    elif period in ('1D', 'day', '1W', 'week', '1M', 'month'):
+        p_map = {'1D': 'day', 'day': 'day', '1W': 'week', 'week': 'week', '1M': 'month', 'month': 'month'}
+        p = p_map.get(period, 'day')
+        url = f'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={tx_code},{p},,,160,qfq'
+        # 该域名已实测被腾讯 WAF 封禁（返回 501 + waf.tencent.com 拦截页）。
+        # 过去每次都先请求它再超时降级（冷启动白等 ~23s），这里用熔断器短路：
+        # 只要命中冷却就直接跳过，直接走 baostock 主通道。
+        _host = 'web.ifzq.gtimg.cn'
+        if sd._cb_is_open(_host):
+            raw = None
+        else:
+            try:
+                raw = sd.http(url)
+            except Exception:
+                raw = None
+        bars = []
+        if raw:
+            try:
+                data = json.loads(raw).get('data', {}).get(tx_code, {})
+                rows = data.get(f'qfq{p}') or data.get(p) or []
+                for r in rows:
+                    try:
+                        d_str = str(r[0])[:10]
+                        ts = int(datetime.datetime.strptime(d_str, '%Y-%m-%d').timestamp())
+                        o, c, h, l = float(r[1]), float(r[2]), float(r[3]), float(r[4])
+                        v = float(r[5]) if len(r) > 5 else 0.0
+                        amt = round(v * c * 100, 2)
+                        if len(r) > 6 and isinstance(r[6], (int, float, str)) and not isinstance(r[6], dict):
+                            try:
+                                amt = float(r[6])
+                            except Exception:
+                                pass
+                        bars.append({
+                            'time': d_str,
+                            'timestamp': ts,
+                            'open': o,
+                            'high': h,
+                            'low': l,
+                            'close': c,
+                            'volume': v,
+                            'amount': amt,
+                        })
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        if not bars:
+            # 腾讯 K线被 WAF 拦(501)时降级到 data_feed(TDX/baostock 多级容灾)
+            try:
+                _rows = df_feed.get_kline_cached(tx_code, 160)
+                for _r in (_rows or []):
+                    try:
+                        _d = str(_r[0])[:10]
+                        _o, _c, _h, _l = float(_r[1]), float(_r[2]), float(_r[3]), float(_r[4])
+                        _v = float(_r[5]) if len(_r) > 5 else 0.0
+                        bars.append({
+                            'time': _d,
+                            'timestamp': int(datetime.datetime.strptime(_d, '%Y-%m-%d').timestamp()),
+                            'open': _o, 'high': _h, 'low': _l, 'close': _c,
+                            'volume': _v,
+                            'amount': float(_r[6]) if len(_r) > 6 else _v * _c * 100,
+                        })
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+        if bars:
+            return _kline_cache_put(_ck, {
+                'symbol': symbol,
+                'period': period,
+                'klines': bars,
+            })
     else:
         # 日 K 线
         klines_raw = df_feed.get_kline_cached(tx_code, 160)
@@ -284,11 +523,11 @@ def fetch_symbol_klines(symbol: str, period: str = '1D') -> Dict[str, Any]:
                     })
                 except Exception:
                     continue
-        return {
+        return _kline_cache_put(_ck, {
             'symbol': symbol,
             'period': period,
             'klines': bars,
-        }
+        })
 
 fetch_intraday_and_klines = fetch_symbol_klines
 

@@ -5,8 +5,9 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { BellRing, X } from 'lucide-react';
-import { CallAuctionRadarPlugin } from './components/CallAuctionRadarPlugin';
 import { FinancialChart } from './components/FinancialChart';
+import { CommandPaletteModal } from './components/CommandPaletteModal';
+import ErrorToast from './components/ErrorToast';
 import { IndexTickerBar } from './components/IndexTickerBar';
 import { OrderBook5Panel } from './components/OrderBook5Panel';
 import { PriceAlertModal } from './components/PriceAlertModal';
@@ -14,8 +15,16 @@ import { PWAInstallModal } from './components/PWAInstallModal';
 import { StockQuoteHeader } from './components/StockQuoteHeader';
 import { TopNavBar } from './components/TopNavBar';
 import { TradeTicksAndMetricsPanel } from './components/TradeTicksAndMetricsPanel';
-import { UltraShortQuantWorkbench } from './components/UltraShortQuantWorkbench';
+import { UltraShortStockDiagnosticStrip } from './components/UltraShortStockDiagnosticStrip';
 import { WatchlistPanel } from './components/WatchlistPanel';
+
+// 大体积工作台按需加载：首屏只加载 chart 模式必需代码，切到 auction/quant 时再拉对应 chunk
+const CallAuctionRadarPlugin = React.lazy(() =>
+  import('./components/CallAuctionRadarPlugin').then((m) => ({ default: m.CallAuctionRadarPlugin }))
+);
+const UltraShortQuantWorkbench = React.lazy(() =>
+  import('./components/UltraShortQuantWorkbench').then((m) => ({ default: m.UltraShortQuantWorkbench }))
+);
 import { marketWsClient } from './services/wsClient';
 import { useMarketStore } from './store/useMarketStore';
 import {
@@ -49,8 +58,8 @@ function sendBrowserNotification(title: string, body: string, tag: string): void
       window.focus();
       notification.close();
     };
-  } catch {
-    // 兼容部分移动端浏览器仅支持通过 ServiceWorkerRegistration 触发通知
+  } catch (e) {
+    console.error('[sendBrowserNotification] 原生通知 API 失败，尝试 ServiceWorker 降级:', e);
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.ready
         .then((reg) =>
@@ -60,15 +69,45 @@ function sendBrowserNotification(title: string, body: string, tag: string): void
             tag,
           })
         )
-        .catch(() => {
-          // ignore
+        .catch((e) => {
+          console.error('[sendBrowserNotification] ServiceWorker 通知推送失败:', e);
         });
     }
   }
 }
 
+/**
+ * React.lazy chunk 加载失败时的兜底边界，避免整页白屏
+ */
+class LazyBoundary extends React.Component<
+  { children: React.ReactNode; label?: string },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(e: unknown) { console.error('[LazyBoundary] chunk 加载失败:', e); }
+  render() {
+    if (this.state.failed) {
+      return (
+        <div className="flex-1 min-h-[260px] flex flex-col items-center justify-center gap-2 text-[#787b86] text-sm">
+          <span>{this.props.label ?? '模块'}加载失败</span>
+          <button
+            type="button"
+            onClick={() => this.setState({ failed: false })}
+            className="px-3 py-1 text-xs border border-[#2a2e39] rounded hover:text-white cursor-pointer"
+          >
+            重试
+          </button>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 export default function App() {
   const workspaceMode = useMarketStore((s) => s.workspaceMode);
+  const isDemoData = useMarketStore((s) => s.isDemoData);
   const mobileBottomTab = useMarketStore((s) => s.mobileBottomTab);
   const setMobileBottomTab = useMarketStore((s) => s.setMobileBottomTab);
   const isMobileWatchlistOpen = useMarketStore((s) => s.isMobileWatchlistOpen);
@@ -77,6 +116,10 @@ export default function App() {
   const dismissTriggeredAlert = useMarketStore((s) => s.dismissTriggeredAlert);
   const setSelectedSymbol = useMarketStore((s) => s.setSelectedSymbol);
   const setAlertModalOpen = useMarketStore((s) => s.setAlertModalOpen);
+  const isCommandPaletteOpen = useMarketStore((s) => s.isCommandPaletteOpen);
+  const setCommandPaletteOpen = useMarketStore((s) => s.setCommandPaletteOpen);
+  const stepSelectedSymbol = useMarketStore((s) => s.stepSelectedSymbol);
+  const togglePeriodIntradayDaily = useMarketStore((s) => s.togglePeriodIntradayDaily);
 
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | 'unsupported'
@@ -103,8 +146,8 @@ export default function App() {
           'alphapulse-permission-granted'
         );
       }
-    } catch {
-      // ignore permission prompt errors in restricted environments
+    } catch (e) {
+      console.error('[handleRequestNotificationPermission] 通知权限请求失败:', e);
     }
   }, []);
 
@@ -212,6 +255,51 @@ export default function App() {
     return unsubscribe;
   }, []);
 
+  // 3. 通达信式全局键盘盲操引擎 (↑/↓切股, Space/F5切分时日K, 任意键唤出键盘精灵)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const activeTag = (document.activeElement?.tagName || '').toUpperCase();
+      const isInputFocused =
+        activeTag === 'INPUT' ||
+        activeTag === 'TEXTAREA' ||
+        activeTag === 'SELECT' ||
+        (document.activeElement as HTMLElement)?.isContentEditable;
+
+      if (isInputFocused || useMarketStore.getState().isCommandPaletteOpen) {
+        return;
+      }
+
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        stepSelectedSymbol(-1);
+        return;
+      }
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        stepSelectedSymbol(1);
+        return;
+      }
+
+      if (e.key === ' ' || e.key === 'F5') {
+        e.preventDefault();
+        togglePeriodIntradayDaily();
+        return;
+      }
+
+      // 单字符输入（0-9 或 a-z / A-Z），且未按下 Ctrl / Alt / Meta 快捷键组合
+      if (/^[0-9a-zA-Z]$/.test(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        setCommandPaletteOpen(true, e.key);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [stepSelectedSymbol, togglePeriodIntradayDaily, setCommandPaletteOpen]);
+
   return (
     <div className="flex flex-col h-screen w-screen overflow-hidden bg-[#0d0e12] text-[#d1d4dc]">
       {/* 1. 顶部三区导航栏与核心指数跑马灯监控条 */}
@@ -273,15 +361,27 @@ export default function App() {
           <WatchlistPanel />
         </div>
 
-        {/* 中间主区域：顶部股票实时总览 + 09:25 竞价雷达插件 + 中部原生 Canvas K线/分时主副图 或 超短游资量化作战室 */}
+        {/* 中间主区域：100% 满屏一级工作台 (彻底铲除上下硬拼割裂) */}
         <div className="flex flex-col flex-1 min-h-0 overflow-hidden md:border-r md:border-[#2a2e39]">
           <StockQuoteHeader />
-          <CallAuctionRadarPlugin />
-          {workspaceMode === 'quant' ? (
-            <UltraShortQuantWorkbench />
-          ) : (
-            <FinancialChart />
-          )}
+          <LazyBoundary label="工作台">
+            <React.Suspense
+              fallback={
+                <div className="flex-1 min-h-[260px] flex items-center justify-center text-[#787b86] text-sm">
+                  工作台加载中…
+                </div>
+              }
+            >
+              {workspaceMode === 'chart' && (
+                <>
+                  <UltraShortStockDiagnosticStrip />
+                  <FinancialChart />
+                </>
+              )}
+              {workspaceMode === 'auction' && <CallAuctionRadarPlugin />}
+              {workspaceMode === 'quant' && <UltraShortQuantWorkbench />}
+            </React.Suspense>
+          </LazyBoundary>
 
           {/* 移动端专属 (<768px)：底部分屏 Tab 切换展示【五档盘口】、【超短游资】、【实时成交简表】、【基本面/指标】 */}
           <div className="flex md:hidden flex-col h-[325px] shrink-0 border-t border-[#2a2e39] bg-[#1e222d] pb-safe">
@@ -347,7 +447,13 @@ export default function App() {
             <div className="flex-1 min-h-0 overflow-y-auto">
               {mobileBottomTab === 'orderbook' && <OrderBook5Panel />}
               {mobileBottomTab === 'quant' && (
-                <UltraShortQuantWorkbench compact />
+                <LazyBoundary label="超短模块">
+                  <React.Suspense
+                    fallback={<div className="p-4 text-center text-[#787b86] text-xs">加载中…</div>}
+                  >
+                    <UltraShortQuantWorkbench compact />
+                  </React.Suspense>
+                </LazyBoundary>
               )}
               {mobileBottomTab === 'trades' && (
                 <TradeTicksAndMetricsPanel forcedTab="trades" />
@@ -408,6 +514,23 @@ export default function App() {
 
       {/* PWA 安装与终端参数弹窗 */}
       <PWAInstallModal />
+
+      {/* 通达信键盘精灵全市场检索浮层 */}
+      <CommandPaletteModal />
+
+      {/* 首屏种子数据演示标记 */}
+      {isDemoData && (
+        <div
+          className="fixed top-14 left-1/2 -translate-x-1/2 z-50 px-3 py-1 rounded-full bg-[#F59E0B]/15 border border-[#F59E0B]/50 text-[#F59E0B] text-xs font-medium pointer-events-none"
+          role="status"
+          aria-live="polite"
+        >
+          演示数据 · 等待 WebSocket 实时行情接入
+        </div>
+      )}
+
+      {/* 非侵入式错误提示 */}
+      <ErrorToast />
     </div>
   );
 }

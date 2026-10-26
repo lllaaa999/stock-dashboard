@@ -382,7 +382,7 @@ test('注册制法定复利异动监管逆推 (k ∈ {2, 3}) 与 10日100%特停
   // 3. 三六零 (6连板，10日累计偏离 > 95%，触发高危特停锁死预警)
   const reg360 = calculateRegulatoryDeviation(quotes['601360.SH']);
   assert.equal(reg360.severeSuspensionLockWarning, true);
-  assert.ok(reg360.remainingTo100Percent < 10);
+  assert.ok((reg360.remainingTo100Percent ?? 0) < 10);
 });
 
 test('真实成交量加权承接算子 (VW-DVR)：水上筹码锁定率与回撤买盘吸收率', () => {

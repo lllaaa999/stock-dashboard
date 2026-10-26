@@ -62,7 +62,7 @@ export const TradeTicksAndMetricsPanel: React.FC<TradeTicksAndMetricsPanelProps>
             </button>
           </div>
           <span className="text-[11px] text-[#787b86] font-mono tabular-nums">
-            换手 {quote.turnoverRate.toFixed(2)}%
+            换手 {typeof quote.turnoverRate === 'number' ? `${quote.turnoverRate.toFixed(2)}%` : '--'}
           </span>
         </div>
       )}
@@ -74,13 +74,13 @@ export const TradeTicksAndMetricsPanel: React.FC<TradeTicksAndMetricsPanelProps>
             <div className="flex items-center justify-between">
               <span className="text-[#787b86]">外盘(主动买)</span>
               <span className="font-mono tabular-nums text-[#F6465D] font-medium">
-                {formatVolumeHands(quote.outerVolume)}
+                {formatVolumeHands(quote.outerVolume ?? 0)}
               </span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-[#787b86]">内盘(主动卖)</span>
               <span className="font-mono tabular-nums text-[#0ECB81] font-medium">
-                {formatVolumeHands(quote.innerVolume)}
+                {formatVolumeHands(quote.innerVolume ?? 0)}
               </span>
             </div>
           </div>
@@ -95,7 +95,7 @@ export const TradeTicksAndMetricsPanel: React.FC<TradeTicksAndMetricsPanelProps>
 
           {/* 滚动分笔成交列表 */}
           <div className="flex-1 overflow-y-auto divide-y divide-[#2a2e39]/30">
-            {quote.recentTrades.map((trade) => {
+            {(quote.recentTrades || []).map((trade) => {
               const dir = getPriceDirection(trade.price, quote.prevClose);
               const priceColor = getDirectionColorClass(dir);
               const sideColor =
@@ -140,13 +140,13 @@ export const TradeTicksAndMetricsPanel: React.FC<TradeTicksAndMetricsPanelProps>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">换手率</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#F59E0B]">
-                {quote.turnoverRate.toFixed(2)}%
+                {typeof quote.turnoverRate === 'number' ? `${quote.turnoverRate.toFixed(2)}%` : '--'}
               </div>
             </div>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">量比</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#38BDF8]">
-                {quote.volumeRatio.toFixed(2)}
+                {typeof quote.volumeRatio === 'number' ? quote.volumeRatio.toFixed(2) : '--'}
               </div>
             </div>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
@@ -164,7 +164,7 @@ export const TradeTicksAndMetricsPanel: React.FC<TradeTicksAndMetricsPanelProps>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">振幅</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#d1d4dc]">
-                {quote.amplitude.toFixed(2)}%
+                {typeof quote.amplitude === 'number' ? `${quote.amplitude.toFixed(2)}%` : '--'}
               </div>
             </div>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
@@ -176,25 +176,25 @@ export const TradeTicksAndMetricsPanel: React.FC<TradeTicksAndMetricsPanelProps>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">市盈率 (TTM)</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#d1d4dc]">
-                {quote.peTtm.toFixed(2)}
+                {typeof quote.peTtm === 'number' ? quote.peTtm.toFixed(2) : '--'}
               </div>
             </div>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">市净率 (PB)</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#d1d4dc]">
-                {quote.pb.toFixed(2)}
+                {typeof quote.pb === 'number' ? quote.pb.toFixed(2) : '--'}
               </div>
             </div>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">总市值</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#d1d4dc]">
-                {quote.marketCap.toLocaleString('en-US')}亿
+                {typeof quote.marketCap === 'number' && quote.marketCap > 0 ? `${quote.marketCap.toLocaleString('en-US')}亿` : '--'}
               </div>
             </div>
             <div className="p-2.5 rounded bg-[#131722] border border-[#2a2e39]">
               <div className="text-[#787b86] text-[11px]">流通市值</div>
               <div className="mt-0.5 font-mono tabular-nums text-sm font-semibold text-[#d1d4dc]">
-                {quote.floatMarketCap.toLocaleString('en-US')}亿
+                {typeof quote.floatMarketCap === 'number' && quote.floatMarketCap > 0 ? `${quote.floatMarketCap.toLocaleString('en-US')}亿` : '--'}
               </div>
             </div>
           </div>

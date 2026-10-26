@@ -20,6 +20,7 @@ import type {
   LadderFaultZone,
   RegulatoryAlertLight,
   RegulatoryDeviationResult,
+  RegulatoryHistory,
   RegulatoryMonitorOverview,
   ThemeAttackRole,
   ThemeResonanceItem,
@@ -146,6 +147,11 @@ export function calculateAuctionRadar(
     us?.auctionVolumeRatio ??
     Number((quote.volumeRatio * 1.4).toFixed(2));
   const unmatchedHands = override?.unmatchedHands ?? us?.auctionUnmatchedHands ?? 0;
+  // 没有真实竞价数据时（不在后端雷达里），下面的竞价额/占昨比都是按系数估的，必须打标
+  const estimated =
+    override?.auctionAmount === undefined &&
+    us?.auctionAmount === undefined &&
+    us?.auctionVolumeRatio === undefined;
 
   let signal: AuctionSignalType = 'NORMAL';
   let signalLabel = '常规开盘';
@@ -198,6 +204,7 @@ export function calculateAuctionRadar(
     auctionVolumeRatio,
     unmatchedHands,
     signal,
+    estimated,
     signalLabel,
     signalReason,
   };
@@ -536,437 +543,6 @@ export function calculateBoardLadderSummary(
   };
 }
 
-interface SectorEchelonSeedMember {
-  symbol: string;
-  code: string;
-  name: string;
-  price: number;
-  changePercent: number;
-  consecutiveBoards: number;
-  dragonRole: DragonRoleTag;
-  firstSealTime: string | null;
-  amount: number;
-  isLimitUp: boolean;
-}
-
-interface SectorEchelonBaseline {
-  constituentPoolCount: number;
-  seedMembers: SectorEchelonSeedMember[];
-}
-
-const SECTOR_ECHELON_BASELINES: Record<string, SectorEchelonBaseline> = {
-  人工智能: {
-    constituentPoolCount: 16,
-    seedMembers: [
-      {
-        symbol: '601360.SH',
-        code: '601360',
-        name: '三六零',
-        price: 11.55,
-        changePercent: 10.0,
-        consecutiveBoards: 6,
-        dragonRole: 'SPACE_DRAGON',
-        firstSealTime: '09:25:00',
-        amount: 3095400000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '002230.SZ',
-        code: '002230',
-        name: '科大讯飞',
-        price: 51.48,
-        changePercent: 10.0,
-        consecutiveBoards: 3,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '09:33:18',
-        amount: 5120000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '688981.SH',
-        code: '688981',
-        name: '寒武纪-U',
-        price: 268.5,
-        changePercent: 14.62,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 6420000000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '000858.SZ',
-        code: '002261',
-        name: '拓维信息',
-        price: 18.92,
-        changePercent: 10.0,
-        consecutiveBoards: 2,
-        dragonRole: 'TURNOVER_DRAGON',
-        firstSealTime: '09:41:05',
-        amount: 3680000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '300059.SZ',
-        code: '000977',
-        name: '浪潮信息',
-        price: 45.76,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: '10:08:22',
-        amount: 7240000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '600519.SH',
-        code: '300418',
-        name: '昆仑万维',
-        price: 42.18,
-        changePercent: 20.0,
-        consecutiveBoards: 1,
-        dragonRole: 'FOLLOWER',
-        firstSealTime: '10:21:40',
-        amount: 4950000000,
-        isLimitUp: true,
-      },
-    ],
-  },
-  半导体: {
-    constituentPoolCount: 15,
-    seedMembers: [
-      {
-        symbol: '688981.SH',
-        code: '688981',
-        name: '中芯国际',
-        price: 97.65,
-        changePercent: 7.07,
-        consecutiveBoards: 2,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: '09:42:06',
-        amount: 11571525000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '601360.SH',
-        code: '688041',
-        name: '海光信息',
-        price: 128.4,
-        changePercent: 20.0,
-        consecutiveBoards: 2,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '09:36:12',
-        amount: 6850000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '002230.SZ',
-        code: '002371',
-        name: '北方华创',
-        price: 386.0,
-        changePercent: 8.42,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 5420000000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '300750.SZ',
-        code: '600584',
-        name: '长电科技',
-        price: 38.94,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'TURNOVER_DRAGON',
-        firstSealTime: '10:14:35',
-        amount: 4180000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '002594.SZ',
-        code: '603501',
-        name: '韦尔股份',
-        price: 112.5,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'FOLLOWER',
-        firstSealTime: '10:38:50',
-        amount: 3560000000,
-        isLimitUp: true,
-      },
-    ],
-  },
-  电池储能: {
-    constituentPoolCount: 14,
-    seedMembers: [
-      {
-        symbol: '300750.SZ',
-        code: '300750',
-        name: '宁德时代',
-        price: 256.88,
-        changePercent: 4.21,
-        consecutiveBoards: 1,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: '10:05:42',
-        amount: 9926043200,
-        isLimitUp: true,
-      },
-      {
-        symbol: '002594.SZ',
-        code: '002121',
-        name: '科陆电子',
-        price: 6.82,
-        changePercent: 10.0,
-        consecutiveBoards: 2,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '09:31:45',
-        amount: 1420000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '688981.SH',
-        code: '300274',
-        name: '阳光电源',
-        price: 94.6,
-        changePercent: 7.85,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 6180000000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '601899.SH',
-        code: '002074',
-        name: '国轩高科',
-        price: 24.53,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'FOLLOWER',
-        firstSealTime: '10:52:18',
-        amount: 2460000000,
-        isLimitUp: true,
-      },
-    ],
-  },
-  新能源车: {
-    constituentPoolCount: 15,
-    seedMembers: [
-      {
-        symbol: '002594.SZ',
-        code: '002594',
-        name: '比亚迪',
-        price: 301.45,
-        changePercent: 3.24,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 8877702500,
-        isLimitUp: false,
-      },
-      {
-        symbol: '300750.SZ',
-        code: '601127',
-        name: '赛力斯',
-        price: 138.6,
-        changePercent: 10.0,
-        consecutiveBoards: 2,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '09:38:10',
-        amount: 7850000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '601899.SH',
-        code: '000625',
-        name: '长安汽车',
-        price: 15.84,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'TURNOVER_DRAGON',
-        firstSealTime: '10:26:05',
-        amount: 4620000000,
-        isLimitUp: true,
-      },
-    ],
-  },
-  有色金属: {
-    constituentPoolCount: 14,
-    seedMembers: [
-      {
-        symbol: '601899.SH',
-        code: '601899',
-        name: '紫金矿业',
-        price: 17.88,
-        changePercent: 2.46,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 3289920000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '600519.SH',
-        code: '600362',
-        name: '江西铜业',
-        price: 25.41,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '10:15:30',
-        amount: 2680000000,
-        isLimitUp: true,
-      },
-      {
-        symbol: '000858.SZ',
-        code: '603993',
-        name: '洛阳钼业',
-        price: 8.95,
-        changePercent: 5.12,
-        consecutiveBoards: 0,
-        dragonRole: 'FOLLOWER',
-        firstSealTime: null,
-        amount: 2940000000,
-        isLimitUp: false,
-      },
-    ],
-  },
-  酿酒行业: {
-    constituentPoolCount: 14,
-    seedMembers: [
-      {
-        symbol: '600519.SH',
-        code: '600519',
-        name: '贵州茅台',
-        price: 1582.6,
-        changePercent: 2.24,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 6783023600,
-        isLimitUp: false,
-      },
-      {
-        symbol: '000858.SZ',
-        code: '000858',
-        name: '五粮液',
-        price: 148.85,
-        changePercent: 1.81,
-        consecutiveBoards: 0,
-        dragonRole: 'FOLLOWER',
-        firstSealTime: null,
-        amount: 2857920000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '601318.SH',
-        code: '600702',
-        name: '舍得酒业',
-        price: 68.42,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '11:12:08',
-        amount: 1620000000,
-        isLimitUp: true,
-      },
-    ],
-  },
-  非银金融: {
-    constituentPoolCount: 16,
-    seedMembers: [
-      {
-        symbol: '601318.SH',
-        code: '601318',
-        name: '中国平安',
-        price: 57.64,
-        changePercent: 1.48,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 5446980000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '300059.SZ',
-        code: '601162',
-        name: '天风证券',
-        price: 4.95,
-        changePercent: 10.0,
-        consecutiveBoards: 1,
-        dragonRole: 'PIONEER_DRAGON',
-        firstSealTime: '10:44:12',
-        amount: 3420000000,
-        isLimitUp: true,
-      },
-    ],
-  },
-  互联网金融: {
-    constituentPoolCount: 12,
-    seedMembers: [
-      {
-        symbol: '300059.SZ',
-        code: '300059',
-        name: '东方财富',
-        price: 22.92,
-        changePercent: -2.05,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 11047440000,
-        isLimitUp: false,
-      },
-      {
-        symbol: '601360.SH',
-        code: '300033',
-        name: '同花顺',
-        price: 218.5,
-        changePercent: -1.42,
-        consecutiveBoards: 0,
-        dragonRole: 'FOLLOWER',
-        firstSealTime: null,
-        amount: 4680000000,
-        isLimitUp: false,
-      },
-    ],
-  },
-  银行: {
-    constituentPoolCount: 16,
-    seedMembers: [
-      {
-        symbol: '600036.SH',
-        code: '600036',
-        name: '招商银行',
-        price: 38.92,
-        changePercent: -0.84,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 2381904000,
-        isLimitUp: false,
-      },
-    ],
-  },
-  家用电器: {
-    constituentPoolCount: 12,
-    seedMembers: [
-      {
-        symbol: '000651.SZ',
-        code: '000651',
-        name: '格力电器',
-        price: 39.78,
-        changePercent: -10.0,
-        consecutiveBoards: 0,
-        dragonRole: 'CAPACITY_CORE',
-        firstSealTime: null,
-        amount: 3560310000,
-        isLimitUp: false,
-      },
-    ],
-  },
-};
-
 function parseSealMinutesSince925(sealTime: string | null): number {
   if (!sealTime) return 180;
   const parts = sealTime.split(':').map(Number);
@@ -998,10 +574,7 @@ export function calculateThemeResonance(
     const totalLive = stocks.length;
     if (totalLive === 0) return;
 
-    const baseline = SECTOR_ECHELON_BASELINES[sectorName];
-    const liveCodes = new Set(stocks.map((s) => s.code));
-
-    // 构建板块完整梯队成员列表（实盘Tick标的 + 板块内代表性梯队成分股）
+    // 构建板块完整梯队成员列表（仅使用实盘Tick标的，不注入硬编码种子数据）
     const combinedMembers: ThemeResonanceItem['memberStocks'] = stocks.map((s) => {
       const isLimUp =
         (s.ultraShort?.consecutiveBoards ?? 0) >= 1 ||
@@ -1022,52 +595,6 @@ export function calculateThemeResonance(
         isLimitUp: isLimUp,
       };
     });
-
-    if (baseline) {
-      for (const seed of baseline.seedMembers) {
-        if (!liveCodes.has(seed.code)) {
-          // 根据沙盘推演模式微调梯队成员表现
-          let adjChange = seed.changePercent;
-          let adjLimitUp = seed.isLimitUp;
-          let adjBoards = seed.consecutiveBoards;
-          if (scenario === 'ai_chip_mainstream') {
-            if (sectorName === '人工智能' || sectorName === '半导体') {
-              adjChange = seed.isLimitUp ? seed.changePercent : Math.min(20, Number((seed.changePercent + 3.2).toFixed(2)));
-              if (adjChange >= 9.9) {
-                adjLimitUp = true;
-                adjBoards = Math.max(1, adjBoards);
-              }
-            }
-          } else if (scenario === 'rotation_divergence') {
-            if (sectorName === '人工智能') {
-              if (seed.dragonRole === 'FOLLOWER') {
-                adjChange = 2.85;
-                adjLimitUp = false;
-                adjBoards = 0;
-              }
-            } else if (sectorName === '电池储能' || sectorName === '新能源车' || sectorName === '有色金属') {
-              adjChange = seed.isLimitUp ? seed.changePercent : 10.0;
-              adjLimitUp = true;
-              adjBoards = Math.max(1, adjBoards + 1);
-            }
-          }
-
-          combinedMembers.push({
-            symbol: seed.symbol,
-            code: seed.code,
-            name: seed.name,
-            price: seed.price,
-            changePercent: adjChange,
-            consecutiveBoards: adjBoards,
-            dragonRole: seed.dragonRole,
-            roleLabel: getDragonRoleLabel(seed.dragonRole),
-            firstSealTime: adjLimitUp ? seed.firstSealTime ?? '10:18:00' : null,
-            amount: seed.amount,
-            isLimitUp: adjLimitUp,
-          });
-        }
-      }
-    }
 
     // 针对沙盘模式调整实盘成员的表现
     const adjustedMembers = combinedMembers.map((m) => {
@@ -1104,7 +631,7 @@ export function calculateThemeResonance(
     const memberCount = adjustedMembers.length;
     const sectorConstituentCount = Math.max(
       memberCount,
-      baseline?.constituentPoolCount ?? Math.max(8, totalLive * 4)
+      Math.max(8, totalLive * 4)
     );
 
     let sumChange = 0;
@@ -1483,7 +1010,8 @@ export function analyzeMarketThemeResonance(
  */
 export function calculateRegulatoryDeviation(
   quote: TickData,
-  indexOverrideTodayPct?: number
+  indexOverrideTodayPct?: number,
+  history?: RegulatoryHistory
 ): RegulatoryDeviationResult {
   const us = quote.ultraShort;
   const is30Rule =
@@ -1495,16 +1023,28 @@ export function calculateRegulatoryDeviation(
   const boardRuleLabel = is30Rule ? '创业板/科创板 ±30%' : '沪深主板 ±20%';
   const T = ruleThresholdPercent / 100;
 
-  const stockReturnT1Percent = Number((us?.stockReturnT1 ?? 5.2).toFixed(2));
-  const stockReturnT2Percent = Number((us?.stockReturnT2 ?? 4.8).toFixed(2));
-  const indexReturnT1Percent = Number((us?.indexReturnT1 ?? 0.65).toFixed(2));
-  const indexReturnT2Percent = Number((us?.indexReturnT2 ?? 0.42).toFixed(2));
-  const indexReturnTodayPercent = Number(
-    (indexOverrideTodayPct !== undefined
-      ? indexOverrideTodayPct
-      : us?.indexReturnToday ?? 1.15
-    ).toFixed(2)
-  );
+  // T-1 / T-2 涨跌幅：优先用后端真实日K（/api/quant/regulatory 的 history），
+  // 其次用 ultraShort 里带的真值；两者都没有才退回 0（保守假设无历史涨跌），
+  // 并把 historySource 标成 'estimated' 让 UI 打「估算」标。
+  // 修复：原占位值 5.2%/4.8%/0.65% 等会直接参与异动临界价和红黄灯计算，
+  // 可能产生虚假的"特停高危"告警误导交易决策。改用 0 后不会凭空推高累计偏离度。
+  const rawStockT1 = history?.stock_return_t1 ?? us?.stockReturnT1 ?? null;
+  const rawStockT2 = history?.stock_return_t2 ?? us?.stockReturnT2 ?? null;
+  const rawIndexT1 = history?.index_return_t1 ?? us?.indexReturnT1 ?? null;
+  const rawIndexT2 = history?.index_return_t2 ?? us?.indexReturnT2 ?? null;
+  const rawIndexToday =
+    indexOverrideTodayPct ?? history?.index_return_today ?? us?.indexReturnToday ?? null;
+
+  const historySource: 'kline' | 'estimated' =
+    rawStockT1 != null && rawStockT2 != null && rawIndexT1 != null && rawIndexT2 != null
+      ? 'kline'
+      : 'estimated';
+
+  const stockReturnT1Percent = Number((rawStockT1 ?? 0).toFixed(2));
+  const stockReturnT2Percent = Number((rawStockT2 ?? 0).toFixed(2));
+  const indexReturnT1Percent = Number((rawIndexT1 ?? 0).toFixed(2));
+  const indexReturnT2Percent = Number((rawIndexT2 ?? 0).toFixed(2));
+  const indexReturnTodayPercent = Number((rawIndexToday ?? 0).toFixed(2));
 
   const rS1 = stockReturnT1Percent / 100;
   const rS2 = stockReturnT2Percent / 100;
@@ -1562,15 +1102,30 @@ export function calculateRegulatoryDeviation(
     quote.price >= effectiveTriggerPrice;
 
   // 4. 10日 100% 严重异动与 10日 4次同向异动停牌核查（特停）锁死预警
-  const base10d = us?.cumDeviation10d ?? 42.5;
+  // 10日偏离度：只有后端法规引擎（/api/quant/regulatory）才知道真实值。
+  // 以前拿不到就硬塞 42.5%，等于每只票都显示"10日偏离 42.5%"，还拿去判红黄绿灯。
+  // 现在拿不到就是 null → UI 显示 "—"，只有已知的字段才参与判定（不拿假数字报警）。
+  const base10d = us?.cumDeviation10d ?? null;
   const todayNetDev = quote.changePercent - rMToday * 100;
-  const cumDeviation10dPercent = Number(Math.max(0, base10d + todayNetDev).toFixed(2));
-  const remainingTo100Percent = Number(Math.max(0, 100 - cumDeviation10dPercent).toFixed(2));
-  const abnormalCount10d = us?.abnormalCount10d ?? 0;
-  const remainingAbnormalTimes10d = Math.max(0, 4 - abnormalCount10d - (isTriggeredToday ? 1 : 0));
+  const cumDeviation10dPercent =
+    base10d === null ? null : Number(Math.max(0, base10d + todayNetDev).toFixed(2));
+  const remainingTo100Percent =
+    cumDeviation10dPercent === null
+      ? null
+      : Number(Math.max(0, 100 - cumDeviation10dPercent).toFixed(2));
+  const abnormalCount10d = us?.abnormalCount10d ?? null;
+  const remainingAbnormalTimes10d =
+    abnormalCount10d === null
+      ? null
+      : Math.max(0, 4 - abnormalCount10d - (isTriggeredToday ? 1 : 0));
 
   const severeSuspensionLockWarning =
-    remainingTo100Percent <= 14.0 || abnormalCount10d >= 3;
+    (remainingTo100Percent !== null && remainingTo100Percent <= 14.0) ||
+    (abnormalCount10d !== null && abnormalCount10d >= 3);
+
+  // 文案里不能出现 "null%"：null 一律显示为 "—"
+  const fmtDev = (v: number | null | undefined, digits = 1): string =>
+    typeof v === 'number' && Number.isFinite(v) ? v.toFixed(digits) : '—';
 
   // 综合特停风险评分 (0 ~ 100)
   const maxWindowSat = Math.max(windowSaturation2DayPercent, windowSaturation3DayPercent);
@@ -1579,8 +1134,8 @@ export function calculateRegulatoryDeviation(
       99.5,
       Math.max(
         8,
-        cumDeviation10dPercent * 0.55 +
-          abnormalCount10d * 11 +
+        (cumDeviation10dPercent ?? 0) * 0.55 +
+          (abnormalCount10d ?? 0) * 11 +
           Math.min(100, maxWindowSat) * 0.25 +
           (severeSuspensionLockWarning ? 15 : 0)
       )
@@ -1592,7 +1147,7 @@ export function calculateRegulatoryDeviation(
   let alertLightLabel: RegulatoryDeviationResult['alertLightLabel'] = '绿灯 · 安全运行区间';
   let alertLightReason = `k=${bindingWindowK} 窗口占用 ${maxWindowSat.toFixed(
     1
-  )}%，距异动线余量 ${remainingSafeMarginPercent}%，10日偏离 ${cumDeviation10dPercent}% 处于安全区间`;
+  )}%，距异动线余量 ${remainingSafeMarginPercent}%，10日偏离 ${fmtDev(cumDeviation10dPercent, 2)}% 处于安全区间`;
   let tacticalPlaybook = `当前距离 k=${bindingWindowK} 法定异动临界价 (${effectiveTriggerPrice.toFixed(
     2
   )}元) 空间充裕，可按盘口承接与题材主线节奏正常博弈。`;
@@ -1601,12 +1156,12 @@ export function calculateRegulatoryDeviation(
     alertLight = 'RED';
     alertLightLabel = '红灯 · 特停/触线高危';
     if (severeSuspensionLockWarning && isTriggeredToday) {
-      alertLightReason = `已突破 k=${bindingWindowK} 法定${ruleThresholdPercent}%异动线，且10日偏离达 ${cumDeviation10dPercent}% (近10日已${abnormalCount10d}次异动)，逼近100%严重异动/4次同向异动特停红线！`;
+      alertLightReason = `已突破 k=${bindingWindowK} 法定${ruleThresholdPercent}%异动线，且10日偏离达 ${fmtDev(cumDeviation10dPercent, 2)}% (近10日已${fmtDev(abnormalCount10d, 0)}次异动)，逼近100%严重异动/4次同向异动特停红线！`;
       tacticalPlaybook = `【极高危特停锁死预警】若今日封死涨停将触发严重异动或第4次异动监管重点监控，游资主封资金极易在尾盘主动漏单控涨幅（压在 ${effectiveTriggerPrice.toFixed(
         2
       )}元 下方），切勿盲目满仓排队顶一字！`;
     } else if (severeSuspensionLockWarning) {
-      alertLightReason = `10日累计偏离高达 ${cumDeviation10dPercent}% (距100%红线仅剩 ${remainingTo100Percent}%，近10日已${abnormalCount10d}次异动)，处于特停重点监控高危区！`;
+      alertLightReason = `10日累计偏离高达 ${fmtDev(cumDeviation10dPercent, 2)}% (距100%红线仅剩 ${fmtDev(remainingTo100Percent)}%，近10日已${fmtDev(abnormalCount10d, 0)}次异动)，处于特停重点监控高危区！`;
       tacticalPlaybook = `【严重异动压线博弈】主力资金大概率采取“断板换手压涨幅”策略，严格控制收盘价低于 ${effectiveTriggerPrice.toFixed(
         2
       )}元 (${effectiveMaxSafeChangePercent > 0 ? '+' : ''}${effectiveMaxSafeChangePercent}%) 以绕开第4次异动与100%严重异动。`;
@@ -1615,13 +1170,13 @@ export function calculateRegulatoryDeviation(
         dev2DayCurrentPercent,
         dev3DayCurrentPercent
       ).toFixed(2)}% (≥${ruleThresholdPercent}%阈值)，已触发普通异动龙虎榜披露条件。`;
-      tacticalPlaybook = `【今日已触及普通异动】盘后将公布3日/2日龙虎榜席位明细；当前10日累计偏离 ${cumDeviation10dPercent}% 尚有 ${remainingTo100Percent}% 缓冲空间，重点观察封单稳定性与次日溢价。`;
+      tacticalPlaybook = `【今日已触及普通异动】盘后将公布3日/2日龙虎榜席位明细；当前10日累计偏离 ${fmtDev(cumDeviation10dPercent, 2)}% 尚有 ${fmtDev(remainingTo100Percent)}% 缓冲空间，重点观察封单稳定性与次日溢价。`;
     }
   } else if (
     remainingSafeMarginPercent <= 4.5 ||
     maxWindowSat >= 75 ||
-    cumDeviation10dPercent >= 62 ||
-    abnormalCount10d >= 2
+    (cumDeviation10dPercent ?? 0) >= 62 ||
+    (abnormalCount10d ?? 0) >= 2
   ) {
     alertLight = 'YELLOW';
     alertLightLabel = '黄灯 · 异动压线临界';
@@ -1642,9 +1197,9 @@ export function calculateRegulatoryDeviation(
   )}% (临界价 ${effectiveTriggerPrice.toFixed(2)}元)`;
 
   if (severeSuspensionLockWarning && isTriggeredToday) {
-    statusSummary = `【高危特停锁死预警】已触及 k=${bindingWindowK} 异动且10日偏离达 ${cumDeviation10dPercent}% (距100%红线仅剩 ${remainingTo100Percent}%)`;
+    statusSummary = `【高危特停锁死预警】已触及 k=${bindingWindowK} 异动且10日偏离达 ${fmtDev(cumDeviation10dPercent, 2)}% (距100%红线仅剩 ${fmtDev(remainingTo100Percent)}%)`;
   } else if (severeSuspensionLockWarning) {
-    statusSummary = `【10日100%严重异动逼近】10日累计偏离 ${cumDeviation10dPercent}%，今日安全上限 ${effectiveTriggerPrice.toFixed(
+    statusSummary = `【10日100%严重异动逼近】10日累计偏离 ${fmtDev(cumDeviation10dPercent, 2)}%，今日安全上限 ${effectiveTriggerPrice.toFixed(
       2
     )}元 (${effectiveMaxSafeChangePercent > 0 ? '+' : ''}${effectiveMaxSafeChangePercent}%)`;
   } else if (isTriggeredToday) {
@@ -1696,6 +1251,7 @@ export function calculateRegulatoryDeviation(
     alertLightReason,
     tacticalPlaybook,
     statusSummary,
+    historySource,
   };
 }
 
@@ -1704,10 +1260,11 @@ export function calculateRegulatoryDeviation(
  */
 export function analyzeMarketRegulatoryOverview(
   quotes: TickData[],
-  indexOverrideTodayPct?: number
+  indexOverrideTodayPct?: number,
+  historyMap?: Record<string, RegulatoryHistory>
 ): RegulatoryMonitorOverview {
   const items = quotes
-    .map((q) => calculateRegulatoryDeviation(q, indexOverrideTodayPct))
+    .map((q) => calculateRegulatoryDeviation(q, indexOverrideTodayPct, historyMap?.[q.symbol]))
     .sort((a, b) => {
       const rank = { RED: 3, YELLOW: 2, GREEN: 1 };
       if (rank[b.alertLight] !== rank[a.alertLight]) {
@@ -2420,6 +1977,7 @@ export function analyzeStockDragonTigerList(
     synergyLabel,
     nextDayPremiumScore,
     actionablePlaybook,
+    isSimulated: true, // 龙虎榜席位数据为前端模拟生成，非真实接口数据
   };
 }
 

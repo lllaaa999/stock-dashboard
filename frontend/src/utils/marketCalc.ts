@@ -57,6 +57,15 @@ export function getSignedColorClass(value: number | null | undefined): string {
 /**
  * 格式化价格，空档或非法数值优雅降级为 '--'
  */
+/** 可空数值格式化：未知一律显示 "—"，绝不把 null 渲染成 "null%" */
+export function formatNullable(
+  v: number | null | undefined,
+  decimals = 2,
+  suffix = ''
+): string {
+  return typeof v === 'number' && Number.isFinite(v) ? `${v.toFixed(decimals)}${suffix}` : '—';
+}
+
 export function formatPrice(price: number | null | undefined, decimals = 2): string {
   if (price === null || price === undefined || !Number.isFinite(price) || price <= 0) {
     return '--';

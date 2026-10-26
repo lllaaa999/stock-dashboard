@@ -1,4 +1,4 @@
-import { useMarketStore } from '../store/useMarketStore';
+import { useMarketStore, setSymbolSubscriptionHandler } from '../store/useMarketStore';
 import type { WSClientMessage, WSServerMessage } from '../types/market';
 
 const HEARTBEAT_INTERVAL_MS = 30000; // 30s 心跳保活检测 (Heartbeat Ping/Pong)
@@ -8,6 +8,7 @@ const MAX_RECONNECT_DELAY_MS = 30000;
 class MarketWebSocketClient {
   private ws: WebSocket | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private pongTimeoutTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private disconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempts = 0;
@@ -51,6 +52,10 @@ class MarketWebSocketClient {
         this.reconnectAttempts = 0;
         useMarketStore.getState().setConnectionStatus('CONNECTED');
         this.startHeartbeat();
+        const sel = useMarketStore.getState().selectedSymbol;
+        if (sel) {
+          this.subscribe(sel);
+        }
       };
 
       socket.onmessage = (event: MessageEvent) => {
@@ -64,9 +69,13 @@ class MarketWebSocketClient {
             state.applySnapshotBatch(msg.quotes, msg.indices, msg.batchWindowMs, msg.serverTime);
           } else if (msg.type === 'PONG') {
             // 收到服务端 PONG 响应，连接健康
+            if (this.pongTimeoutTimer) {
+              clearTimeout(this.pongTimeoutTimer);
+              this.pongTimeoutTimer = null;
+            }
           }
-        } catch {
-          // 忽略格式异常帧
+        } catch (e) {
+          console.error('[wsClient] WebSocket 消息解析异常，跳过该帧:', e);
         }
       };
 
@@ -85,7 +94,8 @@ class MarketWebSocketClient {
       socket.onerror = () => {
         // 错误后交由 onclose 统一触发指数退避重连
       };
-    } catch {
+    } catch (e) {
+      console.error('[wsClient] WebSocket 连接创建失败，触发重连:', e);
       this.scheduleReconnect();
     }
   }
@@ -122,6 +132,18 @@ class MarketWebSocketClient {
         type: 'PING',
         timestamp: Date.now(),
       });
+      // PONG 超时检测：发送 PING 后启动 2×心跳间隔的超时窗口，
+      // 若期间未收到 PONG 则判定连接半死，主动关闭触发重连。
+      // 修复原Bug：无 PONG 超时检测，TCP 存活但服务端无响应时
+      // 行情推送静默中断而 UI 持续显示"已连接"。
+      if (this.pongTimeoutTimer) {
+        clearTimeout(this.pongTimeoutTimer);
+      }
+      this.pongTimeoutTimer = setTimeout(() => {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.close(); // 触发 onclose → scheduleReconnect
+        }
+      }, HEARTBEAT_INTERVAL_MS * 2);
     }, HEARTBEAT_INTERVAL_MS);
   }
 
@@ -129,6 +151,10 @@ class MarketWebSocketClient {
     if (this.heartbeatTimer) {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
+    }
+    if (this.pongTimeoutTimer) {
+      clearTimeout(this.pongTimeoutTimer);
+      this.pongTimeoutTimer = null;
     }
   }
 
@@ -143,6 +169,14 @@ class MarketWebSocketClient {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify(message));
     }
+  }
+
+  public subscribe(symbol: string): void {
+    if (!symbol) return;
+    this.send({
+      type: 'SUBSCRIBE',
+      symbols: [symbol],
+    });
   }
 
   public setServerBatchWindow(windowMs: number): void {
@@ -174,3 +208,7 @@ class MarketWebSocketClient {
 }
 
 export const marketWsClient = new MarketWebSocketClient();
+
+setSymbolSubscriptionHandler((symbol) => {
+  marketWsClient.subscribe(symbol);
+});

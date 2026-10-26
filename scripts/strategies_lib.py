@@ -902,6 +902,60 @@ def run_strategies_structured(mode='auto'):
             'items': items,
         })
 
+    # ================= 跨策略去重 =================
+    # 同一股票被多个策略选中时，保留评分最高的策略标记，去重其他重复项。
+    # 评分优先级：quality 字段（涨停质量分）> abs(pct)（涨跌幅绝对值）
+    # 去重后在保留项上记录 dedup_sources，供用户查看重叠情况。
+    code_owners = {}  # code → (strat_idx, item_idx, score)
+    for si, sr in enumerate(strat_results):
+        for ii, it in enumerate(sr['items']):
+            c = it.get('code')
+            if not c:
+                continue
+            q = it.get('quality', 0) or 0
+            p = abs(it.get('pct', 0) or 0)
+            score = q if q > 0 else p
+            if c not in code_owners:
+                code_owners[c] = (si, ii, score)
+            elif score > code_owners[c][2]:
+                code_owners[c] = (si, ii, score)
+
+    # 收集每个 code 的所有出现位置，标记非最高分者为待删除
+    code_all_pos = {}  # code → [(strat_idx, item_idx, strat_key)]
+    for si, sr in enumerate(strat_results):
+        for ii, it in enumerate(sr['items']):
+            c = it.get('code')
+            if c:
+                code_all_pos.setdefault(c, []).append((si, ii, sr['key']))
+
+    dedup_stats = {'removed': 0, 'overlaps': {}}
+    for c, positions in code_all_pos.items():
+        if len(positions) <= 1:
+            continue
+        best_si, best_ii, _ = code_owners[c]
+        removed_keys = [pk for psi, pii, pk in positions if not (psi == best_si and pii == best_ii)]
+        dedup_stats['overlaps'][c] = {'kept': strat_results[best_si]['key'], 'removed_from': removed_keys}
+        dedup_stats['removed'] += len(removed_keys)
+
+    # 执行删除：从后往前遍历各策略的 items，删除非保留的重复项
+    for si in range(len(strat_results) - 1, -1, -1):
+        sr = strat_results[si]
+        new_items = []
+        for ii, it in enumerate(sr['items']):
+            c = it.get('code')
+            if not c or len(code_all_pos.get(c, [])) <= 1:
+                new_items.append(it)
+                continue
+            best_si, best_ii, _ = code_owners[c]
+            if si == best_si and ii == best_ii:
+                # 保留项：附加去重来源信息
+                ov = dedup_stats['overlaps'][c]
+                it['dedup_sources'] = ov['removed_from']
+                new_items.append(it)
+            # else: 重复项，丢弃
+        sr['items'] = new_items
+        sr['count'] = len(new_items)
+
     return {
         'status': 'ok',
         'date': ymd or dt.date.today().strftime('%Y%m%d'),
@@ -910,6 +964,7 @@ def run_strategies_structured(mode='auto'):
         'allow': sorted(list(allow)),
         'mode': mode,
         'strategies': strat_results,
+        'dedup': dedup_stats,
         'updated': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
     }
 

@@ -1741,5 +1741,7 @@
       "prev_amount": 88549248.0
     }
   ],
-  "fake_high_opens": []
+  "fake_high_opens": [],
+  "phase": "post_close",
+  "synthetic": true
 }

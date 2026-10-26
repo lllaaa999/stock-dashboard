@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -11,16 +11,20 @@ import {
   ShieldAlert,
   Zap,
 } from 'lucide-react';
-import { generateIntradayForSymbol } from '../data/seedMarket';
 import { useMarketStore } from '../store/useMarketStore';
+import { useRealLadder, useRealRegulatory } from '../hooks/useRealQuantData';
 import type {
   AuctionSignalType,
+  DragonRoleTag,
   DragonTigerPresetMode,
   DragonTigerSeatNature,
   ThemeResonanceScenarioPreset,
+  TickData,
+  UltraShortProfile,
 } from '../types/market';
 import {
   formatAmountCN,
+  formatNullable,
   formatPrice,
   formatSignedPercent,
   getSignedColorClass,
@@ -40,219 +44,8 @@ import {
 import { DragonTigerNetworkGraph } from './DragonTigerNetworkGraph';
 import { RegulatoryMonitorPanel } from './RegulatoryMonitorPanel';
 import { ThemeResonanceMonitorPanel } from './ThemeResonanceMonitorPanel';
-
-function getAuctionSignalBadgeClass(signal: AuctionSignalType): string {
-  switch (signal) {
-    case 'LOCKED_LIMIT_UP':
-      return 'bg-[#F6465D]/20 text-[#F6465D] border-[#F6465D]/50';
-    case 'SUPER_GRAB':
-      return 'bg-[#F6465D]/15 text-[#ff6b81] border-[#F6465D]/40';
-    case 'WEAK_TO_STRONG':
-      return 'bg-[#F59E0B]/15 text-[#F59E0B] border-[#F59E0B]/40';
-    case 'OVERHEAT_DUMP':
-      return 'bg-[#a855f7]/15 text-[#c084fc] border-[#a855f7]/40';
-    case 'NUCLEAR_BUTTON':
-      return 'bg-[#0ECB81]/20 text-[#0ECB81] border-[#0ECB81]/50';
-    default:
-      return 'bg-[#131722] text-[#9ca3af] border-[#2a2e39]';
-  }
-}
-
-function getSeatNatureBadgeClass(nature: DragonTigerSeatNature): string {
-  switch (nature) {
-    case 'HOT_MONEY':
-      return 'bg-[#F6465D]/20 text-[#F6465D] border-[#F6465D]/50';
-    case 'INSTITUTION':
-      return 'bg-[#F59E0B]/20 text-[#F59E0B] border-[#F59E0B]/50';
-    case 'QUANT_CAMP':
-      return 'bg-[#a855f7]/20 text-[#c084fc] border-[#a855f7]/50';
-    case 'RETAIL_CAMP':
-      return 'bg-[#38bdf8]/20 text-[#38bdf8] border-[#38bdf8]/50';
-  }
-}
-
-/**
- * 顶部单股超短游资五维实时诊断条 (常驻于 K 线/分时主图上方)
- * 让交易员在看盘同时一眼掌握：09:25竞价占昨比、连板身位与断层、题材点面共振、k∈{2,3}异动安全上限价、VW-DVR承接算子
- */
-export const UltraShortStockDiagnosticStrip: React.FC = () => {
-  const quotes = useMarketStore((s) => s.quotes);
-  const selectedSymbol = useMarketStore((s) => s.selectedSymbol);
-  const workspaceMode = useMarketStore((s) => s.workspaceMode);
-  const openQuantModule = useMarketStore((s) => s.openQuantModule);
-  const setWorkspaceMode = useMarketStore((s) => s.setWorkspaceMode);
-
-  const activeQuote = quotes[selectedSymbol];
-
-  const diagnostic = useMemo(() => {
-    if (!activeQuote) return null;
-    const allQuotes = Object.values(quotes);
-    const auction = calculateAuctionRadar(activeQuote);
-    const ladder = calculateBoardLadderSummary(allQuotes);
-    const themes = calculateThemeResonance(allQuotes);
-    const currentTheme = themes.find((t) => t.sectorName === activeQuote.sector) ?? themes[0];
-    const reg = calculateRegulatoryDeviation(activeQuote);
-    const intraday = generateIntradayForSymbol(activeQuote);
-    const dvr = calculateVWDVR(activeQuote, intraday);
-
-    return {
-      auction,
-      ladder,
-      currentTheme,
-      reg,
-      dvr,
-    };
-  }, [activeQuote, quotes]);
-
-  if (!activeQuote || !diagnostic) return null;
-
-  const { auction, ladder, currentTheme, reg, dvr } = diagnostic;
-  const boards = activeQuote.ultraShort?.consecutiveBoards ?? 0;
-  const roleLabel = getDragonRoleLabel(activeQuote.ultraShort?.dragonRole ?? 'FOLLOWER');
-
-  return (
-    <div
-      data-testid="ultrashort-diagnostic-strip"
-      className="bg-[#131722] border-b border-[#2a2e39] px-3 py-1.5 select-none shrink-0"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        {/* 五大超短游资实时算子速览卡片 */}
-        <div className="flex flex-wrap items-center gap-2 min-w-0">
-          {/* 1. 09:25 竞价雷达 */}
-          <button
-            type="button"
-            onClick={() => openQuantModule('auction')}
-            className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#1e222d] hover:bg-[#262b38] border border-[#2a2e39] text-[11px] transition-colors cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Radar className="w-3.5 h-3.5 text-[#F59E0B]" />
-            <span className="text-[#787b86]">09:25竞价:</span>
-            <span
-              className={`px-1.5 py-0.2 rounded border text-[10px] font-semibold ${getAuctionSignalBadgeClass(
-                auction.signal
-              )}`}
-            >
-              {auction.signalLabel}
-            </span>
-            <span className="font-mono tabular-nums text-[#d1d4dc]">
-              占昨 <strong className="text-white">{auction.amountToYesterdayRatio.toFixed(1)}%</strong>
-            </span>
-          </button>
-
-          {/* 2. 连板身位与断层监测 */}
-          <button
-            type="button"
-            onClick={() => openQuantModule('ladder')}
-            className="flex items-center gap-1.5 px-2 py-1 rounded bg-[#1e222d] hover:bg-[#262b38] border border-[#2a2e39] text-[11px] transition-colors cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Flame className="w-3.5 h-3.5 text-[#F6465D]" />
-            <span className="text-[#787b86]">梯队身位:</span>
-            <span className="font-mono tabular-nums font-semibold text-[#F6465D]">
-              {boards >= 1 ? `${boards}连板` : '趋势/首板备选'} · {roleLabel}
-            </span>
-            <span className="text-[#787b86]">|</span>
-            <span className="font-mono tabular-nums text-[#9ca3af]">
-              最高标 <strong className="text-white">{ladder.maxBoardHeight}板</strong>
-              {ladder.hasLadderFault && (
-                <span className="ml-1 text-[#F59E0B]">
-                  (断层缺{ladder.missingBoards.join('/')}板)
-                </span>
-              )}
-            </span>
-          </button>
-
-          {/* 3. 题材点面共振 */}
-          {currentTheme && (
-            <button
-              type="button"
-              onClick={() => openQuantModule('resonance')}
-              className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded bg-[#1e222d] hover:bg-[#262b38] border border-[#2a2e39] text-[11px] transition-colors cursor-pointer whitespace-nowrap shrink-0"
-            >
-              <Layers className="w-3.5 h-3.5 text-[#38bdf8]" />
-              <span className="text-[#787b86]">点面共振:</span>
-              <span className="text-white font-medium">{currentTheme.sectorName}</span>
-              <span className="font-mono tabular-nums text-[#38bdf8] font-semibold">
-                {currentTheme.resonanceScore}分
-              </span>
-              <span className="text-[10px] text-[#9ca3af]">({currentTheme.resonanceStatus})</span>
-            </button>
-          )}
-
-          {/* 4. 监管异动监测 (k ∈ {2, 3} 异动窗口与红黄灯预警) */}
-          <button
-            type="button"
-            onClick={() => openQuantModule('regulatory')}
-            className={`flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-              reg.alertLight === 'RED'
-                ? 'bg-[#F6465D]/15 border-[#F6465D]/50 text-[#F6465D]'
-                : reg.alertLight === 'YELLOW'
-                ? 'bg-[#F59E0B]/15 border-[#F59E0B]/50 text-[#F59E0B]'
-                : 'bg-[#1e222d] hover:bg-[#262b38] border-[#2a2e39] text-[#d1d4dc]'
-            }`}
-          >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                reg.alertLight === 'RED'
-                  ? 'bg-[#F6465D] shadow-[0_0_6px_#F6465D]'
-                  : reg.alertLight === 'YELLOW'
-                  ? 'bg-[#F59E0B] shadow-[0_0_6px_#F59E0B]'
-                  : 'bg-[#0ECB81]'
-              }`}
-            />
-            <span className="text-[#787b86]">监管异动监测:</span>
-            <span className="font-mono tabular-nums font-semibold">
-              {formatPrice(reg.effectiveTriggerPrice)}元 (
-              {formatSignedPercent(reg.effectiveMaxSafeChangePercent)})
-            </span>
-            {reg.severeSuspensionLockWarning && (
-              <span className="px-1 rounded bg-[#F6465D] text-white text-[10px] font-bold">
-                红灯·10日{reg.cumDeviation10dPercent}%
-              </span>
-            )}
-          </button>
-
-          {/* 5. 真实成交量加权承接算子 (VW-DVR) */}
-          <button
-            type="button"
-            onClick={() => openQuantModule('vwdvr')}
-            className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded bg-[#1e222d] hover:bg-[#262b38] border border-[#2a2e39] text-[11px] transition-colors cursor-pointer whitespace-nowrap shrink-0"
-          >
-            <Activity className="w-3.5 h-3.5 text-[#0ECB81]" />
-            <span className="text-[#787b86]">VW-DVR承接:</span>
-            <span
-              className={`font-mono tabular-nums font-bold ${
-                dvr.vwDvrScore >= 74
-                  ? 'text-[#F6465D]'
-                  : dvr.vwDvrScore >= 48
-                  ? 'text-[#F59E0B]'
-                  : 'text-[#0ECB81]'
-              }`}
-            >
-              {dvr.vwDvrScore}分
-            </span>
-            <span className="text-[10px] text-[#9ca3af]">({dvr.signalLabel})</span>
-          </button>
-        </div>
-
-        {/* 右侧：切换全景超短量化作战室按钮 */}
-        <button
-          type="button"
-          data-testid="toggle-quant-workbench-btn"
-          onClick={() =>
-            setWorkspaceMode(workspaceMode === 'quant' ? 'chart' : 'quant')
-          }
-          className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-            workspaceMode === 'quant'
-              ? 'bg-[#2962ff] text-white'
-              : 'bg-[#F6465D]/15 text-[#F6465D] border border-[#F6465D]/40 hover:bg-[#F6465D] hover:text-white'
-          }`}
-        >
-          <Zap className="w-3.5 h-3.5" />
-          <span>{workspaceMode === 'quant' ? '返回K线看盘主图' : '超短游资量化作战室'}</span>
-        </button>
-      </div>
-    </div>
-  );
-};
+import { fmtRate, getAuctionSignalBadgeClass, getSeatNatureBadgeClass } from '../utils/workbenchHelpers';
+export { UltraShortStockDiagnosticStrip } from './UltraShortStockDiagnosticStrip';
 
 /**
  * 超短游资量化作战室主面板 (包含 5 大核心实战引擎)
@@ -271,7 +64,15 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
   const quantModuleTab = useMarketStore((s) => s.quantModuleTab);
   const setQuantModuleTab = useMarketStore((s) => s.setQuantModuleTab);
   const setSelectedSymbol = useMarketStore((s) => s.setSelectedSymbol);
+  const selectAndSubscribeStock = useMarketStore((s) => s.selectAndSubscribeStock);
   const setWorkspaceMode = useMarketStore((s) => s.setWorkspaceMode);
+  const intradayPointsMap = useMarketStore((s) => s.intradayPointsMap);
+  const realThemeData = useMarketStore((s) => s.realThemeData);
+  const fetchThemeResonance = useMarketStore((s) => s.fetchThemeResonance);
+
+  useEffect(() => {
+    fetchThemeResonance();
+  }, [fetchThemeResonance]);
 
   // 竞价雷达信号过滤器
   const [auctionFilter, setAuctionFilter] = useState<'ALL' | AuctionSignalType>('ALL');
@@ -286,75 +87,294 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
   // 注册制异动逆推：基准指数今日实时涨幅模拟滑块 (%)
   const [simulatedIndexPct, setSimulatedIndexPct] = useState<number | null>(null);
 
+  // 真实后端量化数据状态
+  type LadderSummaryData = ReturnType<typeof calculateBoardLadderSummary>;
+  type DragonTigerAnalysisData = NonNullable<ReturnType<typeof analyzeStockDragonTigerList>>;
+  type AuctionRadarItemData = ReturnType<typeof calculateAuctionRadar>;
+
+  const [realDragonTigerData, setRealDragonTigerData] =
+    useState<DragonTigerAnalysisData | null>(null);
+  const [realLhbFocusList, setRealLhbFocusList] = useState<{ code: string; symbol: string; name: string; reason: string }[]>([]);
+  const [realAuctionList, setRealAuctionList] =
+    useState<AuctionRadarItemData[] | null>(null);
+  // 交易所法规引擎（真实口径）+ 该标的 T-1/T-2 真实涨跌幅：统一走共享钩子（含 60s 模块级缓存）
+  const { regulatory: realRegulatory, history: realRegHistory } = useRealRegulatory(selectedSymbol);
+
+  // 异步获取后端真实全市场竞价雷达
+  useEffect(() => {
+    let isMounted = true;
+    fetch('/api/quant/auction_radar')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data && data.status === 'ok' && Array.isArray(data.radar_items)) {
+          setRealAuctionList(data.radar_items as AuctionRadarItemData[]);
+        }
+      })
+      .catch((e) => {
+        console.error('[UltraShortQuantWorkbench] 获取竞价雷达数据失败:', e);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  // 后端真实全市场连板梯队：走共享钩子，与主图页顶部六维条共用同一份请求
+  const realLadderData = useRealLadder() as LadderSummaryData | null;
+
+  // 异步获取后端真实龙虎榜明细与今日上榜列表
+  useEffect(() => {
+    let isMounted = true;
+    const cleanSym = selectedSymbol || '002724.SZ';
+    fetch(`/api/quant/dragon_tiger?symbol=${encodeURIComponent(cleanSym)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted && data && data.status === 'ok') {
+          if (data.todayLhbList && data.todayLhbList.length > 0) {
+            setRealLhbFocusList(data.todayLhbList);
+          }
+          if (data.hasLhb && data.analysis) {
+            setRealDragonTigerData(data.analysis as unknown as DragonTigerAnalysisData);
+          } else {
+            setRealDragonTigerData(null);
+          }
+        }
+      })
+      .catch((e) => {
+        console.error('[UltraShortQuantWorkbench] 获取龙虎榜数据失败:', e);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, [selectedSymbol]);
+
   const allQuotes = useMemo(
     () => symbolOrder.map((sym) => quotes[sym]).filter(Boolean),
     [quotes, symbolOrder]
   );
 
-  const activeQuote = quotes[selectedSymbol] ?? allQuotes[0];
+  // 构造全市场连板高标候选池（数据全部来自后端真实涨停池，不再本地编造）
+  // 历史问题：这里曾经给每只梯队股硬编码 ultraShort（auctionVolume=12000、yesterdayAmount=1.5亿、
+  // cumDeviation 按板数查表 89.4/68.2/49.5…），这些数字没有任何数据源，会一路显示到监管面板。
+  // 现在：有实时报价就直接用报价 + 后端 ultraShort；没有报价才构造一个"只有可验证字段"的占位对象，
+  // 拿不到的成交量/额/换手/PE 一律 0，前端按缺失展示。
+  const regulatoryPoolQuotes = useMemo(() => {
+    const ladderQuotes: TickData[] = [];
+    if (realLadderData && Array.isArray(realLadderData.tiers)) {
+      realLadderData.tiers.forEach((tier) => {
+        const boardCount = tier.boardCount || 0;
+        (tier.stocks || []).forEach((s) => {
+          const existing = quotes[s.symbol];
+          const realProfile = (s.ultraShort as UltraShortProfile | undefined) ?? undefined;
 
-  // 1. 09:25 竞价雷达全量计算
+          if (existing) {
+            ladderQuotes.push({
+              ...existing,
+              ultraShort: existing.ultraShort ?? realProfile,
+            });
+            return;
+          }
+
+          const is30Rule = s.code.startsWith('300') || s.code.startsWith('688');
+          const limitRate = is30Rule ? 0.2 : 0.1;
+          const limitPct = is30Rule ? 20.0 : 10.0;
+          const prevClose = Number(
+            (s.price / (1 + (s.changePercent || limitPct) / 100)).toFixed(2)
+          );
+
+          const synthesized: TickData = {
+            symbol: s.symbol,
+            code: s.code,
+            name: s.name,
+            market: s.symbol.endsWith('.SH') ? 'SH' : 'SZ',
+            pinyin: s.code,
+            sector: s.sector || '连板梯队',
+            price: s.price,
+            prevClose,
+            open: s.price,
+            high: s.price,
+            low: s.price,
+            change: Number((s.price - prevClose).toFixed(2)),
+            changePercent: s.changePercent,
+            volume: 0,
+            amount: 0,
+            turnoverRate: 0,
+            volumeRatio: 0,
+            amplitude: 0,
+            peTtm: 0,
+            pb: 0,
+            marketCap: 0,
+            floatMarketCap: 0,
+            outerVolume: 0,
+            innerVolume: 0,
+            limitUpPrice: Number((prevClose * (1 + limitRate)).toFixed(2)),
+            limitDownPrice: Number((prevClose * (1 - limitRate)).toFixed(2)),
+            phase: 'LIMIT_UP',
+            // 封死涨停时卖盘为空：买一挂封单，其余档位按 0 手占位（不编造价格）
+            orderBook: {
+              bids: [
+                {
+                  level: 1 as const,
+                  price: s.price,
+                  volume: Math.round((s.sealOrderAmount || 0) / Math.max(0.01, s.price) / 100),
+                },
+                { level: 2 as const, price: null, volume: 0 },
+                { level: 3 as const, price: null, volume: 0 },
+                { level: 4 as const, price: null, volume: 0 },
+                { level: 5 as const, price: null, volume: 0 },
+              ],
+              asks: [
+                { level: 1 as const, price: null, volume: 0 },
+                { level: 2 as const, price: null, volume: 0 },
+                { level: 3 as const, price: null, volume: 0 },
+                { level: 4 as const, price: null, volume: 0 },
+                { level: 5 as const, price: null, volume: 0 },
+              ],
+            },
+            recentTrades: [],
+            updatedAt: Date.now(),
+            ultraShort:
+              realProfile ??
+              ({
+                consecutiveBoards: boardCount,
+                yesterdayBoards: Math.max(0, boardCount - 1),
+                isIntradayTouchedLimitUp: true,
+                isSealed: true,
+                firstSealTime: s.firstSealTime || null,
+                dragonRole: (s.dragonRole as DragonRoleTag) || 'FOLLOWER',
+                boardRuleType: is30Rule ? 'CHINEXT_STAR_30' : 'MAIN_20',
+                sealOrderAmount: s.sealOrderAmount,
+                sector: s.sector,
+                auctionPrice: s.price,
+                auctionChangePercent: s.changePercent,
+              } as UltraShortProfile),
+          };
+          ladderQuotes.push(synthesized);
+        });
+      });
+    }
+
+    const seen = new Set<string>();
+    const combined: TickData[] = [];
+
+    for (const q of ladderQuotes) {
+      if (!seen.has(q.symbol)) {
+        seen.add(q.symbol);
+        combined.push(q);
+      }
+    }
+
+    for (const q of allQuotes) {
+      if (!seen.has(q.symbol)) {
+        seen.add(q.symbol);
+        combined.push(q);
+      }
+    }
+
+    return combined.length > 0 ? combined : allQuotes;
+  }, [realLadderData, quotes, allQuotes]);
+
+  const activeQuote =
+    quotes[selectedSymbol] ??
+    regulatoryPoolQuotes.find((q) => q.symbol === selectedSymbol) ??
+    allQuotes[0];
+
+  // 1. 09:25 竞价雷达全量计算 (真实全市场竞价雷达优先，未就绪时降级本地计算)
   const auctionList = useMemo(() => {
+    if (realAuctionList && realAuctionList.length > 0) {
+      return realAuctionList;
+    }
     const list = allQuotes.map((q) => calculateAuctionRadar(q));
     return list.sort((a, b) => b.amountToYesterdayRatio - a.amountToYesterdayRatio);
-  }, [allQuotes]);
+  }, [realAuctionList, allQuotes]);
 
   const filteredAuctionList = useMemo(() => {
     if (auctionFilter === 'ALL') return auctionList;
     return auctionList.filter((item) => item.signal === auctionFilter);
   }, [auctionList, auctionFilter]);
 
-  // 2. 连板梯队与断层监测（自动对比今日涨停分布与昨日连板基数，识别晋级断层与退潮风险）
-  const ladderSummary = useMemo(
+  // 2. 连板梯队与断层监测（真实全市场涨停池优先，未就绪时降级本地计算）
+  const localLadderSummary = useMemo(
     () => calculateBoardLadderSummary(allQuotes, ladderScenario),
     [allQuotes, ladderScenario]
   );
+  const ladderSummary = useMemo(() => {
+    if (ladderScenario === 'live' && realLadderData) {
+      return realLadderData;
+    }
+    return localLadderSummary;
+  }, [ladderScenario, realLadderData, localLadderSummary]);
 
   // 3. 板块/题材共振监测与主流资金进攻方向分析
-  const themeResonanceOverview = useMemo(
+  const localThemeOverview = useMemo(
     () => analyzeMarketThemeResonance(allQuotes, themeScenario),
     [allQuotes, themeScenario]
   );
+  const themeResonanceOverview = useMemo(() => {
+    if (themeScenario === 'live' && realThemeData) {
+      return realThemeData;
+    }
+    return localThemeOverview;
+  }, [themeScenario, realThemeData, localThemeOverview]);
 
   // 4. 监管异动监测 (2/3日涨跌幅实时监控、k ∈ {2, 3} 法定异动窗口与红黄灯特停预警)
+  //    T-1/T-2 优先用后端真实日K（realRegHistory），没有再退回占位值并标记估算
   const activeRegDeviation = useMemo(
     () =>
       activeQuote
         ? calculateRegulatoryDeviation(
             activeQuote,
-            simulatedIndexPct !== null ? simulatedIndexPct : undefined
+            simulatedIndexPct !== null ? simulatedIndexPct : undefined,
+            realRegHistory ?? undefined
           )
         : null,
-    [activeQuote, simulatedIndexPct]
+    [activeQuote, simulatedIndexPct, realRegHistory]
   );
 
   const regulatoryOverview = useMemo(
     () =>
       analyzeMarketRegulatoryOverview(
-        allQuotes,
-        simulatedIndexPct !== null ? simulatedIndexPct : undefined
+        regulatoryPoolQuotes,
+        simulatedIndexPct !== null ? simulatedIndexPct : undefined,
+        realRegHistory && selectedSymbol ? { [selectedSymbol]: realRegHistory } : undefined
       ),
-    [allQuotes, simulatedIndexPct]
+    [regulatoryPoolQuotes, simulatedIndexPct, realRegHistory, selectedSymbol]
   );
 
-  // 5. VW-DVR 真实成交量加权承接算子
+  const handleSelectRegulatoryStock = useCallback(
+    (sym: string) => {
+      setSelectedSymbol(sym);
+      const target = quotes[sym] || regulatoryPoolQuotes.find((q) => q.symbol === sym);
+      if (target) {
+        selectAndSubscribeStock(target);
+      }
+    },
+    [quotes, regulatoryPoolQuotes, selectAndSubscribeStock, setSelectedSymbol]
+  );
+
+  // 5. VW-DVR 真实成交量加权承接算子 (基于真实分钟分时线与 VWAP 计算)
   const activeVWDVR = useMemo(() => {
     if (!activeQuote) return null;
-    const pts = generateIntradayForSymbol(activeQuote);
+    const pts = intradayPointsMap[activeQuote.symbol];
     return calculateVWDVR(activeQuote, pts);
-  }, [activeQuote]);
+  }, [activeQuote, intradayPointsMap]);
 
   const allVWDVRList = useMemo(() => {
     return allQuotes
-      .map((q) => calculateVWDVR(q, generateIntradayForSymbol(q)))
+      .map((q) => calculateVWDVR(q, intradayPointsMap[q.symbol]))
       .sort((a, b) => b.vwDvrScore - a.vwDvrScore);
-  }, [allQuotes]);
+  }, [allQuotes, intradayPointsMap]);
 
-  // 6. 龙虎榜席位性质分析 (自动解析选定股票前五买席/前五卖席及游资/机构/量化/散户阵营)
-  const activeDragonTiger = useMemo(() => {
+  // 6. 龙虎榜席位性质分析 (真实上榜席位优先，沙盘模式展示典型推演模型)
+  const localDragonTiger = useMemo(() => {
     if (!activeQuote) return null;
     return analyzeStockDragonTigerList(activeQuote, dragonTigerPreset);
   }, [activeQuote, dragonTigerPreset]);
+  const activeDragonTiger = useMemo(() => {
+    if (dragonTigerPreset === 'live' && realDragonTigerData) {
+      return realDragonTigerData;
+    }
+    return localDragonTiger;
+  }, [dragonTigerPreset, realDragonTigerData, localDragonTiger]);
 
   const tabs: {
     id: typeof quantModuleTab;
@@ -673,7 +693,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                     }`}
                   >
                     {ladderSummary.hasLadderFault
-                      ? `缺${ladderSummary.missingBoards.join('/')}板`
+                      ? `缺${(ladderSummary.missingBoards || []).join('/')}板`
                       : '0 断层'}
                   </span>
                   <span className="text-[11px] text-[#9ca3af]">
@@ -690,10 +710,10 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                 </div>
                 <div className="mt-1 flex items-baseline justify-between gap-1 font-mono tabular-nums whitespace-nowrap">
                   <span className="text-base font-bold text-[#F59E0B]">
-                    {ladderSummary.firstToSecondRate.toFixed(1)}%
+                    {fmtRate(ladderSummary.firstToSecondRate)}%
                   </span>
                   <span className="text-[11px] text-[#9ca3af]">
-                    2进3 {ladderSummary.secondToThirdRate.toFixed(1)}%
+                    2进3 {fmtRate(ladderSummary.secondToThirdRate)}%
                   </span>
                 </div>
               </div>
@@ -704,7 +724,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                 </div>
                 <div className="mt-1 flex items-baseline justify-between gap-1 font-mono tabular-nums whitespace-nowrap">
                   <span className="text-base font-bold text-[#F6465D]">
-                    {ladderSummary.sealSuccessRate.toFixed(1)}%
+                    {fmtRate(ladderSummary.sealSuccessRate)}%
                   </span>
                   <span className="text-[11px] text-[#0ECB81]">
                     炸板 {ladderSummary.brokenBoardCount}家
@@ -767,14 +787,14 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
 
                 {/* 断层区间徽章与退潮风险进度条 */}
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {ladderSummary.faultZones.length > 0 ? (
-                    ladderSummary.faultZones.map((zone) => (
+                  {(ladderSummary.faultZones || []).length > 0 ? (
+                    (ladderSummary.faultZones || []).map((zone, zIdx) => (
                       <span
-                        key={`${zone.fromBoard}-${zone.toBoard}`}
+                        key={zone.label || `${zone.fromBoard}-${zone.toBoard}` || zIdx}
                         data-testid="ladder-fault-zone-badge"
                         className="px-2 py-0.5 rounded bg-[#F59E0B]/20 border border-[#F59E0B]/50 font-mono tabular-nums text-[11px] font-semibold text-[#F59E0B]"
                       >
-                        断层带: {zone.label}
+                        断层带: {zone.label || `${zone.fromBoard}板~${zone.toBoard}板`}
                       </span>
                     ))
                   ) : (
@@ -806,7 +826,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
 
               {/* 三维自动对比诊断明细 (空间断层扫描 / 晋级对比诊断 / 退潮传导推演) */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 mt-2.5 text-xs">
-                {ladderSummary.ebbTideRiskReasons.map((reason, idx) => (
+                {(ladderSummary.ebbTideRiskReasons || []).map((reason, idx) => (
                   <div
                     key={idx}
                     className="p-2 rounded bg-[#131722]/90 border border-[#2a2e39] text-[#d1d4dc] leading-relaxed"
@@ -1012,7 +1032,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                             </div>
                           ) : (
                             <div className="flex flex-wrap items-center gap-1.5">
-                              {row.stocks.map((st) => (
+                              {(row.stocks || []).map((st) => (
                                 <button
                                   key={st.symbol}
                                   type="button"
@@ -1061,10 +1081,15 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
             <RegulatoryMonitorPanel
               overview={regulatoryOverview}
               activeRegDeviation={activeRegDeviation}
+              realRegulatory={realRegulatory}
               selectedSymbol={selectedSymbol}
-              onSelectSymbol={setSelectedSymbol}
+              onSelectSymbol={handleSelectRegulatoryStock}
               simulatedIndexPct={simulatedIndexPct}
-              defaultIndexPct={activeQuote?.ultraShort?.indexReturnToday ?? 1.05}
+              defaultIndexPct={
+                realRegHistory?.index_return_today ??
+                activeQuote?.ultraShort?.indexReturnToday ??
+                0
+              }
               onChangeSimulatedIndexPct={setSimulatedIndexPct}
             />
           )}
@@ -1255,95 +1280,67 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                   </span>
                 </div>
 
-                {/* 席位结构沙盘推演切换按钮组 */}
-                <div
-                  role="group"
-                  aria-label="龙虎榜席位结构推演模式"
-                  className="flex items-center bg-[#1e222d] p-0.5 rounded border border-[#2a2e39] text-[11px]"
-                >
-                  <button
-                    type="button"
-                    data-testid="dt-preset-live"
-                    onClick={() => setDragonTigerPreset('live')}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
-                      dragonTigerPreset === 'live'
-                        ? 'bg-[#2962ff] text-white font-semibold'
-                        : 'text-[#9ca3af] hover:text-white'
-                    }`}
-                  >
-                    实盘龙虎榜解析
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="dt-preset-resonance"
-                    onClick={() => setDragonTigerPreset('hot_inst_resonance')}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
-                      dragonTigerPreset === 'hot_inst_resonance'
-                        ? 'bg-[#F6465D] text-white font-semibold'
-                        : 'text-[#9ca3af] hover:text-white'
-                    }`}
-                  >
-                    游资+机构共振
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="dt-preset-quant"
-                    onClick={() => setDragonTigerPreset('quant_crowded')}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
-                      dragonTigerPreset === 'quant_crowded'
-                        ? 'bg-[#a855f7] text-white font-semibold'
-                        : 'text-[#9ca3af] hover:text-white'
-                    }`}
-                  >
-                    量化大本营扎堆
-                  </button>
-                  <button
-                    type="button"
-                    data-testid="dt-preset-retail"
-                    onClick={() => setDragonTigerPreset('retail_takeover')}
-                    className={`px-2 py-0.5 rounded transition-colors cursor-pointer whitespace-nowrap ${
-                      dragonTigerPreset === 'retail_takeover'
-                        ? 'bg-[#F59E0B] text-[#0d0e12] font-semibold'
-                        : 'text-[#9ca3af] hover:text-white'
-                    }`}
-                  >
-                    拉萨散户接盘
-                  </button>
+                <div className="flex items-center gap-1.5 text-xs">
+                  <span className="px-2.5 py-1 rounded bg-[#38bdf8]/20 text-[#38bdf8] border border-[#38bdf8]/40 font-semibold">
+                    真实席位客观验身 (无主观推演)
+                  </span>
                 </div>
               </div>
 
               {/* 快捷焦点上榜个股切换条 + 当前标的上榜原因 */}
               <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#161a24] border-b border-[#2a2e39] text-xs">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="text-[11px] text-[#787b86] mr-1">焦点龙虎榜标的:</span>
-                  {['601360.SH', '002230.SZ', '300059.SZ', '688981.SH', '000651.SZ', '300750.SZ'].map(
-                    (sym) => {
-                      const q = quotes[sym];
-                      if (!q) return null;
-                      const isCurrent = selectedSymbol === sym;
+                  <span className="text-[11px] text-[#787b86] mr-1">今日真实龙虎榜标的:</span>
+                  {realLhbFocusList && realLhbFocusList.length > 0 ? (
+                    realLhbFocusList.slice(0, 8).map((item) => {
+                      const isCurrent = selectedSymbol === item.symbol || selectedSymbol?.startsWith(item.code);
                       return (
                         <button
-                          key={sym}
+                          key={item.symbol}
                           type="button"
-                          data-testid={`dt-stock-pill-${q.code}`}
-                          onClick={() => setSelectedSymbol(sym)}
+                          data-testid={`dt-stock-pill-${item.code}`}
+                          onClick={() => setSelectedSymbol(item.symbol)}
                           className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] transition-colors cursor-pointer whitespace-nowrap ${
                             isCurrent
                               ? 'bg-[#2962ff]/25 border-[#2962ff] text-white font-bold'
                               : 'bg-[#131722] border-[#2a2e39] text-[#9ca3af] hover:text-white'
                           }`}
                         >
-                          <span>{q.name}</span>
-                          <span
-                            className={`font-mono tabular-nums ${getSignedColorClass(
-                              q.changePercent
-                            )}`}
-                          >
-                            {formatSignedPercent(q.changePercent)}
-                          </span>
+                          <span>{item.name}</span>
+                          <span className="text-[10px] text-[#787b86] font-mono">{item.code}</span>
                         </button>
                       );
-                    }
+                    })
+                  ) : (
+                    ['601360.SH', '002230.SZ', '300059.SZ', '688981.SH', '000651.SZ', '300750.SZ'].map(
+                      (sym) => {
+                        const q = quotes[sym];
+                        if (!q) return null;
+                        const isCurrent = selectedSymbol === sym;
+                        return (
+                          <button
+                            key={sym}
+                            type="button"
+                            data-testid={`dt-stock-pill-${q.code}`}
+                            onClick={() => setSelectedSymbol(sym)}
+                            className={`flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] transition-colors cursor-pointer whitespace-nowrap ${
+                              isCurrent
+                                ? 'bg-[#2962ff]/25 border-[#2962ff] text-white font-bold'
+                                : 'bg-[#131722] border-[#2a2e39] text-[#9ca3af] hover:text-white'
+                            }`}
+                          >
+                            <span>{q.name}</span>
+                            <span
+                              className={`font-mono tabular-nums ${getSignedColorClass(
+                                q.changePercent
+                              )}`}
+                            >
+                              {formatSignedPercent(q.changePercent)}
+                            </span>
+                          </button>
+                        );
+                      }
+                    )
                   )}
                 </div>
 

@@ -8,6 +8,8 @@ import type {
   AlertConditionType,
   ChartPeriod,
   ConnectionStatus,
+  FullMarketScanData,
+  IntradayPoint,
   MainIndicator,
   MarketIndexQuote,
   MarketScenario,
@@ -24,6 +26,12 @@ import type {
  */
 type TickListener = (tick: TickData) => void;
 const symbolTickListeners = new Map<string, Set<TickListener>>();
+
+type SubscriptionListener = (symbol: string) => void;
+let onSymbolSubscribed: SubscriptionListener | null = null;
+export function setSymbolSubscriptionHandler(fn: SubscriptionListener) {
+  onSymbolSubscribed = fn;
+}
 
 export function subscribeSymbolImperativeTick(symbol: string, listener: TickListener): () => void {
   let set = symbolTickListeners.get(symbol);
@@ -103,8 +111,8 @@ function loadSavedWatchlist(): string[] {
         return parsed;
       }
     }
-  } catch {
-    // ignore storage errors
+  } catch (e) {
+    console.error('[loadSavedWatchlist] localStorage 读取失败，使用默认自选股:', e);
   }
   return DEFAULT_WATCHLIST;
 }
@@ -118,8 +126,8 @@ function loadSavedAlerts(): PriceAlertRule[] {
         return parsed;
       }
     }
-  } catch {
-    // ignore storage errors
+  } catch (e) {
+    console.error('[loadSavedAlerts] localStorage 读取失败，使用默认预警规则:', e);
   }
   return DEFAULT_ALERT_RULES;
 }
@@ -127,8 +135,8 @@ function loadSavedAlerts(): PriceAlertRule[] {
 function persistAlerts(rules: PriceAlertRule[]): void {
   try {
     localStorage.setItem('alphapulse_alerts_v1', JSON.stringify(rules));
-  } catch {
-    // ignore storage errors
+  } catch (e) {
+    console.error('[persistAlerts] localStorage 写入失败:', e);
   }
 }
 
@@ -162,7 +170,9 @@ export interface MarketStoreState {
   isArchModalOpen: boolean;
 
   // 超短游资量化工作台模式与子模块切换
-  workspaceMode: 'chart' | 'quant';
+  workspaceMode: 'chart' | 'auction' | 'quant';
+  isCommandPaletteOpen: boolean;
+  commandPaletteInitialQuery: string;
   quantModuleTab:
     | 'overview'
     | 'auction'
@@ -190,7 +200,10 @@ export interface MarketStoreState {
   setMobileWatchlistOpen: (open: boolean) => void;
   setArchModalOpen: (open: boolean) => void;
   setAlertModalOpen: (open: boolean) => void;
-  setWorkspaceMode: (mode: 'chart' | 'quant') => void;
+  setWorkspaceMode: (mode: 'chart' | 'auction' | 'quant') => void;
+  setCommandPaletteOpen: (open: boolean, initialQuery?: string) => void;
+  stepSelectedSymbol: (delta: 1 | -1) => void;
+  togglePeriodIntradayDaily: () => void;
   setQuantModuleTab: (
     tab:
       | 'overview'
@@ -214,6 +227,13 @@ export interface MarketStoreState {
   ) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setBatchWindowMs: (ms: number) => void;
+  injectQuote: (quote: TickData) => void;
+  selectAndSubscribeStock: (stock: Partial<TickData> & { symbol: string }) => void;
+  intradayPointsMap: Record<string, IntradayPoint[]>;
+  setIntradayPoints: (symbol: string, points: IntradayPoint[]) => void;
+  fetchIntraday: (symbol: string) => Promise<IntradayPoint[]>;
+  realThemeData: any | null;
+  fetchThemeResonance: () => Promise<void>;
 
   // 价格预警管理 Actions
   addAlertRule: (input: {
@@ -239,8 +259,8 @@ export interface MarketStoreState {
 
   // 批量合并服务端快照
   applyInitSnapshot: (
-    quotes: Record<string, TickData>,
-    indices: Record<string, MarketIndexQuote>,
+    quotes: TickData[],
+    indices: MarketIndexQuote[],
     batchWindowMs: number,
     serverTime: number
   ) => void;
@@ -251,10 +271,99 @@ export interface MarketStoreState {
     serverTime: number
   ) => void;
   triggerScenario: (symbol: string, scenario: MarketScenario) => Promise<void>;
+
+  // 错误通知 (非侵入式 toast)
+  errorToasts: ErrorToast[];
+  pushErrorToast: (message: string, opts?: { severity?: 'error' | 'warning'; durationMs?: number }) => void;
+  dismissErrorToast: (id: string) => void;
+
+  // 首屏种子数据标记（WebSocket 首次收到真实数据后置 false）
+  isDemoData: boolean;
+
+  // 全市场竞价扫描数据
+  fullMarketScanData: FullMarketScanData | null;
+  fetchFullMarketScan: () => Promise<void>;
+}
+
+export interface ErrorToast {
+  id: string;
+  message: string;
+  severity: 'error' | 'warning';
+  createdAt: number;
+  durationMs: number;
+}
+
+let errorToastSeq = 0;
+/** 在 React 组件外推送错误 toast 的便捷函数 */
+export function pushErrorToast(message: string, opts?: { severity?: 'error' | 'warning'; durationMs?: number }) {
+  useMarketStore.getState().pushErrorToast(message, opts);
+}
+
+function createPlaceholderQuote(stock: Partial<TickData> & { symbol: string }): TickData {
+  const p = typeof stock.price === 'number' && Number.isFinite(stock.price) && stock.price > 0 ? stock.price : 10.0;
+  const prev = typeof stock.prevClose === 'number' && Number.isFinite(stock.prevClose) && stock.prevClose > 0 ? stock.prevClose : p;
+  const chg = typeof stock.change === 'number' ? stock.change : Number((p - prev).toFixed(2));
+  const chgPct = typeof stock.changePercent === 'number' ? stock.changePercent : (prev > 0 ? Number(((chg / prev) * 100).toFixed(2)) : 0);
+
+  return {
+    symbol: stock.symbol,
+    code: stock.code || stock.symbol.replace(/\.(SH|SZ|BJ)$/i, ''),
+    market: (stock.market || (stock.symbol.endsWith('.SH') ? 'SH' : 'SZ')) as any,
+    name: stock.name || stock.symbol,
+    pinyin: stock.pinyin || '',
+    sector: stock.sector || 'A股核心',
+    price: p,
+    prevClose: prev,
+    open: stock.open ?? p,
+    high: stock.high ?? p,
+    low: stock.low ?? p,
+    change: chg,
+    changePercent: chgPct,
+    volume: stock.volume ?? 0,
+    amount: stock.amount ?? 0,
+    turnoverRate: stock.turnoverRate ?? 0,
+    volumeRatio: stock.volumeRatio ?? 1.0,
+    amplitude: stock.amplitude ?? 0,
+    // 基本面占位值不能编：全链路单位统一是「亿元」（seed: 19880 / 后端: 16660.34），
+    // 之前兜底写 1e10（元），显示成 "10000000000亿"；PE/PB 也不该给默认 15.0/1.5。
+    // 统一置 0，由面板按 <=0 显示 "--"。
+    peTtm: stock.peTtm ?? 0,
+    pb: stock.pb ?? 0,
+    marketCap: stock.marketCap ?? 0,
+    floatMarketCap: stock.floatMarketCap ?? 0,
+    outerVolume: stock.outerVolume ?? 0,
+    innerVolume: stock.innerVolume ?? 0,
+    limitUpPrice: stock.limitUpPrice ?? Number((prev * 1.1).toFixed(2)),
+    limitDownPrice: stock.limitDownPrice ?? Number((prev * 0.9).toFixed(2)),
+    phase: stock.phase ?? 'TRADING',
+    orderBook: stock.orderBook ?? {
+      bids: [
+        { level: 1, price: p, volume: 100 },
+        { level: 2, price: p - 0.01, volume: 80 },
+        { level: 3, price: p - 0.02, volume: 60 },
+        { level: 4, price: p - 0.03, volume: 50 },
+        { level: 5, price: p - 0.04, volume: 40 },
+      ],
+      asks: [
+        { level: 1, price: p + 0.01, volume: 100 },
+        { level: 2, price: p + 0.02, volume: 80 },
+        { level: 3, price: p + 0.03, volume: 60 },
+        { level: 4, price: p + 0.04, volume: 50 },
+        { level: 5, price: p + 0.05, volume: 40 },
+      ],
+    },
+    recentTrades: stock.recentTrades ?? [],
+    ultraShort: stock.ultraShort,
+    updatedAt:
+      typeof stock.updatedAt === 'number' && Number.isFinite(stock.updatedAt)
+        ? stock.updatedAt
+        : Date.now(),
+  };
 }
 
 const initialQuotes = createInitialQuotes();
 const initialIndices = createInitialIndices();
+let intradayFetchSeq = 0; // 竞态保护：快速切换 symbol 时丢弃过期 fetch 结果
 
 export const useMarketStore = create<MarketStoreState>((set, get) => ({
   quotes: initialQuotes,
@@ -262,6 +371,8 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
   symbolOrder: Object.keys(initialQuotes),
 
   selectedSymbol: '600519.SH',
+  intradayPointsMap: {},
+  realThemeData: null,
   period: '1D',
   mainIndicator: 'MA',
   subIndicator: 'VOL',
@@ -282,16 +393,164 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
 
   workspaceMode: 'chart',
   quantModuleTab: 'overview',
+  isCommandPaletteOpen: false,
+  commandPaletteInitialQuery: '',
 
   connectionStatus: 'CONNECTING',
   batchWindowMs: 150,
   lastServerTime: Date.now(),
 
-  setSelectedSymbol: (symbol) =>
+  errorToasts: [],
+  isDemoData: true,
+
+  fullMarketScanData: null,
+  fetchFullMarketScan: async () => {
+    try {
+      const res = await fetch('/api/quant/full_market_scan');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.status === 'ok') {
+        set({ fullMarketScanData: data as FullMarketScanData });
+      }
+    } catch (e) {
+      console.error('[fetchFullMarketScan] 获取全市场竞价扫描数据失败:', e);
+    }
+  },
+  pushErrorToast: (message, opts) => {
+    const id = `err-${++errorToastSeq}-${Date.now()}`;
+    const toast: ErrorToast = {
+      id,
+      message,
+      severity: opts?.severity ?? 'error',
+      createdAt: Date.now(),
+      durationMs: opts?.durationMs ?? 5000,
+    };
+    set((state) => ({ errorToasts: [...state.errorToasts, toast].slice(-5) }));
+    setTimeout(() => {
+      useMarketStore.getState().dismissErrorToast(id);
+    }, toast.durationMs);
+  },
+  dismissErrorToast: (id) =>
+    set((state) => ({ errorToasts: state.errorToasts.filter((t) => t.id !== id) })),
+
+  setSelectedSymbol: (symbol) => {
     set({
       selectedSymbol: symbol,
       isMobileWatchlistOpen: false,
+    });
+    if (onSymbolSubscribed) {
+      onSymbolSubscribed(symbol);
+    }
+    get().fetchIntraday(symbol);
+    const current = get().quotes[symbol];
+    if (!current) {
+      const placeholder = createPlaceholderQuote({ symbol });
+      get().injectQuote(placeholder);
+      fetch(`/api/market/quote/${encodeURIComponent(symbol)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.status === 'ok' && data.quote) {
+            get().injectQuote(data.quote);
+          }
+        })
+        .catch((e) => {
+          console.error('[setSelectedSymbol] 获取个股行情失败:', e);
+          pushErrorToast(`获取 ${symbol} 行情数据失败，请检查网络连接`);
+        });
+    }
+  },
+
+  setIntradayPoints: (symbol, points) =>
+    set((state) => {
+      const nextMap = { ...state.intradayPointsMap, [symbol]: points };
+      const keys = Object.keys(nextMap);
+      if (keys.length > 50) {
+        for (const k of keys.slice(0, keys.length - 50)) delete nextMap[k];
+      }
+      return { intradayPointsMap: nextMap };
     }),
+
+  fetchIntraday: async (symbol) => {
+    const seq = ++intradayFetchSeq;
+    try {
+      const res = await fetch(`/api/market/klines/${encodeURIComponent(symbol)}?period=intraday`);
+      if (seq !== intradayFetchSeq) return []; // 竞态：用户已切换到其他 symbol
+      if (!res.ok) return [];
+      const data = await res.json();
+      if (seq !== intradayFetchSeq) return []; // 二次检查
+      const pts: IntradayPoint[] = Array.isArray(data.intraday) ? data.intraday : [];
+      set((state) => {
+        const nextMap = { ...state.intradayPointsMap, [symbol]: pts };
+        const keys = Object.keys(nextMap);
+        if (keys.length > 50) {
+          for (const k of keys.slice(0, keys.length - 50)) delete nextMap[k];
+        }
+        return { intradayPointsMap: nextMap };
+      });
+      return pts;
+    } catch (e) {
+      console.error('[fetchIntraday] 获取分时数据失败:', symbol, e);
+      return [];
+    }
+  },
+
+  fetchThemeResonance: async () => {
+    try {
+      const res = await fetch('/api/quant/theme_resonance');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data && data.status === 'ok') {
+        set({ realThemeData: data });
+      }
+    } catch (e) {
+      console.error('[fetchThemeResonance] 获取题材共振数据失败:', e);
+    }
+  },
+
+  injectQuote: (quote) => {
+    set((state) => ({
+      quotes: {
+        ...state.quotes,
+        [quote.symbol]: quote,
+      },
+      symbolOrder: state.symbolOrder.includes(quote.symbol)
+        ? state.symbolOrder
+        : [quote.symbol, ...state.symbolOrder],
+    }));
+    emitImperativeTick(quote);
+  },
+
+  selectAndSubscribeStock: (stock) => {
+    const sym = stock.symbol;
+    set((state) => {
+      const existing = state.quotes[sym];
+      const merged = existing ? { ...existing, ...stock } : createPlaceholderQuote(stock);
+      return {
+        selectedSymbol: sym,
+        quotes: {
+          ...state.quotes,
+          [sym]: merged,
+        },
+        symbolOrder: state.symbolOrder.includes(sym) ? state.symbolOrder : [sym, ...state.symbolOrder],
+        isMobileWatchlistOpen: false,
+      };
+    });
+    if (onSymbolSubscribed) {
+      onSymbolSubscribed(sym);
+    }
+    get().fetchIntraday(sym);
+    fetch(`/api/market/quote/${encodeURIComponent(sym)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.status === 'ok' && data.quote) {
+          get().injectQuote(data.quote);
+        }
+      })
+      .catch((e) => {
+        console.error('[selectAndSubscribeStock] 获取个股行情失败:', e);
+        pushErrorToast(`获取 ${sym} 行情数据失败，请检查网络连接`);
+      });
+  },
 
   setPeriod: (period) => set({ period }),
 
@@ -322,8 +581,8 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
         : [symbol, ...state.watchlist];
       try {
         localStorage.setItem('alphapulse_watchlist_v1', JSON.stringify(next));
-      } catch {
-        // ignore
+      } catch (e) {
+        console.error('[toggleWatchlist] localStorage 写入失败:', e);
       }
       return { watchlist: next };
     }),
@@ -338,11 +597,42 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
 
   setWorkspaceMode: (workspaceMode) => set({ workspaceMode }),
 
+  setCommandPaletteOpen: (isCommandPaletteOpen, initialQuery = '') =>
+    set({
+      isCommandPaletteOpen,
+      commandPaletteInitialQuery: isCommandPaletteOpen ? initialQuery : '',
+    }),
+
+  stepSelectedSymbol: (delta) => {
+    const state = get();
+    const allStocks = state.symbolOrder.map((sym) => state.quotes[sym]).filter(Boolean);
+    const list =
+      state.filterCategory === 'watchlist'
+        ? allStocks.filter((s) => state.watchlist.includes(s.symbol))
+        : state.filterCategory === 'special'
+        ? allStocks.filter((s) => s.phase !== 'TRADING')
+        : allStocks;
+    const symbols = (list.length > 0 ? list : allStocks).map((s) => s.symbol);
+    if (symbols.length === 0) return;
+    const currentIdx = symbols.indexOf(state.selectedSymbol);
+    const nextIdx =
+      currentIdx === -1
+        ? 0
+        : (currentIdx + delta + symbols.length) % symbols.length;
+    get().setSelectedSymbol(symbols[nextIdx]);
+  },
+
+  togglePeriodIntradayDaily: () => {
+    const state = get();
+    const nextPeriod: ChartPeriod = state.period === 'intraday' ? '1D' : 'intraday';
+    set({ period: nextPeriod, workspaceMode: 'chart' });
+  },
+
   setQuantModuleTab: (quantModuleTab) => set({ quantModuleTab }),
 
   openQuantModule: (quantModuleTab, symbol) =>
     set((state) => ({
-      workspaceMode: 'quant',
+      workspaceMode: quantModuleTab === 'auction' ? 'auction' : 'quant',
       quantModuleTab,
       selectedSymbol: symbol ?? state.selectedSymbol,
     })),
@@ -449,13 +739,19 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
 
   clearAllTriggeredAlerts: () => set({ triggeredAlerts: [] }),
 
-  applyInitSnapshot: (quotes, indices, batchWindowMs, serverTime) => {
+  applyInitSnapshot: (quotesList, indicesList, batchWindowMs, serverTime) => {
+    // 统一契约：INIT 与 BATCH 均接收数组，内部转为 Record 供 store 使用
+    const quotes: Record<string, TickData> = {};
+    for (const q of quotesList) quotes[q.symbol] = q;
+    const indices: Record<string, MarketIndexQuote> = {};
+    for (const idx of indicesList) indices[idx.symbol] = idx;
     set({
       quotes,
       indices,
       symbolOrder: Object.keys(quotes),
       batchWindowMs,
       lastServerTime: serverTime,
+      isDemoData: false,
     });
     const active = quotes[get().selectedSymbol];
     if (active) {
@@ -467,9 +763,14 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
     if (quotesBatch.length === 0 && indicesBatch.length === 0) return;
 
     set((state) => {
-      const nextQuotes = { ...state.quotes };
+      // 性能优化：仅在确有 quote 更新时才浅拷贝整个 dict，
+      // 避免仅 indices 刷新时也触发全量 quotes 引用变更导致无谓 re-render
+      const nextQuotes = quotesBatch.length > 0 ? { ...state.quotes } : state.quotes;
       for (const q of quotesBatch) {
-        nextQuotes[q.symbol] = q;
+        // 合并而非整体替换：WebSocket 快照只有 L1 报价字段，
+        // 直接替换会把 REST 补上的 ultraShort（连板身位/首封时间）冲掉，
+        // 导致「连板梯队最高 0 板」在连上 WS 几秒后又复现。
+        nextQuotes[q.symbol] = { ...state.quotes[q.symbol], ...q };
       }
 
       const nextIndices = indicesBatch.length > 0 ? { ...state.indices } : state.indices;
@@ -527,8 +828,9 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
           emitImperativeTick(data.quote);
         }
       }
-    } catch {
-      // 网络异常时保留本地乐观状态
+    } catch (e) {
+      console.error('[triggerScenario] 场景推演请求失败:', symbol, scenario, e);
+      pushErrorToast(`场景推演请求失败，请检查网络后重试`, { severity: 'warning' });
     }
   },
 }));

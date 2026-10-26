@@ -876,7 +876,7 @@ export function generateKLinesForSymbol(quote: TickData, period: ChartPeriod, co
   const bars: KLineBar[] = [];
 
   const volatility =
-    period === '5m' ? 0.0045 : period === '15m' ? 0.0075 : period === '1W' ? 0.038 : period === '1M' ? 0.065 : 0.022;
+    period === '5m' ? 0.0045 : period === '15m' ? 0.0075 : period === '30m' ? 0.011 : period === '60m' ? 0.015 : period === '1W' ? 0.038 : period === '1M' ? 0.065 : 0.022;
 
   // 从历史价格向当前最新价反向推演，确保最后一根 K 线收盘价 == quote.price
   const closes: number[] = new Array(count);
@@ -895,6 +895,10 @@ export function generateKLinesForSymbol(quote: TickData, period: ChartPeriod, co
       ? 300
       : period === '15m'
       ? 900
+      : period === '30m'
+      ? 1800
+      : period === '60m'
+      ? 3600
       : period === '1W'
       ? 86400 * 7
       : period === '1M'
@@ -918,7 +922,7 @@ export function generateKLinesForSymbol(quote: TickData, period: ChartPeriod, co
       : Number((minOC * (1 - rand() * volatility * 0.65)).toFixed(2));
 
     const volFactor = 0.55 + rand() * 1.1 + (Math.abs(close - open) / close) * 18;
-    const volume = isLast ? quote.volume : Math.round((quote.volume * 0.85 * volFactor) / (period === '5m' ? 36 : period === '15m' ? 14 : 1));
+    const volume = isLast ? quote.volume : Math.round((quote.volume * 0.85 * volFactor) / (period === '5m' ? 36 : period === '15m' ? 16 : period === '30m' ? 8 : period === '60m' ? 4 : 1));
     const amount = Math.round(volume * 100 * ((open + close + high + low) / 4));
 
     const ts = baseTimeSec - (count - 1 - i) * stepSec;
@@ -929,7 +933,7 @@ export function generateKLinesForSymbol(quote: TickData, period: ChartPeriod, co
     const hh = String(d.getHours()).padStart(2, '0');
     const min = String(d.getMinutes()).padStart(2, '0');
 
-    const timeLabel = period === '5m' || period === '15m' ? `${mm}-${dd} ${hh}:${min}` : `${yyyy}-${mm}-${dd}`;
+    const timeLabel = period === '5m' || period === '15m' || period === '30m' || period === '60m' ? `${mm}-${dd} ${hh}:${min}` : `${yyyy}-${mm}-${dd}`;
 
     bars.push({
       time: timeLabel,

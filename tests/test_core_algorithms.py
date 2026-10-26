@@ -116,6 +116,58 @@ class TestCoreChan(unittest.TestCase):
         self.assertIn('二卖警戒', sig_types_sell2)
         self.assertIn('二卖警戒', res_sell2.get('hint', ''))
 
+    def test_chan_three_buy_sell_pullback_verification(self):
+        """专项测试：三买三卖回抽验证——回抽在中枢外则确认，回抽入中枢则降级"""
+        import math
+
+        # 1. 先震荡形成中枢后突破上行，回抽在中枢上轨之上 → 三买候选
+        kl_buy3 = []
+        for i in range(100):
+            if i < 55:
+                c = 11 + math.sin(i / 2.0) * 1.0
+            elif i < 70:
+                c = 11 + (i - 55) * 0.35
+            else:
+                c = 16.25 - (i - 70) * 0.12
+            kl_buy3.append([f"2026-01-{i+1:03d}", round(c, 2), round(c, 2), round(c + 0.5, 2), round(c - 0.5, 2), 1000])
+        res_buy3 = chan_analysis_structured(kl_buy3, 'sh600010')
+        buy3_sigs = [s for s in res_buy3.get('signals', []) if '三买' in s.get('type', '')]
+        for s in buy3_sigs:
+            self.assertIn(s['type'], ['三买候选', '三买待确认'],
+                          f"三买信号必须是候选或待确认，收到: {s['type']}")
+
+        # 2. 先震荡形成中枢后突破下行，回抽在中枢下轨之下 → 三卖警戒
+        kl_sell3 = []
+        for i in range(100):
+            if i < 55:
+                c = 11 + math.sin(i / 2.0) * 1.0
+            elif i < 70:
+                c = 11 - (i - 55) * 0.35
+            else:
+                c = 5.75 + (i - 70) * 0.10
+            kl_sell3.append([f"2026-01-{i+1:03d}", round(c, 2), round(c, 2), round(c + 0.5, 2), round(c - 0.5, 2), 1000])
+        res_sell3 = chan_analysis_structured(kl_sell3, 'sh600011')
+        sell3_sigs = [s for s in res_sell3.get('signals', []) if '三卖' in s.get('type', '')]
+        for s in sell3_sigs:
+            self.assertIn(s['type'], ['三卖警戒', '三卖待确认'],
+                          f"三卖信号必须是警戒或待确认，收到: {s['type']}")
+
+        # 3. 回抽入中枢场景：突破后大幅回撤进入中枢区间 → 应降级为待确认
+        kl_buy3_fail = []
+        for i in range(100):
+            if i < 55:
+                c = 11 + math.sin(i / 2.0) * 1.0
+            elif i < 65:
+                c = 11 + (i - 55) * 0.4
+            else:
+                c = 15 - (i - 65) * 0.25
+            kl_buy3_fail.append([f"2026-01-{i+1:03d}", round(c, 2), round(c, 2), round(c + 0.5, 2), round(c - 0.5, 2), 1000])
+        res_buy3_fail = chan_analysis_structured(kl_buy3_fail, 'sh600012')
+        fail_sigs = [s for s in res_buy3_fail.get('signals', []) if '三买' in s.get('type', '')]
+        for s in fail_sigs:
+            self.assertIn(s['type'], ['三买候选', '三买待确认'],
+                          f"回抽失败场景信号类型必须合法，收到: {s['type']}")
+
 
 
 class TestCoreQuality(unittest.TestCase):
@@ -172,11 +224,17 @@ class TestCoreEmotion(unittest.TestCase):
     """情绪指标测试"""
 
     def test_emotion_band(self):
+        # 阈值标定 (2026-10-25): 33/45/60/72，基于38条历史存档实证分布
         self.assertEqual(emotion_band(20), '冰点')
-        self.assertEqual(emotion_band(45), '退潮/偏冷')
-        self.assertEqual(emotion_band(60), '中性')
-        self.assertEqual(emotion_band(75), '活跃')
-        self.assertEqual(emotion_band(90), '亢奋')
+        self.assertEqual(emotion_band(40), '退潮/偏冷')
+        self.assertEqual(emotion_band(50), '中性')
+        self.assertEqual(emotion_band(65), '活跃')
+        self.assertEqual(emotion_band(80), '亢奋')
+        # 边界验证：阈值点归属上一区间（< 语义）
+        self.assertEqual(emotion_band(33), '退潮/偏冷')
+        self.assertEqual(emotion_band(45), '中性')
+        self.assertEqual(emotion_band(60), '活跃')
+        self.assertEqual(emotion_band(72), '亢奋')
 
     def test_emotion_score_v1(self):
         s = emotion_score_v1(n_zt=80, n_zb=0, n_dt=0, max_lb=8)
@@ -199,6 +257,36 @@ class TestCoreEmotion(unittest.TestCase):
         flat = effect_flat(eff_weak)
         self.assertIsNotNone(flat)
         self.assertEqual(flat['premium'], -1.5)
+
+    def test_emotion_score_v2_extreme_bull_and_clamp(self):
+        # 极端亢奋行情：涨停150只、0炸板、0跌停、最高板10、赚钱效应满分（传 1.5 验证 clamp）
+        # v2 权重合计 = 10+18+17+12+25 = 82，即「理论上限 82 分」。
+        # 修复 (2026-10-25): 亢奋线已从 80 降至 72，82 分可稳定触发"亢奋"相位。
+        eff_extreme = {
+            'available': True,
+            'premium': 6.0,
+            'rate_1to2': 60.0,
+            'score': 1.5  # 传入 > 1.0 验证 clamp 至 1.0
+        }
+        score, diverge = emotion_score_v2(n_zt=150, n_zb=0, n_dt=0, max_lb=10, eff=eff_extreme)
+        self.assertAlmostEqual(score, 82.0, places=2, msg="极端牛市样本应顶到 v2 理论上限 82")
+        self.assertLessEqual(score, 100.0, "情绪分上限必须严格截断至 100")
+        # 修复验证：82 分在新阈值下应映射为"亢奋"（旧阈值 80 时仅 80~82 可达，几乎不可能）
+        self.assertEqual(emotion_band(score), '亢奋', "v2 理论上限 82 必须落入亢奋相位")
+
+        # clamp 生效证明：eff.score 传 1.5 与传 1.0 必须得到同一分数
+        eff_full = dict(eff_extreme, score=1.0)
+        score_full, _ = emotion_score_v2(n_zt=150, n_zb=0, n_dt=0, max_lb=10, eff=eff_full)
+        self.assertAlmostEqual(score, score_full, places=6, msg="eff.score>1 必须被 clamp 到 1.0")
+
+        # 验证 eff.score 极度恶化为负值时的下限截断
+        eff_negative = {
+            'available': True,
+            'score': -0.5
+        }
+        score_neg, _ = emotion_score_v2(n_zt=0, n_zb=20, n_dt=30, max_lb=0, eff=eff_negative)
+        self.assertGreaterEqual(score_neg, 0.0, "情绪分下限必须截断至 0")
+        self.assertAlmostEqual(score_neg, 0.0, places=2, msg="负向越界应被 clamp 到 0")
 
 
 if __name__ == '__main__':

@@ -352,5 +352,6 @@
     "big_loss_count": 0,
     "big_loss_rate": 0.0,
     "details": []
-  }
+  },
+  "synthetic": true
 }

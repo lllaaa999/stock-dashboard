@@ -355,9 +355,50 @@ def backtest_chan_strategy(
     equity_curve = []
     trade_logs = []
 
+    # 前视偏差修复 (2026-10-25): 信号在bar i收盘生成，成交推迟到bar i+1开盘
+    pending = None  # None 或 {"action": "buy"/"sell", "reason": str}
+
     for i in range(30, len(kl)):
         cur_bar = kl[i]
         cur_date, c_open, c_close, c_high, c_low = cur_bar[0], float(cur_bar[1]), float(cur_bar[2]), float(cur_bar[3]), float(cur_bar[4])
+
+        # 执行上一根bar收盘生成的延迟信号，以当前bar开盘价成交（消除前视偏差）
+        if pending and pending["action"] == "sell" and holding_shares > 0:
+            hold_days = i - buy_bar_idx
+            exec_price = c_open * (1.0 - SLIPPAGE_RATE)
+            gross_amt = holding_shares * exec_price
+            comm = max(MIN_COMMISSION, gross_amt * COMMISSION_RATE)
+            stamp = gross_amt * STAMP_DUTY_RATE
+            net_amt = gross_amt - comm - stamp
+            pnl = net_amt - (holding_shares * buy_price)
+            cash += net_amt
+            trade_logs.append({
+                "date": cur_date,
+                "buy_date": buy_date,
+                "buy_price": round(buy_price, 2),
+                "sell_price": round(exec_price, 2),
+                "shares": holding_shares,
+                "hold_days": hold_days,
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(((exec_price - buy_price) / buy_price) * 100.0, 2),
+                "reason": pending["reason"],
+            })
+            holding_shares = 0
+            buy_price = 0.0
+        elif pending and pending["action"] == "buy" and holding_shares == 0:
+            exec_price = c_open * (1.0 + SLIPPAGE_RATE)
+            max_shares = int((cash * 0.95) / (exec_price * 100)) * 100
+            if max_shares >= 100:
+                cost = max_shares * exec_price
+                comm = max(MIN_COMMISSION, cost * COMMISSION_RATE)
+                total_cost = cost + comm
+                if cash >= total_cost:
+                    cash -= total_cost
+                    holding_shares = max_shares
+                    buy_price = exec_price
+                    buy_date = cur_date
+                    buy_bar_idx = i
+        pending = None
 
         sub_kl = kl[: i + 1]
         chan_res = chan_analysis_structured(sub_kl, full_code)
@@ -405,41 +446,12 @@ def backtest_chan_strategy(
                     should_exit = True
 
             if should_exit:
-                exec_price = c_close * (1.0 - SLIPPAGE_RATE)
-                gross_amt = holding_shares * exec_price
-                comm = max(MIN_COMMISSION, gross_amt * COMMISSION_RATE)
-                stamp = gross_amt * STAMP_DUTY_RATE
-                net_amt = gross_amt - comm - stamp
-                pnl = net_amt - (holding_shares * buy_price)
-                cash += net_amt
-
-                trade_logs.append({
-                    "date": cur_date,
-                    "buy_date": buy_date,
-                    "buy_price": round(buy_price, 2),
-                    "sell_price": round(exec_price, 2),
-                    "shares": holding_shares,
-                    "hold_days": hold_days,
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2),
-                    "reason": sell_reason,
-                })
-                holding_shares = 0
-                buy_price = 0.0
+                # 延迟到下一bar开盘成交（消除前视偏差）
+                pending = {"action": "sell", "reason": sell_reason}
 
         elif holding_shares == 0 and has_buy_signal:
-            exec_price = c_close * (1.0 + SLIPPAGE_RATE)
-            max_shares = int((cash * 0.95) / (exec_price * 100)) * 100
-            if max_shares >= 100:
-                cost = max_shares * exec_price
-                comm = max(MIN_COMMISSION, cost * COMMISSION_RATE)
-                total_cost = cost + comm
-                if cash >= total_cost:
-                    cash -= total_cost
-                    holding_shares = max_shares
-                    buy_price = exec_price
-                    buy_date = cur_date
-                    buy_bar_idx = i
+            # 延迟到下一bar开盘成交（消除前视偏差）
+            pending = {"action": "buy", "reason": buy_reason}
 
         cur_pos_val = holding_shares * c_close
         tot_eq = cash + cur_pos_val
@@ -499,9 +511,51 @@ def backtest_double_ma_strategy(
     closes = [float(b[2]) for b in kl]
     volumes = [float(b[5]) for b in kl]
 
+    # 前视偏差修复 (2026-10-25): 信号在bar i收盘生成，成交推迟到bar i+1开盘
+    pending = None  # None 或 {"action": "buy"/"sell", "reason": str}
+
     for i in range(ma_slow, len(kl)):
         cur_bar = kl[i]
         cur_date, c_close = cur_bar[0], float(cur_bar[2])
+        c_open = float(cur_bar[1])
+
+        # 执行上一根bar收盘生成的延迟信号，以当前bar开盘价成交（消除前视偏差）
+        if pending and pending["action"] == "sell" and holding_shares > 0:
+            hold_days = i - buy_bar_idx
+            exec_price = c_open * (1.0 - SLIPPAGE_RATE)
+            gross_amt = holding_shares * exec_price
+            comm = max(MIN_COMMISSION, gross_amt * COMMISSION_RATE)
+            stamp = gross_amt * STAMP_DUTY_RATE
+            net_amt = gross_amt - comm - stamp
+            pnl = net_amt - (holding_shares * buy_price)
+            cash += net_amt
+            trade_logs.append({
+                "date": cur_date,
+                "buy_date": buy_date,
+                "buy_price": round(buy_price, 2),
+                "sell_price": round(exec_price, 2),
+                "shares": holding_shares,
+                "hold_days": hold_days,
+                "pnl": round(pnl, 2),
+                "pnl_pct": round(((exec_price - buy_price) / buy_price) * 100.0, 2),
+                "reason": pending["reason"],
+            })
+            holding_shares = 0
+            buy_price = 0.0
+        elif pending and pending["action"] == "buy" and holding_shares == 0:
+            exec_price = c_open * (1.0 + SLIPPAGE_RATE)
+            max_shares = int((cash * 0.95) / (exec_price * 100)) * 100
+            if max_shares >= 100:
+                cost = max_shares * exec_price
+                comm = max(MIN_COMMISSION, cost * COMMISSION_RATE)
+                total_cost = cost + comm
+                if cash >= total_cost:
+                    cash -= total_cost
+                    holding_shares = max_shares
+                    buy_price = exec_price
+                    buy_date = cur_date
+                    buy_bar_idx = i
+        pending = None
 
         ma_f = sum(closes[i - ma_fast + 1 : i + 1]) / ma_fast
         ma_s = sum(closes[i - ma_slow + 1 : i + 1]) / ma_slow
@@ -530,41 +584,12 @@ def backtest_double_ma_strategy(
                     sell_reason = f"MA{ma_fast}死叉MA{ma_slow}离场"
 
             if should_exit:
-                exec_price = c_close * (1.0 - SLIPPAGE_RATE)
-                gross_amt = holding_shares * exec_price
-                comm = max(MIN_COMMISSION, gross_amt * COMMISSION_RATE)
-                stamp = gross_amt * STAMP_DUTY_RATE
-                net_amt = gross_amt - comm - stamp
-                pnl = net_amt - (holding_shares * buy_price)
-                cash += net_amt
-
-                trade_logs.append({
-                    "date": cur_date,
-                    "buy_date": buy_date,
-                    "buy_price": round(buy_price, 2),
-                    "sell_price": round(exec_price, 2),
-                    "shares": holding_shares,
-                    "hold_days": hold_days,
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2),
-                    "reason": sell_reason,
-                })
-                holding_shares = 0
-                buy_price = 0.0
+                # 延迟到下一bar开盘成交（消除前视偏差）
+                pending = {"action": "sell", "reason": sell_reason}
 
         elif holding_shares == 0 and is_golden_cross and is_vol_ok:
-            exec_price = c_close * (1.0 + SLIPPAGE_RATE)
-            max_shares = int((cash * 0.95) / (exec_price * 100)) * 100
-            if max_shares >= 100:
-                cost = max_shares * exec_price
-                comm = max(MIN_COMMISSION, cost * COMMISSION_RATE)
-                total_cost = cost + comm
-                if cash >= total_cost:
-                    cash -= total_cost
-                    holding_shares = max_shares
-                    buy_price = exec_price
-                    buy_date = cur_date
-                    buy_bar_idx = i
+            # 延迟到下一bar开盘成交（消除前视偏差）
+            pending = {"action": "buy", "reason": f"MA{ma_fast}金叉MA{ma_slow}且放量确认"}
 
         cur_pos_val = holding_shares * c_close
         equity_curve.append({

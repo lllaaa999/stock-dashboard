@@ -141,10 +141,40 @@ export const WatchlistPanel: React.FC = () => {
   const sortDir = useMarketStore((s) => s.sortDir);
 
   const setSelectedSymbol = useMarketStore((s) => s.setSelectedSymbol);
+  const selectAndSubscribeStock = useMarketStore((s) => s.selectAndSubscribeStock);
   const setSearchQuery = useMarketStore((s) => s.setSearchQuery);
   const setFilterCategory = useMarketStore((s) => s.setFilterCategory);
   const toggleSort = useMarketStore((s) => s.toggleSort);
   const toggleWatchlist = useMarketStore((s) => s.toggleWatchlist);
+
+  const [remoteResults, setRemoteResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+
+  // 全市场股票联想检索 (支持 A 股代码、全拼、拼音首字母，如 002724, gzmt, hyw)
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (!q) {
+      setRemoteResults([]);
+      setIsSearching(false);
+      return;
+    }
+    setIsSearching(true);
+    const timer = setTimeout(() => {
+      fetch(`/api/market/search?q=${encodeURIComponent(q)}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data && data.status === 'ok') {
+            setRemoteResults(data.results || []);
+          }
+        })
+        .catch((e) => {
+          console.error('[WatchlistPanel] 搜索请求失败:', e);
+        })
+        .finally(() => setIsSearching(false));
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   // 仅根据过滤/排序条件计算需要渲染的 symbol 列表
   const filteredSymbols = useMemo(() => {
@@ -252,7 +282,94 @@ export const WatchlistPanel: React.FC = () => {
 
       {/* 4. 股票高密度滚动列表 */}
       <div className="flex-1 overflow-y-auto" role="rowgroup">
-        {filteredSymbols.length === 0 ? (
+        {searchQuery.trim().length > 0 ? (
+          /* 全市场检索结果流 */
+          remoteResults.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-44 px-4 text-center">
+              <p className="text-xs text-[#787b86]">
+                {isSearching ? '正在穿透全市场搜索标的...' : `未在 A 股全市场中找到“${searchQuery}”`}
+              </p>
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="mt-2.5 px-3 py-1 text-xs font-medium text-white bg-[#2962ff] rounded hover:bg-[#1e53e5] transition-colors cursor-pointer"
+              >
+                清空搜索
+              </button>
+            </div>
+          ) : (
+            remoteResults.map((item) => {
+              const sym = item.symbol;
+              const liveQuote = quotes[sym];
+              const price = liveQuote?.price ?? item.price;
+              const change = liveQuote?.change ?? item.change;
+              const changePercent = liveQuote?.changePercent ?? item.changePercent;
+              const isSelected = sym === selectedSymbol;
+              const isStarred = watchlist.includes(sym);
+              const colorClass = getSignedColorClass(change || 0);
+
+              return (
+                <div
+                  key={sym}
+                  role="row"
+                  aria-selected={isSelected}
+                  onClick={() => selectAndSubscribeStock(item)}
+                  className={`group flex items-center justify-between px-3 h-[44px] border-b border-[#2a2e39]/60 cursor-pointer select-none transition-colors duration-200 ${
+                    isSelected
+                      ? 'bg-[#2962ff]/15'
+                      : 'hover:bg-[#2a2e39]/40'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <button
+                      type="button"
+                      aria-label={isStarred ? `取消自选 ${item.name}` : `添加自选 ${item.name}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleWatchlist(sym);
+                      }}
+                      className="p-1 text-[#787b86] hover:text-[#F59E0B] transition-colors shrink-0 cursor-pointer"
+                    >
+                      <Star
+                        className={`w-3.5 h-3.5 ${
+                          isStarred ? 'fill-[#F59E0B] text-[#F59E0B]' : ''
+                        }`}
+                      />
+                    </button>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xs font-semibold text-[#d1d4dc] truncate">
+                          {item.name}
+                        </span>
+                        <span className="text-[10px] text-[#2962ff] font-medium">
+                          {item.market}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 text-[10px] text-[#787b86] font-mono tabular-nums">
+                        <span>{item.code}</span>
+                        <span aria-hidden="true">·</span>
+                        <span>{item.securityType || 'A股'}</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-3 shrink-0">
+                    <span
+                      className={`w-16 text-right font-mono tabular-nums text-xs font-semibold ${colorClass}`}
+                    >
+                      {price && price > 0 ? formatPrice(price) : '--'}
+                    </span>
+                    <span
+                      className={`w-16 text-right font-mono tabular-nums text-xs font-semibold ${colorClass}`}
+                    >
+                      {price && price > 0 ? formatSignedPercent(changePercent || 0) : '--'}
+                    </span>
+                  </div>
+                </div>
+              );
+            })
+          )
+        ) : filteredSymbols.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-44 px-4 text-center">
             <p className="text-xs text-[#787b86]">
               未找到匹配“{searchQuery || '当前分组'}”的股票标的

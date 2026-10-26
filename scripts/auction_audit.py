@@ -37,9 +37,13 @@ def _audit_file_path(ymd):
     return os.path.join(AUCTION_RECORD_DIR, f"auction_audit_{clean_ymd}.json")
 
 
-def save_auction_candidates_snapshot(ymd, radar_result, force=False):
+def save_auction_candidates_snapshot(ymd, radar_result, force=False, phase='auction'):
     """
     保存 09:25 竞价推荐池与监控快照。
+
+    phase: 'auction' = 在 9:15~9:35 竞价窗口内抓的（真实决策快照）；
+           其他值（如 'post_close'）= 收盘后回看抓的，**含后见之明**，
+           只能用于复盘展示，绝不能进入打脸账本的命中率统计。
     """
     if not ymd or not isinstance(radar_result, dict):
         return False, "数据无效"
@@ -54,6 +58,9 @@ def save_auction_candidates_snapshot(ymd, radar_result, force=False):
     payload = {
         'date': str(ymd).replace('-', '')[:8],
         'recorded_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        # phase 记录这个快照是在什么时点抓的；非竞价窗口抓的一律标 synthetic
+        'phase': phase,
+        'synthetic': phase != 'auction',
         'weak_to_strong': wts,
         'auction_boom': boom,
         'fake_high_opens': fakes,
@@ -191,9 +198,27 @@ def _audit_single_group(items, zt_codes, zb_codes, ymd):
     }
 
 
-def audit_auction_for_day(ymd, force=False):
+def _is_trading_day(ymd):
+    """判断 ymd 是否为真实交易日。日历优先，日历不可用时退回"涨停池当天有数据"。"""
+    clean = str(ymd).replace('-', '')[:8]
+    try:
+        from scripts import trading_calendar as tcal
+        if tcal is not None and tcal.is_trading_day(clean):
+            return True
+    except Exception:
+        pass
+    try:
+        return bool(sd._pool('ZT', clean))
+    except Exception:
+        return False
+
+
+def audit_auction_for_day(ymd, force=False, allow_synthetic=False):
     """
     收盘对账核心函数：消费今日盘面事实，核验今日竞价雷达推荐效果。
+
+    allow_synthetic=True 时允许用"当前雷达"补录缺失快照（仅人工场景），
+    补录出来的记录会带 synthetic 标记，不计入打脸账本的胜率统计。
     """
     clean_ymd = str(ymd).replace('-', '')[:8]
     audit_file = _audit_file_path(clean_ymd)
@@ -206,23 +231,40 @@ def audit_auction_for_day(ymd, force=False):
         except Exception:
             pass
 
+    # ⚠️ 非交易日直接拒绝对账（休市日没有竞价、没有盘面，核验出来的命中率是假的）
+    if not _is_trading_day(clean_ymd):
+        return {
+            'status': 'not_trading_day',
+            'date': clean_ymd,
+            'message': f"{clean_ymd} 不是交易日，无竞价可对账（不写入对账档案与打脸账本）"
+        }
+
     cand = get_auction_candidates(clean_ymd)
+    # 快照自身若标记为 synthetic（收盘后补抓，含后见之明），对账结果也必须是 synthetic
+    synthetic = bool((cand or {}).get('synthetic'))
     if not cand:
-        # 尝试从今日运行的竞价雷达中现场生成快照（用于盘后补录）
-        try:
-            import auction_radar as ar
-            radar_res = ar.get_auction_radar()
-            if radar_res and radar_res.get('status') == 'ok':
-                save_auction_candidates_snapshot(clean_ymd, radar_res, force=True)
-                cand = get_auction_candidates(clean_ymd)
-        except Exception as e:
-            print(f"[竞价对账] 尝试提取候选失败: {e}")
+        # ⚠️ 快照缺失时**不能**拿"此刻的雷达"补录：
+        #    盘后跑出来的 radar 用的是当日收盘后的行情，量比/成交额/涨跌幅都不是 9:25 的值；
+        #    历史某天更是完全对不上。这样补出来的快照会算出看似合理的胜率，
+        #    却把假样本写进打脸账本（2026-10-26 核查发现周六的记录就是这么来的）。
+        #    只有人工显式要求 allow_synthetic 时才补录，并在结果与账本里标 synthetic。
+        if allow_synthetic:
+            try:
+                import auction_radar as ar
+                radar_res = ar.get_auction_radar()
+                if radar_res and radar_res.get('status') == 'ok':
+                    save_auction_candidates_snapshot(clean_ymd, radar_res, force=True)
+                    cand = get_auction_candidates(clean_ymd)
+                    synthetic = bool(cand)
+            except Exception as e:
+                print(f"[竞价对账] 尝试提取候选失败: {e}")
 
     if not cand:
         return {
             'status': 'no_candidates',
             'date': clean_ymd,
-            'message': f"未找到交易日 {clean_ymd} 的竞价候选池快照"
+            'message': (f"未找到 {clean_ymd} 09:25 的竞价候选池快照；"
+                        f"事后无法补录（此刻的盘面已不是当天竞价），本次不计入打脸账本")
         }
 
     # 提取收盘涨停池与炸板池真实事实
@@ -239,6 +281,8 @@ def audit_auction_for_day(ymd, force=False):
         'status': 'ok',
         'date': clean_ymd,
         'audited_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        # True = 快照缺失时用"当前雷达"补录的，样本不可信，不计入打脸账本统计
+        'synthetic': synthetic,
         'summary': {
             'weak_to_strong': {
                 'count': wts_audit['count'],
@@ -301,6 +345,7 @@ def _upsert_ledger(ymd, audit_result):
     entry = {
         'date': ymd,
         'audited_at': audit_result.get('audited_at'),
+        'synthetic': bool(audit_result.get('synthetic')),
         'wts_count': audit_result['summary']['weak_to_strong']['count'],
         'wts_zt_rate': audit_result['summary']['weak_to_strong']['zt_rate'],
         'wts_win_rate': audit_result['summary']['weak_to_strong']['win_rate'],
@@ -335,18 +380,23 @@ def get_auction_audit_ledger(limit=30):
     records.sort(key=lambda x: str(x.get('date', '')))
     sliced = records[-limit:] if limit else records
 
+    # 统计只算真实样本：synthetic（事后用当前雷达补录的）一律排除
+    real_records = [r for r in records if not r.get('synthetic')]
+    synthetic_count = len(records) - len(real_records)
+
     # 计算累计整体表现
-    total_wts = sum(r.get('wts_count', 0) for r in records)
+    total_wts = sum(r.get('wts_count', 0) for r in real_records)
     if total_wts > 0:
-        cum_win_rate = round(sum(r.get('wts_win_rate', 0) * r.get('wts_count', 0) for r in records) / total_wts, 1)
-        cum_zt_rate = round(sum(r.get('wts_zt_rate', 0) * r.get('wts_count', 0) for r in records) / total_wts, 1)
-        cum_avg_pnl = round(sum(r.get('wts_avg_pnl', 0) * r.get('wts_count', 0) for r in records) / total_wts, 2)
+        cum_win_rate = round(sum(r.get('wts_win_rate', 0) * r.get('wts_count', 0) for r in real_records) / total_wts, 1)
+        cum_zt_rate = round(sum(r.get('wts_zt_rate', 0) * r.get('wts_count', 0) for r in real_records) / total_wts, 1)
+        cum_avg_pnl = round(sum(r.get('wts_avg_pnl', 0) * r.get('wts_count', 0) for r in real_records) / total_wts, 2)
     else:
         cum_win_rate, cum_zt_rate, cum_avg_pnl = 0.0, 0.0, 0.0
 
     return {
         'records': sliced,
-        'total_days': len(records),
+        'total_days': len(real_records),
+        'excluded_synthetic_days': synthetic_count,
         'total_wts_stocks': total_wts,
         'cum_win_rate': cum_win_rate,
         'cum_zt_rate': cum_zt_rate,

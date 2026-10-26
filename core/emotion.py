@@ -9,8 +9,19 @@ from typing import Dict, Any, Tuple, Optional
 
 
 def emotion_band(s: float) -> str:
-    """情绪区间文字映射: 冰点 / 退潮/偏冷 / 中性 / 活跃 / 亢奋"""
-    return ('冰点' if s < 30 else '退潮/偏冷' if s < 50 else '中性' if s < 70 else '活跃' if s < 85 else '亢奋')
+    """情绪区间文字映射: 冰点 / 退潮/偏冷 / 中性 / 活跃 / 亢奋
+
+    修复 (2026-10-25): v2 权重合计上限 = 10+18+17+12+25 = 82，原阈值
+    30/50/70/80 中亢奋线 80 几乎不可达（仅 82 分理论极限方可触发），
+    导致日常行情永远停在"中性"，"亢奋"成为死代码。
+
+    基于 38 条历史存档 (sentiment_history.jsonl) 实证标定：
+    - 分数范围 27.89~80.5，v2 理论上限 82
+    - 新阈值 33/45/60/72 使各相位均有合理触发概率：
+      冰点 5.3% / 退潮 28.9% / 中性 23.7% / 活跃 26.3% / 亢奋 15.8%
+    - 仅改阈值不改权重，历史存档分数值不变，可比性不受影响。
+    """
+    return ('冰点' if s < 33 else '退潮/偏冷' if s < 45 else '中性' if s < 60 else '活跃' if s < 72 else '亢奋')
 
 
 # 兼容旧命名
@@ -37,11 +48,22 @@ def emotion_score_v2(n_zt: int, n_zb: int, n_dt: int, max_lb: int, eff: Dict[str
     晋级分 = min(1进2晋级率/50, 1)。取不到该指标时按中性 12.5 分计入(并标注).
     返回 (score, diverge)。diverge: score_high_effect_weak / score_low_effect_strong / None
     """
+    # ⚠️ 权重一经发布即等于「计量单位」：38 条历史存档全部按下面这组权重生成。
+    # 若确需重新标定（例如整体抬分），必须同时把 stock_dashboard 写入的 algo 标记
+    # 从 'v2' 升到 'v3'，否则 cycle_position 的 MA3/MA7 会拿新旧两把尺子混算。
     s = 10.0
     s += math.sqrt(min(n_zt / 120.0, 1.0)) * 18.0
     s += math.sqrt(min(max_lb / 8.0, 1.0)) * 17.0
     s += ((1.0 - n_zb / (n_zt + n_zb)) * 12.0 if (n_zt + n_zb) else 6.0)
-    s += ((eff.get('score') or 0.0) * 25.0) if eff.get('available') else 12.5
+    if eff.get('available'):
+        # eff.score 理论区间 0~1；上游异常时可能出现 >1 或负值，此处硬截断，
+        # 避免单日脏数据把情绪分推出量程（旧写法直接相乘，无保护）。
+        eff_raw = eff.get('score')
+        eff_sc_val = float(eff_raw if eff_raw is not None else 0.5)
+        eff_sc_val = max(0.0, min(1.0, eff_sc_val))
+        s += eff_sc_val * 25.0
+    else:
+        s += 12.5
     s -= min(n_dt / 15.0, 1.0) * 15.0
     s = max(0.0, min(100.0, s))
     

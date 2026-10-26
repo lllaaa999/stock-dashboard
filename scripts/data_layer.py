@@ -11,6 +11,7 @@
 import sys
 import os
 import json
+import re
 import datetime
 import time
 import urllib.request
@@ -35,11 +36,22 @@ _active_server = None
 _tdx_disabled_until = 0
 
 def _clean_code(code: str) -> Tuple[int, str]:
-    """规范化股票代码 -> (market: 1=sh/0=sz, pure_code: 6位字符串)"""
+    """规范化股票代码 -> (market: 1=sh/0=sz, pure_code: 6位字符串)
+
+    支持格式: 600519 / 600519.SH / 600519.SH.SS / sh600519 / sh.600519 / SH600519
+    实现要点(修复): 旧版用 c.replace('sh','') 直接删子串, 会把 '600519.sh' 变成
+    '600519.' —— 后缀形式(前端 600519.SH 正是此格式)全部解析失败, 导致日K/分钟K
+    三级容灾拿到的都是带点脏代码, 层层返回空。现改为只取前 6 位连续数字。
+    """
     c = str(code).strip().lower()
-    c = c.replace('sh.', '').replace('sz.', '').replace('sh', '').replace('sz', '')
-    market = 1 if c.startswith(('6', '5', '9')) else 0
-    return market, c
+    # 先剥离常见前缀/后缀标记, 再兜底: 提取第一段 6 位数字
+    for t in ('sh.', 'sz.', 'sh', 'sz', '.ss', '.sz', '.sh', 'xshg', 'xsse'):
+        c = c.replace(t, '')
+    m = re.search(r'\d{6}', c)
+    pure = m.group(0) if m else c
+    market = 1 if pure.startswith(('6', '5', '9')) else 0
+    return market, pure
+
 
 def get_tdx_client():
     """获取经过数据验证的高可用 mootdx 客户端单例"""
@@ -53,9 +65,15 @@ def get_tdx_client():
 
     try:
         from mootdx.quotes import Quotes
+        # 总时间预算: 节点池逐个试连, 最坏情况(全部不可达)曾耗时约 20s
+        # (16 节点 x timeout 1.2s + mootdx 内部 sleep 累计 14s)。
+        # 这里设 4s 总预算, 超了立刻放弃并进入长禁用期, 把时间让给 baostock 主通道。
+        _budget_deadline = time.time() + 4.0
         for host, port in TDX_SERVERS:
+            if time.time() > _budget_deadline:
+                break
             try:
-                c = Quotes.factory(market='std', server=(host, port), timeout=1.2)
+                c = Quotes.factory(market='std', server=(host, port), timeout=0.8)
                 # 发送试探包验证真实数据吐出
                 b = c.bars(symbol='600519', frequency=9, offset=1)
                 if b is not None and len(b) > 0:
@@ -67,9 +85,9 @@ def get_tdx_client():
     except ImportError:
         pass
 
-    _tdx_disabled_until = time.time() + 30.0
+    # 全部节点不可达: 长禁用期(10 分钟), 避免每 30 秒就白等一轮
+    _tdx_disabled_until = time.time() + 600.0
     return None
-
 def get_pytdx_client():
     """获取底层的 pytdx 原始 API 实例 (用于逐笔分时与竞价切片)"""
     global _pytdx_client, _active_server
@@ -307,6 +325,57 @@ def realtime_quotes(codes: List[str]) -> List[Dict[str, Any]]:
 # ============================================================================
 # 6. 核心对外接口：标准日 K 线 (TDX 优先 -> Baostock -> 腾讯 HTTP)
 # ============================================================================
+def _kline_akshare(code: str, days: int = 160) -> Optional[List[List[Any]]]:
+    """AKShare(新浪源) 日K 备用通道 —— 第四级容灾。
+
+    实测背景: TDX 节点池全部拒绝行情请求、腾讯 ifzq 间歇被 WAF 封，
+    实际只剩 baostock 单点。此函数通过 AKShare 走新浪域名，提供另一条独立通道。
+
+    格式对齐（关键，否则会静默产出错误数据）:
+      AKShare 列顺序 = [date, open, HIGH, LOW, CLOSE, volume, amount, ...]
+      本模块标准     = [date, open, CLOSE, HIGH, LOW, vol]
+      -> 需要重排: [d[0], d[1], d[4], d[2], d[3], d[5]]
+      并且 AKShare volume 单位是【股】，本模块是【手】 -> ÷100
+    """
+    try:
+        import akshare as ak
+    except ImportError:
+        return None
+
+    market, pure = _clean_code(code)
+    prefix = 'sh' if market == 1 else 'sz'
+    try:
+        end = datetime.date.today() + datetime.timedelta(days=1)
+        # 多取一些自然日以覆盖 days 个交易日（含节假日余量）
+        start = end - datetime.timedelta(days=int(days * 1.8) + 30)
+        df = ak.stock_zh_a_daily(
+            symbol=f"{prefix}{pure}",
+            start_date=start.strftime('%Y%m%d'),
+            end_date=end.strftime('%Y%m%d'),
+            adjust="qfq",
+        )
+    except Exception:
+        return None
+    if df is None or len(df) == 0:
+        return None
+
+    result = []
+    for _, r in df.iterrows():
+        try:
+            result.append([
+                str(r['date'])[:10],
+                float(r['open']),
+                float(r['close']),
+                float(r['high']),
+                float(r['low']),
+                round(float(r['volume']) / 100.0, 2),   # 股 -> 手
+            ])
+        except Exception:
+            continue
+    return result[-days:] if result else None
+
+
+
 def kline(code: str, days: int = 160) -> Optional[List[List[Any]]]:
     """获取日K线：标准格式 [[date, open, close, high, low, vol], ...]"""
     market, pure = _clean_code(code)
@@ -338,7 +407,13 @@ def kline(code: str, days: int = 160) -> Optional[List[List[Any]]]:
     if bs_kl and len(bs_kl) >= 1:
         return bs_kl
 
-    # --- 3. 腾讯 HTTP 前复权日K 兜底 ---
+    # --- 3. AKShare(新浪源) 前复权日K ---
+    # 独立于腾讯的第三条通道: baostock 不可用时仍能出数, 避免日K单点
+    ak_kl = _kline_akshare(code, days=days)
+    if ak_kl and len(ak_kl) >= 1:
+        return ak_kl
+
+    # --- 4. 腾讯 HTTP 前复权日K 兜底 ---
     full = ('sh' if market == 1 else 'sz') + pure
     tx_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full},day,,,{days},qfq"
     raw = http_get(tx_url, timeout=3.5)

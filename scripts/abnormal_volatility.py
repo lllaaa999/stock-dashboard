@@ -70,7 +70,19 @@ class VolatilityEvaluationResult:
     action_advice: str                  # 盘口实战操作建议徽章
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        import math
+        def clean_val(v):
+            if isinstance(v, float):
+                if math.isinf(v) or math.isnan(v):
+                    return None
+                return round(v, 4)
+            elif isinstance(v, dict):
+                return {k: clean_val(val) for k, val in v.items()}
+            elif isinstance(v, list):
+                return [clean_val(x) for x in v]
+            return v
+        return clean_val(d)
 
 
 def get_board_rule_config(stock_code: str, is_st: bool = False) -> BoardRuleConfig:

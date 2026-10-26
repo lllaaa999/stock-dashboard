@@ -1,6 +1,5 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  generateIntradayForSymbol,
   generateKLinesForSymbol,
 } from '../data/seedMarket';
 import {
@@ -8,6 +7,7 @@ import {
   useMarketStore,
 } from '../store/useMarketStore';
 import type {
+  ChanAnalysis,
   ChartPeriod,
   IntradayPoint,
   KLineBar,
@@ -49,6 +49,9 @@ class NativeFinancialChartInstance {
 
   private klines: KLineBar[] = [];
   private intraday: IntradayPoint[] = [];
+  // 缠论图层：笔 / 中枢 / 买卖点（数据来自 /api/quant/chan，与图表同周期K线）
+  private chan: ChanAnalysis | null = null;
+  private showChan = true;
 
   // 可视窗口范围（以柱索引计）
   private visibleCount = 65;
@@ -74,6 +77,10 @@ class NativeFinancialChartInstance {
   private macd = calculateMACD([]);
   private kdj = calculateKDJ([]);
   private rsi14: (number | null)[] = [];
+
+  // 指标重算节流：避免每 tick 全量重算历史 K 线的所有指标
+  private lastIndicatorCalcTime = 0;
+  private static readonly INDICATOR_THROTTLE_MS = 200; // 高频行情下最多每 200ms 重算一次
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
@@ -113,6 +120,27 @@ class NativeFinancialChartInstance {
     this.rightOffsetBars = 0;
     this.recomputeIndicators();
     this.render();
+  }
+
+  public setChanData(chan: ChanAnalysis | null, show?: boolean): void {
+    this.chan = chan;
+    if (show !== undefined) this.showChan = show;
+    this.render();
+  }
+
+  public setChanVisible(show: boolean): void {
+    this.showChan = show;
+    this.render();
+  }
+
+  /** 时间 -> K线索引（缠论按完整时间对齐：日/周/月K为 YYYY-MM-DD，分钟K为 YYYY-MM-DD HH:mm） */
+  private buildDateIndex(): Map<string, number> {
+    const map = new Map<string, number>();
+    for (let i = 0; i < this.klines.length; i++) {
+      const d = String(this.klines[i].time || '');
+      if (d) map.set(d, i);
+    }
+    return map;
   }
 
   public setIntradayData(points: IntradayPoint[], prevClose: number): void {
@@ -158,23 +186,74 @@ class NativeFinancialChartInstance {
         volume: tick.volume,
         amount: tick.amount,
       };
-      this.recomputeIndicators();
+      this.recomputeIndicatorsThrottled();
       this.render();
     }
   }
 
+  /**
+   * 全量重算所有指标（用于 setKLineData / setConfig 等低频场景）
+   */
   private recomputeIndicators(): void {
     if (this.klines.length === 0) return;
-    this.ma5 = calculateSMA(this.klines, 5);
-    this.ma10 = calculateSMA(this.klines, 10);
-    this.ma20 = calculateSMA(this.klines, 20);
-    this.ma60 = calculateSMA(this.klines, 60);
-    this.ema12 = calculateEMA(this.klines, 12);
-    this.ema26 = calculateEMA(this.klines, 26);
-    this.boll = calculateBOLL(this.klines, 20, 2);
-    this.macd = calculateMACD(this.klines, 12, 26, 9);
-    this.kdj = calculateKDJ(this.klines, 9);
-    this.rsi14 = calculateRSI(this.klines, 14);
+    this.recomputeMainIndicators();
+    this.recomputeSubIndicators();
+    this.lastIndicatorCalcTime = Date.now();
+  }
+
+  /**
+   * 节流 + 按需重算：仅在高频 tick 场景下调用
+   * 限制为每 INDICATOR_THROTTLE_MS 最多一次，且只计算当前可见的指标
+   */
+  private recomputeIndicatorsThrottled(): void {
+    if (this.klines.length === 0) return;
+    const now = Date.now();
+    if (now - this.lastIndicatorCalcTime < NativeFinancialChartInstance.INDICATOR_THROTTLE_MS) return;
+    this.recomputeMainIndicators();
+    this.recomputeSubIndicators();
+    this.lastIndicatorCalcTime = now;
+  }
+
+  /**
+   * 按需重算主图指标（仅计算当前 mainIndicator 需要的指标）
+   */
+  private recomputeMainIndicators(): void {
+    switch (this.mainIndicator) {
+      case 'MA':
+        this.ma5 = calculateSMA(this.klines, 5);
+        this.ma10 = calculateSMA(this.klines, 10);
+        this.ma20 = calculateSMA(this.klines, 20);
+        this.ma60 = calculateSMA(this.klines, 60);
+        break;
+      case 'EMA':
+        this.ema12 = calculateEMA(this.klines, 12);
+        this.ema26 = calculateEMA(this.klines, 26);
+        break;
+      case 'BOLL':
+        this.boll = calculateBOLL(this.klines, 20, 2);
+        break;
+      case 'NONE':
+        break;
+    }
+  }
+
+  /**
+   * 按需重算副图指标（仅计算当前 subIndicator 需要的指标）
+   */
+  private recomputeSubIndicators(): void {
+    switch (this.subIndicator) {
+      case 'MACD':
+        this.macd = calculateMACD(this.klines, 12, 26, 9);
+        break;
+      case 'KDJ':
+        this.kdj = calculateKDJ(this.klines, 9);
+        break;
+      case 'RSI':
+        this.rsi14 = calculateRSI(this.klines, 14);
+        break;
+      case 'VOL':
+        break;
+    }
   }
 
   public zoomBy(deltaBars: number): void {
@@ -467,7 +546,32 @@ class NativeFinancialChartInstance {
     ctx.stroke();
     ctx.restore();
 
-    // 2. 分时价格蓝白曲线 + 渐变面积图
+    // 2. 分时均线偏离带 (VWAP Deviation Band: 水上承接红带 / 水下分歧绿带)
+    if (pts.length > 1) {
+      ctx.save();
+      ctx.beginPath();
+      pts.forEach((p, idx) => {
+        const x = getX(idx);
+        const y = getY(p.price);
+        if (idx === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      });
+      for (let idx = pts.length - 1; idx >= 0; idx--) {
+        const x = getX(idx);
+        const y = getY(pts[idx].avgPrice);
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      const latestPt = pts[pts.length - 1];
+      ctx.fillStyle =
+        latestPt.price >= latestPt.avgPrice
+          ? 'rgba(246, 70, 93, 0.12)'
+          : 'rgba(14, 203, 129, 0.12)';
+      ctx.fill();
+      ctx.restore();
+    }
+
+    // 3. 分时价格蓝白曲线 + 渐变面积图
     ctx.beginPath();
     pts.forEach((p, idx) => {
       const x = getX(idx);
@@ -476,7 +580,7 @@ class NativeFinancialChartInstance {
       else ctx.lineTo(x, y);
     });
     ctx.strokeStyle = '#38BDF8';
-    ctx.lineWidth = 1.6;
+    ctx.lineWidth = 1.65;
     ctx.stroke();
 
     const lastX = getX(pts.length - 1);
@@ -484,12 +588,12 @@ class NativeFinancialChartInstance {
     ctx.lineTo(0, mainTop + mainH);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, mainTop, 0, mainTop + mainH);
-    grad.addColorStop(0, 'rgba(56, 189, 248, 0.22)');
+    grad.addColorStop(0, 'rgba(56, 189, 248, 0.20)');
     grad.addColorStop(1, 'rgba(56, 189, 248, 0.01)');
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // 3. 均价线 (VWAP 明黄色 #F59E0B)
+    // 4. 均价线 (VWAP 明黄色 #F59E0B)
     ctx.beginPath();
     pts.forEach((p, idx) => {
       const x = getX(idx);
@@ -498,17 +602,24 @@ class NativeFinancialChartInstance {
       else ctx.lineTo(x, y);
     });
     ctx.strokeStyle = '#F59E0B';
-    ctx.lineWidth = 1.3;
+    ctx.lineWidth = 1.35;
     ctx.stroke();
 
-    // 4. 副图分时成交量柱
+    // 5. 副图分时成交量柱 (含异常放量柱 >2.5x 均量高亮金边标识)
+    const avgVol =
+      pts.reduce((acc, item) => acc + item.volume, 0) / Math.max(1, pts.length);
     const barW = Math.max(1.5, (plotW / totalSlots) * 0.72);
     pts.forEach((p, idx) => {
       const x = getX(idx);
       const prevP = idx > 0 ? pts[idx - 1].price : this.prevClose;
       const isUp = p.price >= prevP;
+      const isAbnormalSpike = p.volume >= avgVol * 2.5 && p.volume > 0;
       const h = (p.volume / maxVol) * (subH - 6);
-      ctx.fillStyle = isUp ? 'rgba(246, 70, 93, 0.85)' : 'rgba(14, 203, 129, 0.85)';
+      if (isAbnormalSpike) {
+        ctx.fillStyle = isUp ? '#F59E0B' : '#38BDF8';
+      } else {
+        ctx.fillStyle = isUp ? 'rgba(246, 70, 93, 0.85)' : 'rgba(14, 203, 129, 0.85)';
+      }
       ctx.fillRect(x - barW / 2, subTop + subH - h, barW, h);
     });
 
@@ -535,8 +646,16 @@ class NativeFinancialChartInstance {
     ctx.fillText(`时间 ${activePt.time}`, 10, 17);
     ctx.fillStyle = '#38BDF8';
     ctx.fillText(`分时 ${activePt.price.toFixed(2)} (${formatSignedPercent(activePt.changePercent)})`, 95, 17);
+    const vwapDiffPct =
+      activePt.avgPrice > 0
+        ? ((activePt.price - activePt.avgPrice) / activePt.avgPrice) * 100
+        : 0;
     ctx.fillStyle = '#F59E0B';
-    ctx.fillText(`均价 ${activePt.avgPrice.toFixed(2)}`, 255, 17);
+    ctx.fillText(
+      `均价 ${activePt.avgPrice.toFixed(2)} (偏离 ${formatSignedPercent(vwapDiffPct)})`,
+      255,
+      17
+    );
 
     // 副图 HUD
     ctx.fillStyle = '#9ca3af';
@@ -608,6 +727,36 @@ class NativeFinancialChartInstance {
 
     const getX = (globalIdx: number) => (globalIdx - startIdx + 0.5) * stepX;
     const getY = (val: number) => mainTop + mainH - ((val - bottomVal) / range) * mainH;
+
+    // 1.5 缠论中枢（虚线框，画在K线之下，避免遮挡蜡烛）
+    const chanActive = this.showChan && !!this.chan && this.period !== 'intraday';
+    const dateIdx = chanActive ? this.buildDateIndex() : null;
+    if (chanActive && dateIdx && this.chan) {
+      ctx.save();
+      ctx.setLineDash([4, 3]);
+      ctx.font = '10px "JetBrains Mono", "Noto Sans SC", sans-serif';
+      for (const zs of this.chan.zhongshu_list || []) {
+        const i0 = dateIdx.get(String(zs.start_date || ''));
+        const i1 = dateIdx.get(String(zs.end_date || ''));
+        if (i0 === undefined || i1 === undefined) continue;
+        if (i1 < startIdx || i0 >= endIdx) continue;
+        const xa = getX(Math.max(i0, startIdx)) - stepX / 2;
+        const xb = getX(Math.min(i1, endIdx - 1)) + stepX / 2;
+        const ya = getY(zs.hi);
+        const yb = getY(zs.lo);
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.10)';
+        ctx.fillRect(xa, ya, xb - xa, yb - ya);
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.8)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(xa + 0.5, ya + 0.5, xb - xa, yb - ya);
+        if (xb - xa > 54) {
+          ctx.fillStyle = '#fbbf24';
+          ctx.textAlign = 'left';
+          ctx.fillText(`中枢 ${zs.lo.toFixed(2)}~${zs.hi.toFixed(2)}`, xa + 3, ya - 3);
+        }
+      }
+      ctx.restore();
+    }
 
     // 2. 绘制 K 线蜡烛图 (A股红涨 #F6465D, 绿跌 #0ECB81)
     for (let i = startIdx; i < endIdx; i++) {
@@ -735,6 +884,63 @@ class NativeFinancialChartInstance {
       ctx.fillText(`UPPER: ${formatPrice(bp?.upper)}`, 112, 17);
       ctx.fillStyle = '#38BDF8';
       ctx.fillText(`LOWER: ${formatPrice(bp?.lower)}`, 228, 17);
+    }
+
+    // 4.5 缠论笔 + 买卖点（金色折线 + 顶底分型 + 买卖点箭头）
+    if (chanActive && dateIdx && this.chan) {
+      const pts: { x: number; y: number; type: string }[] = [];
+      for (const bp of this.chan.bi_points || []) {
+        const i = dateIdx.get(String(bp[0] || ''));
+        if (i === undefined) continue;
+        pts.push({ x: getX(i), y: getY(Number(bp[1])), type: String(bp[2] || '') });
+      }
+      if (pts.length >= 2) {
+        ctx.save();
+        ctx.beginPath();
+        pts.forEach((pt, k) => (k === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.95)';
+        ctx.lineWidth = 1.6;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+        for (const pt of pts) {
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2);
+          ctx.fillStyle = pt.type === '顶' ? '#F6465D' : '#0ECB81';
+          ctx.fill();
+        }
+        ctx.restore();
+      }
+
+      const showChanLabels = this.visibleCount <= 120;
+      ctx.font = '10px "JetBrains Mono", "Noto Sans SC", sans-serif';
+      ctx.textAlign = 'center';
+      for (const sig of this.chan.signals || []) {
+        const i = dateIdx.get(String(sig.date || ''));
+        if (i === undefined || i < startIdx || i >= endIdx) continue;
+        const x = getX(i);
+        const y = getY(Number(sig.price));
+        const isBuy = /买|底/.test(`${sig.type}${sig.desc}`);
+        const color = sig.color || (isBuy ? '#10b981' : '#ef4444');
+        ctx.save();
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        if (isBuy) {
+          ctx.moveTo(x, y + 3);
+          ctx.lineTo(x - 5, y + 11);
+          ctx.lineTo(x + 5, y + 11);
+        } else {
+          ctx.moveTo(x, y - 3);
+          ctx.lineTo(x - 5, y - 11);
+          ctx.lineTo(x + 5, y - 11);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+        if (showChanLabels) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillText(String(sig.type).slice(0, 4), x, y + (isBuy ? 24 : -16));
+        }
+      }
     }
 
     // 5. 绘制最新价实时横线与右侧高亮价签
@@ -1038,6 +1244,8 @@ const PERIOD_OPTIONS: { id: ChartPeriod; label: string }[] = [
   { id: 'intraday', label: '分时' },
   { id: '5m', label: '5分' },
   { id: '15m', label: '15分' },
+  { id: '30m', label: '30分' },
+  { id: '60m', label: '60分' },
   { id: '1D', label: '日K' },
   { id: '1W', label: '周K' },
   { id: '1M', label: '月K' },
@@ -1067,6 +1275,9 @@ export const FinancialChart: React.FC = () => {
   const mainIndicator = useMarketStore((s) => s.mainIndicator);
   const subIndicator = useMarketStore((s) => s.subIndicator);
   const setPeriod = useMarketStore((s) => s.setPeriod);
+  // 缠论图层：笔/中枢/买卖点（数据来自 /api/quant/chan，与图表同周期K线）
+  const [chanData, setChanData] = useState<ChanAnalysis | null>(null);
+  const [showChan, setShowChan] = useState(true);
   const setMainIndicator = useMarketStore((s) => s.setMainIndicator);
   const setSubIndicator = useMarketStore((s) => s.setSubIndicator);
 
@@ -1105,11 +1316,16 @@ export const FinancialChart: React.FC = () => {
     const currentQuote = useMarketStore.getState().quotes[selectedSymbol];
     if (!currentQuote) return;
 
-    // 先使用确定性本地种子生成器立即渲染（零等待），同时向后端请求同步最新序列
+    // 优先读取真实缓存序列，同时向后端请求同步最新分时/K线
+    const cachedIntraday = useMarketStore.getState().intradayPointsMap[selectedSymbol];
     if (period === 'intraday') {
-      instance.setIntradayData(generateIntradayForSymbol(currentQuote), currentQuote.prevClose);
+      if (cachedIntraday && cachedIntraday.length > 0) {
+        instance.setIntradayData(cachedIntraday, currentQuote.prevClose || 10);
+      }
     } else {
-      instance.setKLineData(generateKLinesForSymbol(currentQuote, period, 120), currentQuote.prevClose);
+      if (currentQuote.price && currentQuote.prevClose) {
+        instance.setKLineData(generateKLinesForSymbol(currentQuote, period, 120), currentQuote.prevClose);
+      }
     }
 
     let cancelled = false;
@@ -1117,20 +1333,55 @@ export const FinancialChart: React.FC = () => {
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
         if (cancelled || !data || !chartInstanceRef.current) return;
+        const safePrev = data.prevClose || currentQuote.prevClose || 10;
         if (period === 'intraday' && Array.isArray(data.intraday)) {
-          chartInstanceRef.current.setIntradayData(data.intraday, data.prevClose);
+          useMarketStore.getState().setIntradayPoints(selectedSymbol, data.intraday);
+          chartInstanceRef.current.setIntradayData(data.intraday, safePrev);
         } else if (Array.isArray(data.klines)) {
-          chartInstanceRef.current.setKLineData(data.klines, data.prevClose);
+          chartInstanceRef.current.setKLineData(data.klines, safePrev);
         }
       })
-      .catch(() => {
-        // 保持本地确定性序列
+      .catch((e) => {
+        console.error('[FinancialChart] 获取K线/分时数据失败:', selectedSymbol, e);
       });
 
     return () => {
       cancelled = true;
     };
   }, [selectedSymbol, period, mainIndicator, subIndicator]);
+
+  // 2.5 拉取缠论结构（按当前周期：5分/15分/日/周/月）：分时不请求；随标的/周期切换刷新
+  useEffect(() => {
+    if (period === 'intraday') {
+      setChanData(null);
+      chartInstanceRef.current?.setChanData(null, showChan);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/quant/chan/${encodeURIComponent(selectedSymbol)}?period=${encodeURIComponent(period)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (cancelled) return;
+        if (data && data.status === 'ok' && data.chan) {
+          setChanData(data.chan as ChanAnalysis);
+        } else {
+          setChanData(null);
+        }
+      })
+      .catch((e) => {
+        console.error('[FinancialChart] 获取缠论结构数据失败:', selectedSymbol, e);
+        if (!cancelled) setChanData(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedSymbol, period]);
+
+  // 2.6 缠论数据/开关变化时下发给 Canvas 实例
+  useEffect(() => {
+    chartInstanceRef.current?.setChanData(chanData, showChan);
+  }, [chanData, showChan]);
 
   // 3. 绑定命令式高频 Tick 通道：收到 WebSocket 快照时直接调用 instance.updateData(tick)
   useEffect(() => {
@@ -1190,6 +1441,33 @@ export const FinancialChart: React.FC = () => {
                   );
                 })}
               </div>
+
+              <button
+                type="button"
+                data-testid="chan-layer-toggle"
+                data-chan-bi={chanData?.bi_points?.length ?? 0}
+                data-chan-zs={chanData?.zhongshu_list?.length ?? 0}
+                data-chan-sig={chanData?.signals?.length ?? 0}
+                data-chan-on={showChan ? '1' : '0'}
+                onClick={() => setShowChan((v) => !v)}
+                title={
+                  chanData
+                    ? `缠论图层：${chanData.bi_points?.length ?? 0} 笔 · ${chanData.zhongshu_list?.length ?? 0} 中枢 · ${chanData.signals?.length ?? 0} 买卖点（点击开关）`
+                    : '缠论数据加载中…'
+                }
+                className={`px-2 py-0.5 text-[11px] font-medium rounded border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  showChan && chanData
+                    ? 'bg-[#F59E0B]/20 text-[#F59E0B] border-[#F59E0B]/50'
+                    : 'bg-[#131722] text-[#787b86] hover:text-[#d1d4dc] border-[#2a2e39]'
+                } ${chanData ? '' : 'opacity-50'}`}
+              >
+                缠论
+                {chanData && (chanData.signals?.length ?? 0) > 0 && (
+                  <span className="ml-1 font-mono text-[10px] opacity-80">
+                    {chanData.signals.length}
+                  </span>
+                )}
+              </button>
 
               <div className="flex items-center gap-0.5 bg-[#131722] p-0.5 rounded border border-[#2a2e39]">
                 {SUB_INDICATORS.map((ind) => {

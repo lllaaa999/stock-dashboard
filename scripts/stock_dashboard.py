@@ -11,8 +11,6 @@
   python stock_dashboard.py screener [leader|fund|volume|lhb|all]  # 四策略选股
   python stock_dashboard.py cycle           # 情绪周期定位(92科比五阶段)
   python stock_dashboard.py chan 600664     # 缠论简化引擎(日线笔/中枢/背驰)
-  python stock_dashboard.py agents [代码]   # 多主体推演(大盘或个股)
-  python stock_dashboard.py sim [情景]      # 世界模拟v2(记忆+传染+情景注入)
 """
 import sys, os, json, re, ssl, time, threading, urllib.request, datetime as dt  # urllib.request 被 http() 使用
 
@@ -312,6 +310,84 @@ UT = '7eea3edcaed734bea9cbfc24409ed989'
 # limit_up_quality, _lu_num, _lu_time_score, _lu_seal_score, _lu_board_score
 _POOL_CACHE = {}
 
+def _pool_akshare(kind, ymd):
+    """涨停/炸板/跌停池的 AKShare 备用通道。
+
+    东财 push2ex 是这三类池子的唯一来源，一旦被封，情绪模块、连板梯队、
+    竞价雷达会全部失效。这里通过 AKShare 走另一套域名取同样数据。
+
+    字段映射（AKShare 中文列 -> 东财短字段），数值口径必须一致：
+      c=代码  n=名称  zdp=涨跌幅  p=最新价*100(东财用分)
+      lbc=连板数  fbt=首次封板时间(int)  fund=封板资金  hybk=所属行业
+      hs=换手率  ltsz=流通市值  amount=成交额  zbc=炸板次数
+    """
+    try:
+        import akshare as ak
+    except ImportError:
+        return []
+
+    fn_map = {
+        'ZT': lambda d: ak.stock_zt_pool_em(date=d),
+        'ZB': lambda d: ak.stock_zt_pool_zbgc_em(date=d),
+        'DT': lambda d: ak.stock_zt_pool_dtgc_em(date=d),
+    }
+    fn = fn_map.get(kind)
+    if fn is None:
+        return []
+
+    try:
+        df = fn(ymd)
+        if df is None or len(df) == 0:
+            return []
+    except Exception:
+        return []
+
+    def _i(v, default=0):
+        try:
+            return int(float(v))
+        except (TypeError, ValueError):
+            return default
+
+    def _f(v, default=0.0):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return default
+
+    pool = []
+    for _, r in df.iterrows():
+        code = str(r.get('代码') or '').strip().zfill(6)
+        if not code or code == '000000':
+            continue
+        # fbt 东财是 HHMMSS 整数；AKShare 给的是 '092500' 字符串
+        fbt_raw = r.get('首次封板时间')
+        fbt = _i(str(fbt_raw).replace(':', '')) if fbt_raw not in (None, '', '-') else 0
+        lbt_raw = r.get('最后封板时间')
+        lbt = _i(str(lbt_raw).replace(':', '')) if lbt_raw not in (None, '', '-') else 0
+        fund_col = '封板资金' if '封板资金' in df.columns else '封单资金'
+        pool.append({
+            'c': code,
+            'm': 1 if code.startswith(('6', '5', '9')) else 0,
+            'n': str(r.get('名称') or code),
+            'p': round(_f(r.get('最新价')) * 1000),     # 东财 p 单位是【厘】(1/1000元), AKShare 是元
+            'zdp': _f(r.get('涨跌幅')),
+            'amount': _f(r.get('成交额')),
+            'ltsz': _f(r.get('流通市值')),
+            'tshare': _f(r.get('总市值')),
+            'hs': _f(r.get('换手率')),
+            'lbc': max(1, _i(r.get('连板数'), 1)),
+            'fbt': fbt,
+            'lbt': lbt,
+            'fund': _f(r.get(fund_col)),
+            'zbc': _i(r.get('炸板次数')),
+            'hybk': str(r.get('所属行业') or ''),
+            'zttj': {},
+            '_src': 'akshare',
+        })
+    return pool
+
+
+
 def _pool(kind, ymd):
     today_ymd = dt.date.today().strftime('%Y%m%d')
     cache_key = (kind, ymd)
@@ -328,8 +404,14 @@ def _pool(kind, ymd):
         raw_resp = http(u, timeout=3.0, retries=1)
         j = json.loads(raw_resp)
         if not isinstance(j, dict) or not j.get('data'):
-            # ut token 失效时东财返回的是 rc!=0 / 无 data 字段的响应体
-            # 负缓存: 空结果也缓存一小段时间，避免情绪回溯(最多8日x3池)反复打上游
+            # ut token 失效时东财返回的是 rc!=0 / 无 data 字段的响应体。
+            # 注意: 这属于"东财侧异常"，不代表当天真的没有涨停股 ——
+            # 必须先尝试 AKShare 备用通道，否则 ut 失效会让整个情绪模块静默返回空。
+            _bk = _pool_akshare(kind, ymd)
+            if _bk:
+                _POOL_CACHE[cache_key] = (_bk, time.time())
+                return _bk
+            # 备用也没有：负缓存一份空结果，避免情绪回溯(最多8日x3池)反复打上游
             _POOL_CACHE[cache_key] = ([], time.time())
             return []
         d = j.get('data') or {}
@@ -342,6 +424,11 @@ def _pool(kind, ymd):
     except Exception:
         # 网络/解析异常不写负缓存 —— 否则会把"请求失败"伪装成"当天没有涨停池"，
         # 让上层误判为非交易日。失败就让下次重试。
+        # 东财 push2ex 不可用(被封/超时)：降级到 AKShare 备用通道
+        _bk = _pool_akshare(kind, ymd)
+        if _bk:
+            _POOL_CACHE[cache_key] = (_bk, time.time())
+            return _bk
         return []
 
 # ---------- 情绪指数打分 (迁移至 core.emotion，保持外观兼容) ----------
@@ -618,6 +705,73 @@ def archive_daily_snapshot(ymd, emotion_data, force=False):
         return False, f"快照归档失败: {e}"
 
 
+# ---------- 情绪视图模型拼装（自 emotion() 内嵌闭包提取，独立可单测） ----------
+def _slim_zt_stock(d):
+    """涨停原始行 -> 前端精简视图（金额单位: 亿）。"""
+    return dict(code=d.get('c', ''), name=d.get('n', ''), lbc=d.get('lbc', 1),
+                hybk=d.get('hybk', ''), fbt=d.get('fbt', ''), zbc=d.get('zbc', 0),
+                hs=round(d.get('hs', 0), 1), lbt=d.get('lbt', ''),
+                fund=round(d.get('fund', 0) / 1e8, 2),
+                ltsz=round(d.get('ltsz', 0) / 1e8, 1))
+
+
+def _strength_key(d):
+    """强弱排序: 连板数降序 > 封板时间升序 > 炸板升序 > 封单降序。"""
+    return (-d.get('lbc', 1), d.get('fbt', 999999), d.get('zbc', 0), -d.get('fund', 0))
+
+
+def _classify_strength(stocks):
+    """题材内强弱分级 -> (龙头, 前排, 后排, 中军候选)。
+
+    龙头: 连板最高者(同最高<=2只全取, 否则取1只); 前排: 连板>=2 或 10:30前封板且炸板<=1;
+    后排: 其余; 中军候选: 流通市值最大者。
+    """
+    if not stocks:
+        return [], [], [], None
+    sorted_s = sorted(stocks, key=_strength_key)
+    max_lb = max(s.get('lbc', 1) for s in sorted_s)
+    top_lb = [s for s in sorted_s if s.get('lbc', 1) == max_lb]
+    leaders = top_lb[:2] if len(top_lb) <= 2 else top_lb[:1]
+    leader_codes = {s.get('c') for s in leaders}
+    front = [s for s in sorted_s if s.get('c') not in leader_codes and
+             (s.get('lbc', 1) >= 2 or (s.get('fbt', 999999) <= 103000 and s.get('zbc', 0) <= 1))]
+    front_codes = {s.get('c') for s in front}
+    back = [s for s in sorted_s if s.get('c') not in leader_codes and s.get('c') not in front_codes]
+    zhongjun = max(sorted_s, key=lambda s: s.get('ltsz', 0)) if sorted_s else None
+    return leaders, front, back, zhongjun
+
+
+def _board_type_code(d):
+    """封板质量分类: 一字 / T字 / 换手 / 烂板。"""
+    zbc = d.get('zbc', 0)
+    fbt = d.get('fbt', 999999)
+    hs = d.get('hs', 0)
+    if zbc == 0 and fbt <= 92530:
+        return '一字'
+    elif zbc == 1:
+        return 'T字'
+    elif zbc >= 5 or hs >= 15:
+        return '烂板'
+    else:
+        return '换手'
+
+
+
+
+def _streak(code, start_idx, pools_set):
+    """从 start_idx 起往前数连续出现在涨停池的天数, 遇到断档(空集合)即停。
+
+    pools_set: [(date_str, {code_set}), ...] 从今日往前, **必须含空日占位**,
+    否则连续遍历会跨过断档把更早的交易日当作前一天, 导致连板数虚高。
+    """
+    n = 0
+    for _j in range(start_idx, len(pools_set)):
+        if code in pools_set[_j][1]:
+            n += 1
+        else:
+            break
+    return n
+
 def emotion(ymd=None):
     w('\n===== [4] 市场情绪(涨停池实测) =====')
     if not ymd:
@@ -643,15 +797,13 @@ def emotion(ymd=None):
         # 两段式回溯(dsh方案D): 先用 ZT 池单请求探测哪天有数, 命中后再补拉 ZB/DT
         # —— 最坏情形从 7日x3池=21次请求 降为 探测N次+命中日2次; 且与 backfill 的
         # "ZT池有数=该日为有效交易日"判定规则统一
-        def _probe(day):
-            return _pool('ZT', day)
         hit_day = ymd
-        zt = _probe(ymd)
+        zt = _pool('ZT', ymd)
         if not zt:  # 盘前/休市: 自动回溯最近有数据的交易日
             base = dt.datetime.strptime(ymd, '%Y%m%d').date()
             for i in range(1, 8):
                 prev = (base - dt.timedelta(days=i)).strftime('%Y%m%d')
-                zt = _probe(prev)
+                zt = _pool('ZT', prev)
                 if zt:
                     hit_day = prev
                     break
@@ -695,40 +847,13 @@ def emotion(ymd=None):
         for d in zt: themes[d.get('hybk', '?')] = themes.get(d.get('hybk', '?'), 0) + 1
         w('题材分布: ' + '  '.join(f'{k}{v}家' for k, v in sorted(themes.items(), key=lambda x: -x[1])[:8]))
         # === 题材内个股强弱分级（龙头/前排/后排）===
-        def _strength_key(d):
-            # 强弱排序: 连板数降序 > 封板时间升序 > 炸板升序 > 封单降序
-            return (-d.get('lbc', 1), d.get('fbt', 999999), d.get('zbc', 0), -d.get('fund', 0))
-        def _classify(stocks):
-            if not stocks:
-                return [], [], [], None
-            sorted_s = sorted(stocks, key=_strength_key)
-            max_lb = max(s.get('lbc', 1) for s in sorted_s)
-            # 龙头: 连板最高的1-2只（如果最高连板只有1只，取它；如果有多只同最高，取封板最早的2只）
-            top_lb = [s for s in sorted_s if s.get('lbc', 1) == max_lb]
-            leaders = top_lb[:2] if len(top_lb) <= 2 else top_lb[:1]
-            leader_codes = {s.get('c') for s in leaders}
-            # 前排: 连板>=2 或 上午10:30前封板且炸板<=1次
-            front = [s for s in sorted_s if s.get('c') not in leader_codes and
-                     (s.get('lbc', 1) >= 2 or (s.get('fbt', 999999) <= 103000 and s.get('zbc', 0) <= 1))]
-            front_codes = {s.get('c') for s in front}
-            # 后排: 其余
-            back = [s for s in sorted_s if s.get('c') not in leader_codes and s.get('c') not in front_codes]
-            # 中军候选: 涨停股中流通市值最大的
-            zhongjun = max(sorted_s, key=lambda s: s.get('ltsz', 0)) if sorted_s else None
-            return leaders, front, back, zhongjun
         # === 详细列表（供web展示）===
-        def _slim(d):
-            return dict(code=d.get('c', ''), name=d.get('n', ''), lbc=d.get('lbc', 1),
-                        hybk=d.get('hybk', ''), fbt=d.get('fbt', ''), zbc=d.get('zbc', 0),
-                        hs=round(d.get('hs', 0), 1), lbt=d.get('lbt', ''),
-                        fund=round(d.get('fund', 0) / 1e8, 2),
-                        ltsz=round(d.get('ltsz', 0) / 1e8, 1))
-        first_boards = [_slim(d) for d in zt if d.get('lbc', 1) == 1]
+        first_boards = [_slim_zt_stock(d) for d in zt if d.get('lbc', 1) == 1]
         # 连板梯队按板数分组
         ladder_grouped = {}
         for d in ladder:
             lb = d.get('lbc', 2)
-            ladder_grouped.setdefault(lb, []).append(_slim(d))
+            ladder_grouped.setdefault(lb, []).append(_slim_zt_stock(d))
         # 连板梯队断层结构诊断（吸纳 vibe-astock / 寻龙诀实战经验）
         ladder_analysis = analyze_ladder_faults(ladder_grouped, first_boards, max_lb)
         if ladder_analysis.get('has_fault'):
@@ -748,31 +873,19 @@ def emotion(ymd=None):
         themes_list = []
         for k, v in sorted(themes.items(), key=lambda x: -x[1]):
             t_stocks = _theme_stocks.get(k, [])
-            leaders, front, back, zhongjun = _classify(t_stocks)
+            leaders, front, back, zhongjun = _classify_strength(t_stocks)
             themes_list.append(dict(
                 name=k, count=v, top_stock=_theme_first.get(k, ''),
-                leaders=[_slim(s) for s in leaders],
-                front=[_slim(s) for s in front],
-                back=[_slim(s) for s in back],
-                zhongjun=_slim(zhongjun) if zhongjun else None
+                leaders=[_slim_zt_stock(s) for s in leaders],
+                front=[_slim_zt_stock(s) for s in front],
+                back=[_slim_zt_stock(s) for s in back],
+                zhongjun=_slim_zt_stock(zhongjun) if zhongjun else None
             ))
         # === 封板质量分类（一字/T字/换手/烂板）===
-        def _board_type(d):
-            zbc = d.get('zbc', 0)
-            fbt = d.get('fbt', 999999)
-            hs = d.get('hs', 0)
-            if zbc == 0 and fbt <= 92530:
-                return '一字'
-            elif zbc == 1:
-                return 'T字'
-            elif zbc >= 5 or hs >= 15:
-                return '烂板'
-            else:
-                return '换手'
         board_quality = {'一字': [], 'T字': [], '换手': [], '烂板': []}
         for d in zt:
-            bt = _board_type(d)
-            board_quality[bt].append(_slim(d))
+            bt = _board_type_code(d)
+            board_quality[bt].append(_slim_zt_stock(d))
         # === 炸板池数据 ===
         zha_ban = []
         for d in zb:
@@ -785,32 +898,26 @@ def emotion(ymd=None):
         promotion = {}
         try:
             _base = dt.datetime.strptime(ymd, '%Y%m%d').date()
-            # 获取最近8天涨停池（足够判断最高连板）
-            _pools = []  # [(date_str, {code_set}), ...] 从今日往前
+            # 获取最近8个自然日的涨停池（足够判断最高连板）。
+            # 关键: 断档日(周末/休市/接口无数据)必须保留为空集合占位, 不能跳过 ——
+            # 旧实现 `if _pool_data: append` 会把空日挤出列表, 让 _streak 的连续遍历
+            # 跨过断档继续累加(如 T-2 无数据时把 T-3 当作 T-2 的延续), 连板数虚高。
+            _pools = []  # [(date_str, [row...]), ...] 从今日往前, 含空日
             for _i in range(0, 8):
                 _day = (_base - dt.timedelta(days=_i)).strftime('%Y%m%d')
-                _pool_data = _pool('ZT', _day)
-                if _pool_data:
-                    _pools.append((_day, {d.get('c', '') for d in _pool_data}))
-            if len(_pools) >= 2:
-                _today_codes = _pools[0][1]
-                _yesterday_codes = _pools[1][1]
-                # 计算连续涨停天数：从某日往前数，直到不在涨停池
-                def _streak(code, start_idx):
-                    s = 0
-                    for _j in range(start_idx, len(_pools)):
-                        if code in _pools[_j][1]:
-                            s += 1
-                        else:
-                            break
-                    return s
-                # 昨日每只股票的真实连板数
-                _y_lbc = {c: _streak(c, 1) for c in _yesterday_codes}
-                # 今日每只股票的真实连板数
-                _t_lbc = {c: _streak(c, 0) for c in _today_codes}
-                # 今日涨停股名称映射
-                _t_names = {d.get('c', ''): d.get('n', d.get('c', '')) for d in zt}
-                _y_names = {d.get('c', ''): d.get('n', d.get('c', '')) for d in _pool('ZT', _pools[1][0]) or []}
+                _pools.append((_day, _pool('ZT', _day) or []))
+            # 至少要有今日+昨日的**实际数据**才谈得上晋级统计
+            if len([1 for _, _rows in _pools if _rows]) >= 2:
+                _pools_set = [(_day, {d.get('c', '') for d in _rows}) for _day, _rows in _pools]
+                _today_codes = _pools_set[0][1]
+                _yesterday_codes = _pools_set[1][1]
+
+                # 昨日每只股票的真实连板数 / 今日每只股票的真实连板数
+                _y_lbc = {c: _streak(c, 1, _pools_set) for c in _yesterday_codes}
+                _t_lbc = {c: _streak(c, 0, _pools_set) for c in _today_codes}
+                # 名称映射复用已拉到的行数据, 不再二次请求 _pool
+                _t_names = {d.get('c', ''): d.get('n', d.get('c', '')) for d in _pools[0][1]}
+                _y_names = {d.get('c', ''): d.get('n', d.get('c', '')) for d in _pools[1][1]}
                 # 动态计算到最高板+1
                 _max_lb = max(_t_lbc.values()) if _t_lbc else 1
                 for src in range(1, _max_lb + 1):
@@ -833,35 +940,33 @@ def emotion(ymd=None):
         # 归档守卫: 当日15:00前的数据是盘中快照(涨停数只增不减、跌停未定型), 写档会占死
         # 当日归档槽导致收盘真实数据被去重跳过(2026-08-25 实证毒化)。当日未收盘一律不入库。
         _now = dt.datetime.now()
+        result = dict(score=s, band=band, zt=n_zt, zb=n_zb, dt=n_dt, max_lb=max_lb, ymd=ymd,
+                      first_boards=first_boards, ladder_grouped=ladder_grouped,
+                      limit_down=limit_down, themes_list=themes_list, promotion=promotion,
+                      board_quality=board_quality, zha_ban=zha_ban, algo='v2',
+                      score_v1=round(s_v1, 2), effect=_effect_flat(eff), diverge=diverge,
+                      effect_available=eff.get('available'), ladder_analysis=ladder_analysis)
         if ymd == _now.strftime('%Y%m%d') and _now.hour < 15:
             w('(盘中快照不写档, 待15:00收盘后再跑一次归档)')
-            return dict(score=s, band=band, zt=n_zt, zb=n_zb, dt=n_dt, max_lb=max_lb, ymd=ymd,
-                         first_boards=first_boards, ladder_grouped=ladder_grouped,
-                         limit_down=limit_down, themes_list=themes_list, promotion=promotion,
-                         board_quality=board_quality, zha_ban=zha_ban, algo='v2',
-                         score_v1=round(s_v1, 2), effect=_effect_flat(eff), diverge=diverge,
-                         effect_available=eff.get('available'))
+            return result
         recs = []
         if os.path.exists(hist):
             recs = [json.loads(l) for l in open(hist, encoding='utf-8')]
+        # 同日只留一条：判断仍然保留（已归档的日期不因重跑而被改写），
+        # 但落盘改走 _hist_upsert 原子重写 —— 即便两进程同时穿过上面这个判断，也只会留下一条。
         if not any(r.get('date') == ymd for r in recs):
             # 交易日有效性门禁 v2: 日K存在(含今天) + 非"接口回吐" + 取数失败 fail-closed
             _ok, _why = _archive_eligible(ymd, recs, n_zt, n_zb, n_dt, max_lb)
             if not _ok:
                 w(f'({ymd} 归档门禁拒绝: {_why})')
             else:
-                with open(hist, 'a', encoding='utf-8') as fp:
-                    fp.write(json.dumps(dict(date=ymd, score=round(s, 2), band=band, zt=n_zt,
-                                             zb=n_zb, dt=n_dt, max_lb=max_lb, algo='v2',
-                                             score_v1=round(s_v1, 2), effect=_effect_flat(eff),
-                                             diverge=diverge), ensure_ascii=False) + '\n')
+                _new = dict(date=ymd, score=round(s, 2), band=band, zt=n_zt,
+                            zb=n_zb, dt=n_dt, max_lb=max_lb, algo='v2',
+                            score_v1=round(s_v1, 2), effect=_effect_flat(eff),
+                            diverge=diverge)
+                _hist_upsert(hist, _new)
                 w(f'(已存档 共{len(recs)+1}条)')
-        return dict(score=s, band=band, zt=n_zt, zb=n_zb, dt=n_dt, max_lb=max_lb, ymd=ymd,
-                     first_boards=first_boards, ladder_grouped=ladder_grouped,
-                     limit_down=limit_down, themes_list=themes_list, promotion=promotion,
-                     board_quality=board_quality, zha_ban=zha_ban, algo='v2',
-                     score_v1=round(s_v1, 2), effect=_effect_flat(eff), diverge=diverge,
-                     effect_available=eff.get('available'))
+        return result
     except Exception as e:
         # 修复 (2026-10-18): 原来只打印 str(e)，堆栈全丢。"must be real number,
         # not NoneType" 这类消息无法定位到具体行，排查成本极高（本次连踩三处）。
@@ -1442,6 +1547,27 @@ def _atomic_rewrite(fp, recs):
             f.write(json.dumps(r, ensure_ascii=False) + '\n')
     os.replace(tmp, fp)
 
+
+def _hist_upsert(fp, rec):
+    """按 date 幂等写入情绪存档（同日期覆盖 + 原子重写），不再裸追加。
+
+    为什么必须这样写：旧实现是「先 any(date) 判断、再 open('a') 追加」，
+    两个进程（web 服务 / CLI / 盘后流水线）同时判断「今天还没记录」就会各写一行。
+    20261022 已实际出现重复（stage_meta 一条 adjacent/conf2、一条 stay/conf3），
+    后果是 MA3/MA7 把那一天算两遍、cycle_position 的样本数虚高。
+    规则同「打脸账本必须 upsert」：任何按日累计的账本都不能靠追加维护。
+    """
+    recs = []
+    if os.path.exists(fp):
+        with open(fp, encoding='utf-8') as f:
+            recs = [json.loads(l) for l in f if l.strip()]
+    # 同日期只留一条（后写覆盖先写），顺带把历史上已存在的重复行清掉
+    recs = [r for r in recs if r.get('date') != rec.get('date')]
+    recs.append(rec)
+    recs.sort(key=lambda r: str(r.get('date', '')))
+    _atomic_rewrite(fp, recs)
+    return recs
+
 def cycle_position():
     fp = os.path.join(DATA_DIR, 'sentiment_history.jsonl')
     recs = []
@@ -1574,703 +1700,6 @@ def lhb_profile(code):
         out.append('  >> 知名游资主导买入, 情绪票属性强')
     return '\n'.join(out)
 
-_AGENT_W = [('国家队', 1.2), ('机构', 0.9), ('游资', 1.0), ('团伙(控盘)', 0.6), ('散户', 0.7), ('北向', 0.8), ('量化', 0.7), ('产业资本', 0.5), ('大散户', 0.9)]
-
-def agent_sim(code=None):
-    w('')
-    if not code:
-        w('===== [多主体推演·五类参与者博弈(大盘)] =====')
-        try:
-            stage = cycle_position()
-        except Exception:
-            stage = None
-        recs = []
-        fp = os.path.join(DATA_DIR, 'sentiment_history.jsonl')
-        if os.path.exists(fp):
-            recs = [json.loads(l) for l in open(fp, encoding='utf-8') if l.strip()]
-        if not recs:
-            w('(无情绪存档, 无法推演)')
-            return
-        last = recs[-1]
-        sc = float(last.get('score', 50)); zt = float(last.get('zt', 0))
-        n_dt = float(last.get('dt', 0)); lb = float(last.get('max_lb', 0))
-        zbrate = float(last.get('zb', 0)) / max(zt + float(last.get('zb', 1)), 1) * 100
-        mgd = 0.0
-        try:
-            u = ('https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_RZRQ_LSHJ'
-                 '&columns=DIM_DATE,RZRQYE&sortColumns=DIM_DATE&sortTypes=-1&pageSize=2&pageNumber=1')
-            rows = json.loads(http(u))['result']['data']
-            mgd = (float(rows[0]['RZRQYE']) - float(rows[1]['RZRQYE'])) / 1e8
-        except Exception:
-            pass
-        def cl(v, lo, hi):
-            return max(lo, min(hi, v))
-        ag = {}
-        ag['散户'] = cl((sc - 45) * 3, -70, 85) * (0.5 if stage == '退潮' else 1) + (-20 if stage == '冰点' else 0)
-        ag['游资'] = lb * 14 - zbrate * 1.2 + {'主升': 35, '亢奋': 10, '修复/震荡': 5, '退潮': -35, '冰点': -50}.get(stage or '', 0)
-        ag['机构'] = cl((20 if mgd > 0 else -15 if mgd < 0 else 0) + (sc - 50) * 0.6, -40, 40)
-        # 国家队逆周期逻辑: 恐慌(跌停>=10或情绪<35)托底买入(+40); 情绪过热(sc>68分位)逆周期降温平抑波动(-20); 两融骤降破百亿护盘(+20)
-        ag['国家队'] = 40 if (n_dt >= 10 or sc < 35) else (-20 if sc > 68 else 0) + (20 if mgd < -100 else 0)
-        w('  参与者    倾向(-100空~+100多)  依据')
-        basis = {
-            '散户': '情绪%d分%s' % (sc, '/退潮跟风减半' if stage == '退潮' else ''),
-            '游资': '高度%.0f板 炸板率%.0f%% 阶段[%s]' % (lb, zbrate, stage),
-            '机构': '两融环比%+.0f亿 情绪中性偏离%+.0f' % (mgd, sc - 50),
-            '团伙(控盘)': '题材活跃度(涨停%.0f家)与锁仓环境' % zt,
-            '国家队': '跌停%.0f家/系统性信号/杠杆流失%s' % (n_dt, '%.0f亿' % mgd if mgd < -100 else '不明显')}
-        net = 0.0
-        for name, ww in [x for x in _AGENT_W if x[0] in ag]:
-            v = ag[name]
-            net += v * ww
-            arrow = '看多' if v > 15 else ('看空' if v < -15 else '观望')
-            w('  %-8s %+7.0f [%s]  %s' % (name, v, arrow, basis[name]))
-        w('  ---- 加权合力: %+.0f ----' % net)
-        path = ('修复反弹概率偏高: 关注率先走出4板的题材种子' if net > 30 else
-                '恐慌加速风险偏高: 严控仓位等出清信号' if net < -40 else
-                '惯性退潮·缩量磨底: 多看少动, 等待右侧确认')
-        w('  >> 推演路径: ' + path)
-        w('  >> 注: 规则引擎基于当日实数据的启发式打分, 是推演不是预测')
-    else:
-        full = ('sh' + code) if code.startswith(('6', '5', '9')) else ('sz' + code)
-        quotes = tx_realtime([full])
-        if not quotes:
-            w('[行情] 未能获取到股票代码 %s 的行情数据，请核对代码' % code)
-            return
-        q = quotes[0]
-        pct = q.get('pct', 0.0)
-        w('[行情] %s %+.2f%% 额%s' % (q.get('name', code), pct, q.get('amount', '-')))
-        prof = lhb_profile(code)
-        w(prof if isinstance(prof, str) else '')
-        ymd = dt.date.today().strftime('%Y%m%d')
-        zt = _pool('ZT', ymd)
-        me = next((x for x in zt if x.get('c') == code), None)
-        seal = ''
-        if me:
-            rt = _num(me.get('fund')) / max(_num(me.get('ltsz')), 1) * 100
-            seal = '涨停在榜: 封单%.1f亿(占流通%.1f%%) %d板 炸板%d次' % (
-                _num(me.get('fund')) / 1e8, rt, me.get('lbc', 1), me.get('zbc', 0))
-            w('[涨停] ' + seal)
-        ag = {}
-        ag['散户'] = 60 if pct > 7 else (30 if pct > 2 else -30 if pct < -4 else 0)
-        ag['游资'] = (35 if me else 0) + (15 if '知名游资主导买入' in str(prof) else -15 if isinstance(prof, str) and '营业部通道' in prof else 0) + (-20 if pct < -5 else 0)
-        ag['机构'] = 30 if '中线资金介入' in str(prof) else (-30 if '筹码向短线转移' in str(prof) else 0)
-        ag['团伙(控盘)'] = 40 if (me and rt >= 1.5) else (-20 if me and me.get('zbc', 0) >= 3 else 0)
-        ag['国家队'] = 0
-        ag, _ = _sim_pipeline(ag, use_memory=False)   # 个股: 无记忆无情景, 仅传染; 势力子集自动适配
-        net, net_pct = _weighted_net(ag)              # 统一加权口径(原裸 sum 已废)
-        for name, ww in [x for x in _AGENT_W if x[0] in ag]:
-            v = ag[name]
-            arrow = '买入/拉抬' if v > 25 else ('做多' if v > 10 else ('观望' if v > -10 else '卖出/出货'))
-            act = _get_agent_action(name, v)
-            w('  %-8s %+4.0f分 [%s] 动作: %s' % (name, v, arrow, act))
-        w('  ---- 加权合力: %+.0f ----' % net)
-        w('  ---- 加权合力: %+.0f (均值%+.1f/±100) ----' % (net, net_pct))
-        # 阈值换算自旧裸sum口径(>40,<-20)/权重和3.2 → +12.5/-6.25, 保持判定语义不变
-        verdict = ('多头合力: 情绪票接力格局, 注意龙头断板信号' if net_pct >= 12.5 else
-                   '空头压力: 谨防高位派发' if net_pct <= -6.25 else
-                   '多空均衡: 区间对待')
-        w('  >> 推演: ' + verdict)
-
-
-# ---------- 12. 世界模拟v2(MiroFish三机制: 势力记忆/交互传染/情景注入) ----------
-_AG_ST = os.path.join(DATA_DIR, 'agents_state.json')
-_SCN = {
-    '外盘暴跌': {'散户': -50, '游资': -35, '机构': -25, '团伙(控盘)': -10, '国家队': 45, '量化': -30, '北向': -45, '产业资本': -5, '大散户': -35},
-    '外盘大涨': {'散户': 40, '游资': 30, '机构': 25, '团伙(控盘)': 10, '国家队': -10, '量化': 25, '北向': 35, '产业资本': 5, '大散户': 45},
-    '重磅利好': {'散户': 45, '游资': 35, '机构': 20, '团伙(控盘)': 15, '国家队': 0, '量化': 20, '北向': 25, '产业资本': 10, '大散户': 55},
-    '利空突袭': {'散户': -45, '游资': -30, '机构': -20, '团伙(控盘)': -15, '国家队': 30, '量化': -25, '北向': -30, '产业资本': -10, '大散户': -40},
-    '流动性收紧': {'散户': -25, '游资': -30, '机构': -35, '团伙(控盘)': -20, '国家队': 0, '量化': -40, '北向': -35, '产业资本': -15, '大散户': -45},
-}
-
-def parse_event_scenario(text):
-    """MiroFish 级事件语义解析引擎：将任意自然语言突发事件映射为九方势力冲击矩阵"""
-    if not text:
-        return {'domain': '日常基准', 'polarity': 0, 'desc': '无外生事件冲击，以真实市场博弈为基准'}, {}
-    text = text.strip()
-    if text in _SCN:
-        desc_map = {
-            '外盘暴跌': ('外盘冲击', -1, '海外重挫波及A股开盘情绪，北向撤退'),
-            '外盘大涨': ('外盘提振', 1, '全球风险偏好回暖，北向与权重共振'),
-            '重磅利好': ('全面利好', 1, '重磅支持政策出台，激活全场资金风险偏好'),
-            '利空突袭': ('黑天鹅突袭', -1, '突发负面冲击，各路资金避险防御'),
-            '流动性收紧': ('流动性收缩', -1, '宏观或场内流动性承压，压缩估值空间'),
-        }
-        meta = desc_map.get(text, ('预设情景', 0, '预设宏观冲击'))
-        return {'domain': meta[0], 'polarity': meta[1], 'desc': meta[2]}, _SCN[text]
-
-    impact = {'散户': 0, '游资': 0, '机构': 0, '团伙(控盘)': 0, '国家队': 0, '量化': 0, '北向': 0, '产业资本': 0, '大散户': 0}
-    
-    # 1. 货币与宏观流动性
-    if any(k in text for k in ['降准', '降息', '放水', '流动性宽松', '下调准备金', '印花税', '减税', '逆回购加量']):
-        impact.update({'机构': 35, '游资': 30, '散户': 45, '大散户': 50, '量化': 25, '北向': 30, '国家队': -10, '产业资本': 15})
-        meta = {'domain': '宏观货币宽松', 'polarity': 1, 'desc': '无风险利率下行与资金面宽松，全面抬升市场估值中枢与交易意愿'}
-    elif any(k in text for k in ['加息', '收紧', '去杠杆', '通胀高企', '紧缩', '提高准备金']):
-        impact.update({'机构': -35, '游资': -30, '散户': -30, '大散户': -40, '量化': -35, '北向': -40, '国家队': 15, '产业资本': -15})
-        meta = {'domain': '宏观流动性收紧', 'polarity': -1, 'desc': '流动性预期边际转紧，压制高估值品种与杠杆投机盘'}
-        
-    # 2. 外盘与地缘冲击
-    elif any(k in text for k in ['美股暴跌', '美股大跌', '外盘暴跌', '外盘重挫', '关税', '制裁', '地缘冲突', '战争', '封锁', '出口限制']):
-        impact.update({'北向': -45, '散户': -40, '游资': -35, '机构': -25, '量化': -30, '国家队': 50, '大散户': -35, '产业资本': -10})
-        meta = {'domain': '外生与地缘风险', 'polarity': -1, 'desc': '全球避险情绪爆发引发外资流出，国家队承担逆周期托底职责'}
-    elif any(k in text for k in ['美股大涨', '外盘大涨', '纳指新高', '中概大涨', '外盘反弹']):
-        impact.update({'北向': 40, '机构': 25, '游资': 30, '散户': 35, '量化': 25, '国家队': -15, '大散户': 45, '产业资本': 10})
-        meta = {'domain': '外盘向好传导', 'polarity': 1, 'desc': '海外市场强势提振风险偏好，高贝塔品种与核心资产受益'}
-
-    # 3. 科技创新与新质产业题材利好
-    elif any(k in text for k in ['AI', '人工智能', '芯片', '半导体', '算力', '创新药', '低空经济', '商业航天', '固态电池', '重磅突破', '新质生产力', '科技支持', '重大合同', '中标']):
-        impact.update({'游资': 50, '大散户': 45, '量化': 35, '团伙(控盘)': 30, '散户': 35, '机构': 20, '北向': 15, '国家队': 0, '产业资本': 15})
-        meta = {'domain': '产业科技利好', 'polarity': 1, 'desc': '主线科技题材催化，游资与量化共振主攻首板与前排，散户接力跟进'}
-
-    # 4. 监管降温与核查特停
-    elif any(k in text for k in ['特停', '核查', '问询', '立案', '严打', '操纵', '降温', '限制高频', '异常交易', '违规减持']):
-        impact.update({'游资': -55, '团伙(控盘)': -50, '量化': -35, '大散户': -40, '散户': -25, '机构': -10, '国家队': 20, '北向': -15})
-        meta = {'domain': '监管降温与合规风控', 'polarity': -1, 'desc': '接力情绪骤降，高位妖股断板退潮，资金被迫防御或切换至低位中军'}
-
-    # 5. 业绩雷与黑天鹅
-    elif any(k in text for k in ['暴雷', '亏损', '造假', '暴跌', '退市', '违规被查', '扣押', '留置', '债务危机']):
-        impact.update({'散户': -50, '大散户': -45, '机构': -35, '游资': -25, '量化': -25, '团伙(控盘)': -20, '国家队': 30, '北向': -30})
-        meta = {'domain': '黑天鹅突袭', 'polarity': -1, 'desc': '信任崩塌引发非理性出清与踩踏，资金转向防御类避险品种'}
-
-    # 6. 通用情感自然语言识别
-    else:
-        pos_words = ['利好', '上涨', '大涨', '增长', '突破', '爆发', '超预期', '买入', '增持', '繁荣', '合作', '复苏', '首发', '提升', '新高']
-        neg_words = ['利空', '下跌', '大跌', '下滑', '爆雷', '恶化', '打压', '封杀', '警惕', '风险', '亏损', '受阻', '制约', '衰退']
-        pos_cnt = sum(1 for w in pos_words if w in text)
-        neg_cnt = sum(1 for w in neg_words if w in text)
-        
-        if pos_cnt > neg_cnt:
-            scale = min(1.6, 0.8 + pos_cnt * 0.25)
-            impact.update({'游资': int(35 * scale), '散户': int(30 * scale), '大散户': int(40 * scale), '机构': int(20 * scale), '量化': int(25 * scale), '北向': int(20 * scale), '产业资本': int(10 * scale)})
-            meta = {'domain': '正面催化事件', 'polarity': 1, 'desc': f'识别出{pos_cnt}项积极要素，多头势力顺势做多并带动市场风险偏好'}
-        elif neg_cnt > pos_cnt:
-            scale = min(1.6, 0.8 + neg_cnt * 0.25)
-            impact.update({'散户': int(-35 * scale), '游资': int(-30 * scale), '大散户': int(-35 * scale), '机构': int(-20 * scale), '量化': int(-25 * scale), '北向': int(-25 * scale), '国家队': int(30 * scale)})
-            meta = {'domain': '负面风险事件', 'polarity': -1, 'desc': f'识别出{neg_cnt}项负面扰动，空头预期主导，需防范冲高回落或惯性下探'}
-        else:
-            impact.update({'散户': -10, '游资': 15, '大散户': 10, '机构': -10, '量化': 20, '国家队': 0})
-            meta = {'domain': '结构分歧事件', 'polarity': 0, 'desc': '多空信号交织，市场缺乏强共识，各势力转入日内分歧轮动'}
-
-    return meta, impact
-
-def _get_agent_action(name, val):
-    if val >= 30:
-        actions = {
-            '国家队': '降温平抑：对过热标的适度减持或引导中枢平衡',
-            '机构': '积极进攻：增配大盘价值、高股息红利与行业成长龙头',
-            '游资': '极限进攻：开盘猛顶核心题材一字板，全力打造连板标杆',
-            '团伙(控盘)': '合力锁仓：强力控盘封板，借市场势头大幅拉升溢价',
-            '散户': '羊群跟风：亢奋追涨，高频挂涨停价抢入最热标的',
-            '北向': '大举买入：大幅净买入核心资产，带动权重与指数冲关',
-            '量化': '高频动量：触发追涨打板模型，日内满仓加杠杆做T助推',
-            '产业资本': '溢价接盘：大宗交易溢价成交，发布增持或回购计划',
-            '大散户': '猛推龙头：大额融资加仓辨识度龙头，锁死流动性',
-        }
-    elif val >= 10:
-        actions = {
-            '国家队': '常规观察：无极端异动，维持常规流动性支持',
-            '机构': '温和调仓：低吸低估值防守品种，试探性建仓结构机会',
-            '游资': '首板挖掘：围绕主线板块寻找首板与1进2低吸套利',
-            '团伙(控盘)': '盘中做T：维护分时均线平稳，小幅收集低位浮筹',
-            '散户': '试探买入：逐步增加仓位，偏好低价股与热门概念',
-            '北向': '顺势流入：小幅净流入，偏向消费与科技蓝筹',
-            '量化': '正常做T：维持网格交易与动量Alpha策略',
-            '产业资本': '平稳持股：大宗交易平价成交，维持经营性定力',
-            '大散户': '跟随做多：逢低建仓趋势中军，不盲目打板',
-        }
-    elif val <= -30:
-        actions = {
-            '国家队': '逆周期强力护盘：大手笔买入宽基ETF、四大行与中字头托底',
-            '机构': '无差别防御：大幅减持高贝塔与周期股，回笼现金避险',
-            '游资': '无情核按钮：开盘一字跌停砸盘抢跑，毫不犹豫断臂止损',
-            '团伙(控盘)': '砸盘出逃：放弃护盘，利用反弹高抛甩卖出清库存',
-            '散户': '恐慌踩踏：竞价割肉挂跌停，绝望离场并相互踩踏',
-            '北向': '加速撤退：大幅单边净流出，抛售白马核心资产',
-            '量化': '抽离流动性：触发强制风控止损线，多头策略集体平仓',
-            '产业资本': '折价甩卖：急需流动性，大宗交易大比例折价出逃',
-            '大散户': '杠杆爆仓止损：被动平仓与平仓甩卖，引发流动性危机',
-        }
-    elif val <= -10:
-        actions = {
-            '国家队': '被动防御：在重要均线与整数关口挂单拦截急跌',
-            '机构': '减仓观望：适度降低权益仓位，增加现金头寸防守',
-            '游资': '防守反包：放弃连板高标接力，退守超跌反弹做套利',
-            '团伙(控盘)': '边拉边撤：制造虚假拉升诱多，伺机分批派发筹码',
-            '散户': '套牢死扛：不愿止损，被迫“短线变长线”持股待涨',
-            '北向': '谨慎观望：外资呈小幅净流出态势，规避风险板块',
-            '量化': '收紧敞口：降低多头暴露，加大日内对冲与融券做空',
-            '产业资本': '偶有折价：大宗交易小幅折价，减持意愿略有抬头',
-            '大散户': '分批减仓：主动平掉融资杠杆，保留现金实力',
-        }
-    else:
-        actions = {
-            '国家队': '按兵不动：多空平衡，无需额外行政与资金干预',
-            '机构': '持仓观望：按兵不动等待明确的宏观数据或财报指引',
-            '游资': '混沌试盘：轻仓打野，试探盘面阻力，不盲目发动总攻',
-            '团伙(控盘)': '窄幅震荡：维持当前市值区间，等待市场合力契机',
-            '散户': '分歧犹豫：买卖意愿不强，成交清淡，多持币观望',
-            '北向': '双向对冲：日内波动较小，净流入流出基本相抵',
-            '量化': '高频套利：依赖盘中微小波动获取超额收益，不押单边',
-            '产业资本': '正常运营：无明显异动与资本运作，静观其变',
-            '大散户': '观望为主：不轻易出手，等待右侧放量确定性信号',
-        }
-    return actions.get(name, '按兵不动观望')
-
-_CONT = {'散户': [('游资', 0.28)],
-         '游资': [('团伙(控盘)', 0.18), ('国家队', -0.12), ('量化', 0.10)],
-         '机构': [('国家队', 0.15), ('北向', 0.10)],
-         '团伙(控盘)': [('游资', 0.15), ('机构', 0.10), ('量化', 0.08)],
-         '国家队': [],
-         '量化': [('游资', 0.12), ('机构', 0.06)],
-         '北向': [('国家队', 0.15)],
-         '产业资本': [],
-         '大散户': [('游资', 0.22), ('散户', 0.10)]}
-
-def _mem_load():
-    try:
-        rec = json.load(open(_AG_ST, encoding='utf-8'))
-        rec.setdefault('schema_version', 1)   # v1 兼容: 无版本号视为1
-        return rec
-    except Exception:
-        return {}
-
-def _mem_save(rec):
-    json.dump(rec, open(_AG_ST, 'w', encoding='utf-8'), ensure_ascii=False, indent=1)
-
-def _sim_pipeline(ag, scenario=None, use_memory=False, cur_date='', verbose=False,
-                  impact_override=None, impact_note=''):
-    """统一推演管道(dsh方案C): ①势力记忆锚定(use_memory, 惯性0.3) ②情景注入 ③3轮传染(阻尼0.6)。
-    势力子集自动适配(_CONT 只作用于存在的势力)。返回 (ag, 轮次快照行列表)。"""
-    cl = lambda v, lo, hi: max(lo, min(hi, v))
-    if use_memory:
-        mem = _mem_load()
-        prev = {} if mem.get('date') == cur_date else (mem.get('stances') or {})
-        if prev:
-            if verbose:
-                w('【记忆】昨日立场 -> 今日初始(惯性0.3):')
-            for k in ag:
-                pv = float(prev.get(k, 0))
-                ag[k] = ag[k] * 0.7 + pv * 0.3
-                if verbose:
-                    w('  %-8s %+5.0f -> %+5.0f' % (k, pv, ag[k]))
-    if scenario or impact_override:
-        if impact_override:
-            # LLM(或外部)给出的九方冲击矩阵: 只覆盖"判断"这一层, 后面的传染/加权仍走本引擎
-            meta = {'domain': impact_note or 'LLM 消息面推演',
-                    'desc': '外部冲击矩阵（LLM 依据当日消息面事件表给出），数值聚合仍由本引擎计算'}
-            impact = {}
-            for _k, _v in (impact_override or {}).items():
-                try:
-                    impact[str(_k)] = float(_v)
-                except (TypeError, ValueError):
-                    continue      # 非数值项(如 theme_priority 列表)不进冲击矩阵
-        else:
-            meta, impact = parse_event_scenario(scenario)
-        if verbose:
-            if scenario:
-                w('【上帝视角·事件注入】: %s' % scenario)
-            if impact_override:
-                w('【事件注入·LLM 冲击矩阵】%s' % ' '.join('%s%+.0f' % (k, v) for k, v in impact.items()))
-                _it = impact_override.get('theme_priority') if isinstance(impact_override, dict) else None
-                if _it:
-                    w('【LLM 板块优先级】%s' % ' '.join('%s%s' % (
-                        '+' if x.get('polarity', 0) > 0 else ('-' if x.get('polarity', 0) < 0 else '·'),
-                        x.get('sector', '')) for x in _it[:6]))
-            w('【事件研判】领域: %s | 影响逻辑: %s' % (meta['domain'], meta['desc']))
-        ag = {k: cl(v + impact.get(k, 0), -100, 100) for k, v in ag.items()}
-    names = list(ag)
-    lines = []
-    for rnd in range(1, 4):
-        nxt = dict(ag)
-        for k in names:
-            d = sum(wt * ag[kj] for kj, wt in _CONT.get(k, []) if kj in ag)
-            nxt[k] = cl(ag[k] + 0.6 * d, -100, 100)
-        ag = nxt
-        line = '【传染R%d】%s' % (rnd, ' '.join('%s%+.0f' % (k[:2], ag[k]) for k in names))
-        lines.append(line)
-        if verbose:
-            w(line)
-    return ag, lines
-
-def _weighted_net(ag):
-    """统一口径(dsh方案C核心): 任意势力子集一律按 _AGENT_W 同名权重加权。
-    返回 (加权净额, 加权均值): 均值 = 净额/权重和, 天然落在 ±100 刻度(与立场同单位),
-    可跨 scope 比较——修掉个股裸 sum 未加权的口径分裂。注意均值不再乘100。"""
-    net = sum(ag[n] * ww for n, ww in _AGENT_W if n in ag)
-    wsum = sum(ww for n, ww in _AGENT_W if n in ag)
-    return net, (net / wsum if wsum else 0.0)
-
-# ---------- 事件映射标的、竞价分叉对策与历史时光机对账 ----------
-_HISTORICAL_BENCHMARKS = [
-    {
-        'key': '2024-09-24',
-        'title': '2024-09-24 国新办金融三部委王炸组合拳',
-        'scenario': '国新办重磅发布会：降准50BP释放1万亿、降息20BP、创设首期5000亿互换便利与3000亿股票回购增持再贷款',
-        'real_market': '三大指数历史级爆发，上证单日大涨+4.15%，创业板狂飙+5.54%，全市场超5100股普涨，成交量放大至9700亿，随后引爆史诗级牛市行情！',
-        'force_review': '国家队与机构联手大金融中军破阵，游资与量化开盘全线顶格抢筹券商金融科技，散户极速空翻多狂欢，北向单日暴买百亿。'
-    },
-    {
-        'key': '2024-10-08',
-        'title': '2024-10-08 节后天量开盘3.45万亿巨震',
-        'scenario': '国庆假期开户暴增，节后首日全市场高开近千股竞价涨停，成交额破纪录达3.45万亿元',
-        'real_market': '上证跳空高开+10%后巨震收涨+4.59%，单日巨震3.45万亿创历史纪录，走出巨量长假阴线，次日深度大洗盘，多空分化达到顶峰。',
-        'force_review': '散户蜂拥冲锋满仓入场，机构与大散户趁高位天量逢高减持派发，量化日内多空激烈对冲，资金承接面临严峻换手考验。'
-    },
-    {
-        'key': '2024-11-08',
-        'title': '2024-11-08 10万亿化债与地方隐性债务置换',
-        'scenario': '全国人大常委会批准增加6万亿元地方政府债务限额置换存量隐性债务，合计化债规模达10万亿元',
-        'real_market': '此前预期充分发酵，政策靴子落地后指数呈现高位蓄势与良性震荡，资金有序自大盘权重向低位AMC化债与破净红利扩散。',
-        'force_review': '机构重估地方资产负债表与银行资产质量，游资活跃于地方AMC概念首板套利，大盘进入健康结构性轮动。'
-    },
-    {
-        'key': '2024-01-22',
-        'title': '2024-01-22 雪球敲入冰点与国家队救市',
-        'scenario': '中证500/1000雪球衍生品大面积敲入，小盘微盘流动性枯竭遭遇踩踏，国家队动用大额资金扫货宽基ETF托底',
-        'real_market': '市场极度恐慌冰点，千股跌停，但国家队随后以数百亿资金买入沪深300及中证500ETF，彻底扭转流动性枯竭，构筑大双底。',
-        'force_review': '散户与大散户恐慌割肉踩踏，量化DMA被动减仓，国家队逆周期强力托底扫货，成功阻断系统性金融风险。'
-    },
-    {
-        'key': '2023-08-27',
-        'title': '2023-08-27 证券印花税减半征收史诗级利好',
-        'scenario': '财政部、税务总局宣布证券交易印花税减半征收，证监会统筹一二级市场平衡，阶段性收紧IPO并规范减持',
-        'real_market': '8月28日三大指数大幅高开逾+5%，券商近50股竞价涨停，随后因存量博弈抛压沉重，一路震荡走低收长假阴线。',
-        'force_review': '游资与散户竞价疯抢一字板，但机构与大散户借超预期高开大举砸盘兑现，体现了弱市存量博弈中“利好出尽先卖为敬”的真实博弈。'
-    }
-]
-
-_EVENT_THEMES = [
-    {
-        'keywords': ['降准', '降息', '流动性', '货币', '放水', '准备金', '印花税', '减税', '逆回购', '互换便利', '再贷款', '金融三部委', '大金融'],
-        'theme': '大金融与高贝塔弹性核心',
-        'sectors': ['证券', '金融科技', '多元金融', '房地产'],
-        'stocks': [
-            {'code': '600030', 'name': '中信证券', 'role': '中军总舵手', 'tag': '券商一哥·流动性最直接受益'},
-            {'code': '300059', 'name': '东方财富', 'role': '弹性急先锋', 'tag': '创业板零售券商龙头·交投放大弹性王'},
-            {'code': '300033', 'name': '同花顺', 'role': '金融科技先锋', 'tag': 'AI炒股软件·交投活跃催化业绩'},
-            {'code': '601377', 'name': '中原证券', 'role': '低位首板标杆', 'tag': '中小券商高贝塔连板先锋'}
-        ]
-    },
-    {
-        'keywords': ['AI', '人工智能', '芯片', '半导体', '算力', 'CPO', '光模块', '服务器', '昇腾', '模型', 'PCB'],
-        'theme': '新一代人工智能与自主算力底座',
-        'sectors': ['CPO光模块', '算力芯片', 'AI服务器', 'PCB覆铜板'],
-        'stocks': [
-            {'code': '300308', 'name': '中际旭创', 'role': '全球总龙头', 'tag': '800G/1.6T高速光模块领航者'},
-            {'code': '300502', 'name': '新易盛', 'role': '弹性先锋', 'tag': '光通信模块高弹性标的'},
-            {'code': '601138', 'name': '工业富联', 'role': '千亿中军', 'tag': 'AI高算力服务器与高速交换机中军'},
-            {'code': '688256', 'name': '寒武纪', 'role': '自主算力', 'tag': '国产AI训练推理芯片核心标杆'}
-        ]
-    },
-    {
-        'keywords': ['低空', '飞行汽车', 'eVTOL', '无人机', '航天', '卫星', '商业航天'],
-        'theme': '低空经济与商业航天新质生产力',
-        'sectors': ['低空经济', '商业航天', '卫星互联网', '通航运营'],
-        'stocks': [
-            {'code': '000099', 'name': '中信海直', 'role': '运营核心', 'tag': '国内通航飞行运营绝对龙头'},
-            {'code': '002085', 'name': '万丰奥威', 'role': '整机先锋', 'tag': 'eVTOL飞行器研发与整机制造领头羊'},
-            {'code': '600118', 'name': '中国卫星', 'role': '航天中军', 'tag': '卫星制造国家队·商业航天核心中军'}
-        ]
-    },
-    {
-        'keywords': ['固态电池', '锂电', '电池', '新能源', '储能', '光伏'],
-        'theme': '下一代固态电池与清洁能源革新',
-        'sectors': ['固态电池', '锂电池材料', '光伏设备', '大储能'],
-        'stocks': [
-            {'code': '300750', 'name': '宁德时代', 'role': '全球霸主', 'tag': '动力电池绝对王者·技术创新中军'},
-            {'code': '002460', 'name': '赣锋锂业', 'role': '资源与固态', 'tag': '固态电池金属锂负极先发优势'},
-            {'code': '300037', 'name': '新宙邦', 'role': '电解质先锋', 'tag': '新型电解质与固态材料领航者'}
-        ]
-    },
-    {
-        'keywords': ['创新药', '医药', '医疗', '疫苗', '生物科技', 'CXO'],
-        'theme': '生物医药创新与出海先锋',
-        'sectors': ['创新药', 'CXO一体化', '医疗器械', '中药创新'],
-        'stocks': [
-            {'code': '600276', 'name': '恒瑞医药', 'role': '创新药中军', 'tag': '国内创新药研发一哥·多品类管线出海'},
-            {'code': '603259', 'name': '药明康德', 'role': '全球CXO一体化', 'tag': '全球新药外包服务领跑者'},
-            {'code': '300347', 'name': '泰格医药', 'role': '临床CRO龙头', 'tag': '国内临床研究外包先锋'}
-        ]
-    },
-    {
-        'keywords': ['消费', '内需', '以旧换新', '补贴', '家电', '汽车', '白酒'],
-        'theme': '内需大消费与产业以旧换新',
-        'sectors': ['白酒消费', '白电龙头', '整车制造', '商贸零售'],
-        'stocks': [
-            {'code': '600519', 'name': '贵州茅台', 'role': '消费定海神针', 'tag': '大消费价值核心·北向与机构底仓'},
-            {'code': '000651', 'name': '格力电器', 'role': '高股息白电', 'tag': '消费品以旧换新与高分红防御'},
-            {'code': '002594', 'name': '比亚迪', 'role': '整车制造旗舰', 'tag': '新能源汽车销量与市占率第一'}
-        ]
-    },
-    {
-        'keywords': ['化债', '债务', 'AMC', '基建', '水利', '地方债'],
-        'theme': '大规模化债与地方AMC资产重估',
-        'sectors': ['地方AMC', '金融化债', '破净基建央企', '环保水务'],
-        'stocks': [
-            {'code': '600000', 'name': '浦发银行', 'role': '金融化债先锋', 'tag': '资产质量改善·地方债务置换受益'},
-            {'code': '601668', 'name': '中国建筑', 'role': '基建破净央企', 'tag': '应收账款回流·央企估值重塑'},
-            {'code': '000063', 'name': '中兴通讯', 'role': '数字基建中军', 'tag': '新质生产力通信基础设施底座'}
-        ]
-    },
-    {
-        'keywords': ['暴跌', '外盘暴跌', '地缘', '战争', '特停', '核查', '立案', '黑天鹅', '风险', '利空', '去杠杆', '紧缩', '雪球'],
-        'theme': '避险对冲与低估值高股息防守堡垒',
-        'sectors': ['高股息红利', '黄金贵金属', '煤炭能源', '大行中字头'],
-        'stocks': [
-            {'code': '601088', 'name': '中国神华', 'role': '终极红利护城河', 'tag': '高股息现金流·牛熊避风港'},
-            {'code': '600900', 'name': '长江电力', 'role': '防守基石', 'tag': '无视经济周期的水电价值锚点'},
-            {'code': '601899', 'name': '紫金矿业', 'role': '地缘避险先锋', 'tag': '金铜资源战略储备·抗通胀与避险'},
-            {'code': '600489', 'name': '中金黄金', 'role': '黄金纯正标的', 'tag': '国际金价共振避险弹性标的'}
-        ]
-    }
-]
-
-def get_event_beneficiary_stocks(scenario_text='', domain='', net_val=0):
-    """根据事件语义或推演合力，智能穿透并获取核心受益/避险标的实时行情"""
-    matched = None
-    txt = (scenario_text or '') + ' ' + (domain or '')
-    
-    for t in _EVENT_THEMES:
-        if any(k.lower() in txt.lower() for k in t['keywords']):
-            matched = t
-            break
-            
-    if not matched:
-        if net_val < -20:
-            matched = _EVENT_THEMES[-1]
-        elif net_val > 25:
-            matched = _EVENT_THEMES[0]
-        else:
-            matched = _EVENT_THEMES[1]
-            
-    codes = [s['code'] for s in matched['stocks']]
-    tx_codes = [('sh' if c.startswith(('6', '5', '9')) else 'sz') + c for c in codes]
-    quote_map = {}
-    try:
-        url = 'https://qt.gtimg.cn/q=' + ','.join(tx_codes)
-        raw = http(url, gbk=True, timeout=3)
-        for line in raw.strip().split(';'):
-            if '=' not in line:
-                continue
-            parts = line.split('"')[1].split('~')
-            if len(parts) > 38 and parts[4] and parts[5]:
-                c = parts[2]
-                curr_p = float(parts[3])
-                pct = float(parts[32]) if parts[32] else 0.0
-                amt = float(parts[37]) if parts[37] else 0.0
-                quote_map[c] = {
-                    'price': curr_p,
-                    'pct': pct,
-                    'amount_str': f"{amt/1e4:.1f}亿" if amt >= 1e4 else f"{amt:.0f}万",
-                }
-    except Exception:
-        pass
-        
-    stocks = []
-    for s in matched['stocks']:
-        item = dict(s)
-        q = quote_map.get(s['code'], {})
-        item['price'] = q.get('price', 0.0)
-        item['pct'] = q.get('pct', 0.0)
-        item['amount_str'] = q.get('amount_str', '-')
-        stocks.append(item)
-        
-    return {
-        'theme': matched['theme'],
-        'sectors': matched['sectors'],
-        'stocks': stocks,
-    }
-
-def get_branching_scenarios(scenario_text='', domain='', net_val=0):
-    """次日集合竞价 9:25 高低开三套分叉树战术剧本 (超预期大幅高开 / 符合预期平开 / 不及预期低开)"""
-    is_bull = net_val > 15
-    is_bear = net_val < -15
-    
-    if is_bear:
-        up_action = "【92科比逆势战术】若利空之下超预期大幅高开，通常为主力诱多或特大反抽。前排若无巨量一字锁死，切忌追高接盘！持仓者逢冲高分批减仓兑现，仅少量资金关注最强弱转强先锋。"
-        flat_action = "【92科比防守战术】小幅平开说明多空博弈犹豫。开盘9:30-9:40严格观察承接力度，若开盘分时跌破分时均线且量能萎缩，果断逢高离场，不参与弱势轮动。"
-        down_action = "【92科比冰点战术】大幅低开属预期内风险释放。开盘前10分钟不盲目无脑杀跌割肉，等待日内探底后的急速脉冲反抽；若反抽无法站上开盘价，顺势清仓/减仓至2成以下防守。"
-    elif is_bull:
-        up_action = "【92科比追强战术】超预期大幅高开说明情绪亢奋，多头抢筹！严禁追涨后排跟风（谨防大烂板），全神贯注盯紧同题材'竞价封单金额最大'的一字排单与'竞价量比>2.5'的首板龙头，果断排板或半路打板！"
-        flat_action = "【92科比低吸战术】平开/小高开为极佳的上车分歧窗口。重点观察9:35第一波分时下探企稳节点，回踩分时均线不破且主力资金净买入时，从容低吸核心主线中军与高辨识度龙头。"
-        down_action = "【92科比纠偏战术】若在利好预期下意外大幅低开，说明主力借利好大举砸盘或外盘拖累。观察9:30-9:35是否有国家队或机构托底大单逆势上攻，若无强力承接则警惕'利好出尽'，果断管住手观望。"
-    else:
-        up_action = "【92科比试盘战术】大幅高开先观察板块联动性，若仅为个股脉冲而板块无跟风，容易冲高回落被套；若带出板块效应，可在开盘回踩不破均线时轻仓参与前排。"
-        flat_action = "【92科比常态战术】震荡平衡市，遵循'买在分歧、卖在一致'原则。日内不追高任何大阳线，精选均线多头回踩或形态突破个股做日内差价T+0。"
-        down_action = "【92科比低吸防守】大幅低开杀跌释放短期分歧，急跌不割肉，观察前低支撑位。若缩量企稳可针对底仓做日内超跌低吸，午后拉高即T出。"
-
-    return [
-        {
-            'type': 'up',
-            'title': '剧本 A: 【超预期大幅高开】(竞价开盘 > +1.5%)',
-            'trigger': '集合竞价多头爆量抢筹，高开幅度 > +1.5%，核心龙头大额一字封单',
-            'market_logic': '多头资金达成强共识，风险偏好迅速升温，短线溢价拉满',
-            'action': up_action,
-            'badge': '积极进攻 / 龙头抢筹',
-            'color': '#ff4d4f'
-        },
-        {
-            'type': 'flat',
-            'title': '剧本 B: 【符合预期平开/小高开】(竞价开盘 -0.5% ~ +1.5%)',
-            'trigger': '竞价平稳波动在 -0.5% ~ +1.5% 区间，多空开盘基本平衡',
-            'market_logic': '多空情绪自然延续，分歧在盘中逐步展开，以结构性轮动为主',
-            'action': flat_action,
-            'badge': '从容低吸 / 观察分歧',
-            'color': '#fbbf24'
-        },
-        {
-            'type': 'down',
-            'title': '剧本 C: 【不及预期大幅低开】(竞价开盘 < -1.0%)',
-            'trigger': '竞价大幅低开 < -1.0%，或者利好高开低走砸绿，竞价出现大额抛盘',
-            'market_logic': '资金恐慌抢跑或预期落空，短线流动性承压，承接偏弱',
-            'action': down_action,
-            'badge': '防守控仓 / 谨慎反抽',
-            'color': '#22c55e'
-        }
-    ]
-
-def get_historical_review(scenario_text=''):
-    """时光机复盘对账：匹配经典历史大事件并返回真实市场走势与九方表现对账"""
-    if not scenario_text:
-        return None
-    txt = scenario_text.lower()
-    for b in _HISTORICAL_BENCHMARKS:
-        if b['key'] in txt or any(k in txt for k in b['title'].split()) or any(w in txt for w in ['924', '降准50bp', '3.45万亿', '10万亿', '雪球', '印花税减半']):
-            if b['key'] in txt or ('924' in txt or '降准50' in txt and '2024-09-24' == b['key']) or ('3.45' in txt and '2024-10-08' == b['key']) or ('10万亿' in txt and '2024-11-08' == b['key']) or ('雪球' in txt and '2024-01-22' == b['key']) or ('印花税' in txt and '2023-08-27' == b['key']):
-                return b
-    return None
-
-def sim_world(scenario=None, llm_impact=None, llm_note=''):
-    w('')
-    w('===== [世界模拟v2] 势力记忆+交互传染+情景注入 =====')
-    if scenario:
-        meta, _ = parse_event_scenario(scenario)
-        w('【事件注入沙盘】: %s' % scenario)
-        w('【事件智能研判】属性: %s | 逻辑: %s' % (meta['domain'], meta['desc']))
-    try:
-        stage = cycle_position()
-    except Exception:
-        stage = ''
-    recs = []
-    fp = os.path.join(DATA_DIR, 'sentiment_history.jsonl')
-    if os.path.exists(fp):
-        recs = [json.loads(l) for l in open(fp, encoding='utf-8') if l.strip()]
-    if not recs:
-        w('(无情绪存档)')
-        return
-    la = recs[-1]
-    sc = float(la.get('score', 50)); zt = float(la.get('zt', 0))
-    n_dt = float(la.get('dt', 0)); lb = float(la.get('max_lb', 0))
-    zbrate = float(la.get('zb', 0)) / max(zt + float(la.get('zb', 1)), 1) * 100
-    mgd = 0.0
-    try:
-        u = ('https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_RZRQ_LSHJ'
-             '&columns=DIM_DATE,RZRQYE&sortColumns=DIM_DATE&sortTypes=-1&pageSize=2&pageNumber=1')
-        rows = json.loads(http(u))['result']['data']
-        mgd = (float(rows[0]['RZRQYE']) - float(rows[1]['RZRQYE'])) / 1e8
-    except Exception:
-        pass
-    cl = lambda v, lo, hi: max(lo, min(hi, v))
-    ag = {}
-    ag['散户'] = cl((sc - 45) * 3, -70, 85) * (0.5 if stage == '退潮' else 1) + (-20 if stage == '冰点' else 0)
-    ag['游资'] = lb * 14 - zbrate * 1.2 + {'主升': 35, '亢奋': 10, '修复/震荡': 5, '退潮': -35, '冰点': -50}.get(stage, 0)
-    ag['机构'] = cl((20 if mgd > 0 else -15 if mgd < 0 else 0) + (sc - 50) * 0.6, -40, 40)
-    # 国家队逆周期逻辑: 恐慌(跌停>=10或情绪<35)托底买入(+40); 情绪过热(sc>68分位)逆周期降温平抑波动(-20); 两融骤降破百亿护盘(+20)
-    ag['国家队'] = (40 if (n_dt >= 10 or sc < 35) else (-20 if sc > 68 else 0)) + (20 if mgd < -100 else 0)
-    # -- 大散户: 跟随情绪但更极端; 亢奋重仓/冰点割肉/退潮死扛(反应系数<1); 杠杆盘敏感 --
-    ag['大散户'] = cl((sc - 45) * 2.5, -65, 90) * {'亢奋': 1.2, '主升': 1.1, '修复/震荡': 1.0, '退潮': 0.55, '冰点': 0.4}.get(stage, 1.0) + (-25 if stage == '冰点' else 0) + (15 if mgd > 50 else -20 if mgd < -80 else 0)
-    # -- 北向: A50期指日内强弱代理(贴日高=风险偏好高) --
-    pos = 0.0
-    try:
-        t = http('https://hq.sinajs.cn/list=hf_CHA50CFD', gbk=True,
-                 referer='https://finance.sina.com.cn/')
-        rw = {}
-        for _m in re.finditer(r'hq_str_(\w+)="([^"]*)"', t):
-            rw[_m.group(1)] = _m.group(2).split(',')
-        def g2(k, i):
-            v = rw.get(k, [])
-            return v[i] if len(v) > i and v[i] else None
-        px, hi_, lo_ = g2('hf_CHA50CFD', 0), g2('hf_CHA50CFD', 4), g2('hf_CHA50CFD', 5)
-        if px and hi_ and lo_ and float(hi_) > float(lo_):
-            pos = (float(px) - float(lo_)) / (float(hi_) - float(lo_)) * 2 - 1
-    except Exception:
-        pos = 0.0
-    ag['北向'] = cl(pos * 25, -30, 30)
-    # -- 量化: 炸板率高=打板策略亏损撤流动性; 高度打开=动量策略进场 --
-    ag['量化'] = cl((zbrate - 20) * -1.5 + (lb - 3) * 5, -40, 40) + (10 if stage == '主升' else -10 if stage == '冰点' else 0)
-    # -- 产业资本: 当日大宗交易加权折溢价(溢价=产业接盘意愿) --
-    dz_net = 0.0
-    dday = la.get('date', '')
-    if len(dday) == 8:
-        diso = '%s-%s-%s' % (dday[:4], dday[4:6], dday[6:])
-        try:
-            import urllib.parse as _up
-            dp = {'reportName': 'RPT_BLOCKTRADE_STA',
-                  'columns': 'PREMIUM_RATIO,DEAL_AMT,DISCOUNT_TIMES,PREMIUM_TIMES',
-                  'filter': "(TRADE_DATE>='" + diso + "')(TRADE_DATE<='" + diso + "')",
-                  'pageNumber': '1', 'pageSize': '500', 'sortTypes': '-1',
-                  'sortColumns': 'TURNOVERRATE', 'source': 'WEB', 'client': 'WEB'}
-            drows = json.loads(http('https://datacenter-web.eastmoney.com/api/data/v1/get?' + _up.urlencode(dp)))['result']['data'] or []
-            amt = sum(float(x.get('DEAL_AMT') or 0) for x in drows)
-            wsum = sum(float(x.get('DEAL_AMT') or 0) * float(x.get('PREMIUM_RATIO') or 0) for x in drows)
-            wpr = wsum / amt * 100 if amt else 0.0
-            premium = sum(int(x.get('PREMIUM_TIMES') or 0) for x in drows)
-            disc = sum(int(x.get('DISCOUNT_TIMES') or 0) for x in drows)
-            dz_net = cl(wpr * 8 + (1 if premium > disc else -1) * min(abs(premium - disc), 5) * 1.5, -25, 25)
-            w('[大宗交易·%s] %d笔 %.1f亿 加权折溢%.2f%% (溢价%d笔/折价%d笔)' % (diso, len(drows), amt / 1e4, wpr, premium, disc))
-        except Exception as e:
-            w('[大宗交易失败] %s' % e)
-    ag['产业资本'] = dz_net  # 基线中性, 大宗信号即立场
-    # ①②③ 统一管道: 势力记忆锚定 + 情景注入 + 3轮传染
-    ag, _ = _sim_pipeline(ag, scenario=scenario, use_memory=True,
-                          cur_date=la.get('date', ''), verbose=True,
-                          impact_override=llm_impact, impact_note=llm_note)
-    net, net_pct = _weighted_net(ag)
-    w('\n【九方势力博弈动作解析】')
-    for n, ww in _AGENT_W:
-        v = ag[n]
-        arrow = '强力看多' if v > 30 else ('温和看多' if v > 10 else ('强力看空' if v < -30 else ('谨慎看空' if v < -10 else '中立观望')))
-        act = _get_agent_action(n, v)
-        w('  %-8s %+4.0f分 [%s] 动作: %s' % (n, v, arrow, act))
-    w('  ---- 加权合力: %+.0f ----' % net)
-    w('  ---- 加权合力: %+.0f (均值%+.1f/±100) ----' % (net, net_pct))
-    path = ('修复反弹/主升强化: 多头合力占优，顺势做多' if net > 30 else
-            '恐慌加速/风险释放: 严控仓位防守，规避高位承接风险' if net < -40 else
-            '分歧震荡/结构轮动: 多空势均力敌，控制仓位做低吸做T')
-    w('  >> 推演路径%s: %s' % (('('+scenario+')') if scenario else '', path))
-    pos_advice = '7~9成高仓位（主线核心）' if net > 40 else ('5~7成中等仓位（分歧低吸）' if net > 10 else ('3~5成谨慎仓位（只做超跌）' if net > -25 else '0~2成极低仓位（空仓防守）'))
-    attack_advice = '领涨题材核心龙头一字板/放量首板' if net > 25 else ('趋势中军回踩均线/超跌大市值反弹' if net > -15 else '避险高股息红利或离场观望')
-    w('【次日92科比操盘战术】')
-    w('  • 仓位指引: %s' % pos_advice)
-    w('  • 进攻方向: %s' % attack_advice)
-
-    # 核心受益与防守标的
-    bene = get_event_beneficiary_stocks(scenario or '', meta.get('domain', '') if scenario else '', net)
-    if bene and bene.get('stocks'):
-        w('\n【核心受益/防守板块与标的池】: %s' % bene.get('theme', ''))
-        w('  板块: %s' % ' / '.join(bene.get('sectors', [])))
-        for st in bene['stocks']:
-            w('  • %s %s [%s] 现价:%s (%+.2f%%) | %s' % (st['code'], st['name'], st['role'], st['price'] or '-', st['pct'], st['tag']))
-
-    # 次日集合竞价分叉树三套战术
-    branches = get_branching_scenarios(scenario or '', meta.get('domain', '') if scenario else '', net)
-    w('\n【次日 9:25 集合竞价分叉树战术剧本】')
-    for br in branches:
-        w('  [%s] 触发条件: %s' % (br['title'], br['trigger']))
-        w('    >> %s' % br['action'])
-
-    # 历史时光机复盘对账
-    hist_rev = get_historical_review(scenario or '')
-    if hist_rev:
-        w('\n【🕰️ 历史著名大事件·时光机复盘对账】')
-        w('  基准事件: %s' % hist_rev['title'])
-        w('  真实走势: %s' % hist_rev['real_market'])
-        w('  势力对账: %s' % hist_rev['force_review'])
-
-    if not scenario:  # 情景推演是假设, 不污染真实记忆
-        _mem_save({'schema_version': 2, 'date': la.get('date', ''), 'stage': stage,
-                   'stances': {k: round(v, 1) for k, v in ag.items()},
-                   'net': round(net, 1), 'net_mean': round(net_pct, 1)})
-
 
 def strategic_decision(emo=None, sec=None, idxs=None):
     """战略战术决策中枢：基于毛选认识论与矛盾论体系的局势研判与兵力指令"""
@@ -2334,10 +1763,6 @@ if __name__ == '__main__':
         elif cmd == 'chan':
             kl = kline_tx(sys.argv[2])
             chan_analysis(kl, sys.argv[2])
-        elif cmd == 'agents':
-            agent_sim(sys.argv[2] if len(sys.argv) > 2 else None)
-        elif cmd == 'sim':
-            sim_world(sys.argv[2] if len(sys.argv) > 2 else None)
         elif cmd == 'auction':
             import auction_radar as ar
             res = ar.get_auction_radar()

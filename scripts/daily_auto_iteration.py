@@ -28,8 +28,6 @@ sys.path.insert(0, str(_HERE))
 import stock_dashboard as sd
 import strategic_decision as sd_engine
 import news_events
-import sim_score
-import sim_llm
 import threshold_evidence
 
 DATA_DIR = pathlib.Path(sd.DATA_DIR)
@@ -136,24 +134,9 @@ def step_auction_audit(target_ymd, force=False):
         return {'status': 'error', 'error': str(e)}
 
 
-def step_ledger_audit():
-    """步骤 3: 次日打脸账本自动对账 (用今日实际盘面事实核验历史推演)"""
-    log("--> [步骤 3/5] 正在运行次日打脸账本对账 (sim_score --all)...")
-    try:
-        scored = sim_score.run(all_=True, quiet=True)
-        stats = sim_score.ledger_stats()
-        log(f"对账完成: 本次处理 {len(scored)} 笔，累计有效对账样本={stats.get('samples')} 笔")
-        if stats.get('samples'):
-            log(f"打脸账本指标: 方向命中率={stats.get('direction_hit_pct')}% 强度命中率={stats.get('strength_hit_pct')}% 板块平均命中={stats.get('sector_avg_hit_pct')}%")
-        return {'status': 'ok', 'processed': len(scored), 'stats': stats}
-    except Exception as e:
-        log(f"打脸账本对账异常: {e}", level='WARN')
-        return {'status': 'error', 'error': str(e)}
-
-
 def step_threshold_calibration():
     """步骤 4: 阈值实证自校准与样本积累 (坚决杜绝假实证)"""
-    log("--> [步骤 4/5] 正在进行阈值历史分位数真实实证校准...")
+    log("--> [步骤 4/4] 正在进行阈值历史分位数真实实证校准...")
     try:
         sent_path = DATA_DIR / 'sentiment_history.jsonl'
         if not sent_path.exists():
@@ -203,34 +186,9 @@ def step_threshold_calibration():
         return {'status': 'error', 'error': str(e)}
 
 
-def step_next_day_simulation(target_date_str):
-    """步骤 5: 次日博弈推演 (结合跨期衰减与自优化反馈生成)"""
-    log(f"--> [步骤 5/5] 正在生成面向次日的多角色博弈推演 ({target_date_str})...")
-    try:
-        cfg = sim_llm.load_llm_config()
-        has_key = cfg.get('has_key', False)
-        # 触发推演 (若无 key 会自动安全回退 dry-run / fallback)
-        res = sim_llm.run(date_str=target_date_str, rounds=3, top_events=20, dry_run=not has_key, quiet=True)
-        if res.get('ok'):
-            log(f"推演完成: 模式={'真实LLM' if not res.get('dry_run') else '规则/Dry-run'} 目标次日={res.get('target_date')} 跨期衰减={res.get('time_decay')} 折现合力={res.get('decayed_net')}")
-            return {
-                'status': 'ok',
-                'mode': 'llm' if not res.get('dry_run') else 'dry_run',
-                'target_date': res.get('target_date'),
-                'time_decay': res.get('time_decay'),
-                'decayed_net': res.get('decayed_net')
-            }
-        else:
-            log(f"推演返回未成功: {res.get('error')}", level='WARN')
-            return {'status': 'warning', 'reason': res.get('error')}
-    except Exception as e:
-        log(f"次日推演异常: {e}", level='WARN')
-        return {'status': 'error', 'error': str(e)}
-
-
 def run_daily_pipeline(target_date=None, force=False):
     """
-    全自动主控流程
+    全自动主控流程 (100% 聚焦权威收盘数据收集、真实对账与分位数实证校准，剔除预测脑补)
     """
     start_time = time.time()
     now_dt = dt.datetime.now()
@@ -273,9 +231,7 @@ def run_daily_pipeline(target_date=None, force=False):
     pipeline_results['steps']['market_and_emotion'] = step_market_and_emotion(ymd, force=force)
     pipeline_results['steps']['news_events'] = step_news_events(date_str)
     pipeline_results['steps']['auction_audit'] = step_auction_audit(ymd, force=force)
-    pipeline_results['steps']['ledger_audit'] = step_ledger_audit()
     pipeline_results['steps']['threshold_calibration'] = step_threshold_calibration()
-    pipeline_results['steps']['next_day_simulation'] = step_next_day_simulation(date_str)
 
     duration = round(time.time() - start_time, 2)
     pipeline_results['duration_sec'] = duration

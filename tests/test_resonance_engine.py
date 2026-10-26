@@ -1,4 +1,13 @@
 import unittest
+from pathlib import Path
+import sys
+
+# 让 `python tests/test_xxx.py` 与 `python -m unittest` 两种跑法都能找到 scripts/
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+for _p in (str(_PROJECT_ROOT), str(_PROJECT_ROOT / "scripts")):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
 from scripts.resonance_engine import (
     ResonanceEngine,
     ResonanceTag,

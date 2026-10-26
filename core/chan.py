@@ -47,12 +47,13 @@ def _fmt_date(v) -> str:
     return s
 
 
-def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
-    """缠论日线级别结构化分析: K线包含合并、分型、笔、中枢识别、背驰与买卖点判定。
-    
+def chan_analysis_structured(kl: List[Any], code: str = '', period_label: str = '日线') -> Dict[str, Any]:
+    """缠论级别结构化分析: K线包含合并、分型、笔、中枢识别、背驰与买卖点判定。
+
     参数:
         kl: K线列表，格式为 [[日期, 开盘, 收盘, 最高, 最低, ...], ...]
         code: 股票代码(选填)
+        period_label: 周期中文名，用于 summary 展示（日线/周线/月线/5分钟等）
     返回:
         结构化形态分析字典
     """
@@ -120,13 +121,26 @@ def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
         if bars and ((h >= bars[-1][1] and l <= bars[-1][2]) or (h <= bars[-1][1] and l >= bars[-1][2])):
             up = len(bars) < 2 or bars[-2][1] <= bars[-1][1]
             if up:
-                bars[-1][1] = max(bars[-1][1], h)
-                bars[-1][2] = max(bars[-1][2], l)
+                # 向上合并：高点取 max，低点也取 max（抬升低点）
+                new_high = max(bars[-1][1], h)
+                new_low = max(bars[-1][2], l)
+                # 仅当新K线贡献了高点极值时才更新日期/索引，
+                # 避免笔端点系统性偏移到合并区间末根（原Bug：恒指向最后一根）
+                if h >= bars[-1][1]:
+                    bars[-1][0] = r[0]
+                    bars[-1][3] = i
+                bars[-1][1] = new_high
+                bars[-1][2] = new_low
             else:
-                bars[-1][1] = min(bars[-1][1], h)
-                bars[-1][2] = min(bars[-1][2], l)
-            bars[-1][0] = r[0]
-            bars[-1][3] = i
+                # 向下合并：高点取 min，低点也取 min（压低高点）
+                new_high = min(bars[-1][1], h)
+                new_low = min(bars[-1][2], l)
+                # 仅当新K线贡献了低点极值时才更新日期/索引
+                if l <= bars[-1][2]:
+                    bars[-1][0] = r[0]
+                    bars[-1][3] = i
+                bars[-1][1] = new_high
+                bars[-1][2] = new_low
         else:
             bars.append([r[0], h, l, i])
 
@@ -215,21 +229,47 @@ def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
             'pos': pos
         }
         if pos == '上方' and cur_dir == '向上':
-            hints.append('三买候选: 向上离开中枢后次回抽不跌破中枢上轨')
-            signals.append({
-                'date': bi[-1][3], 'price': round(bi[-1][2], 2),
-                'type': '三买候选', 'desc': '三买潜力', 'color': '#10b981'
-            })
+            # 三买回抽验证 (2026-10-25): 最后一笔(底分型)必须在中枢上轨之上
+            # 才算有效三买，否则回抽已进入中枢区间，三买不成立
+            pullback_price = bi[-1][2]
+            if pullback_price > zs_hi:
+                hints.append('三买候选: 向上离开中枢后次回抽不跌破中枢上轨')
+                signals.append({
+                    'date': bi[-1][3], 'price': round(bi[-1][2], 2),
+                    'type': '三买候选', 'desc': '三买潜力', 'color': '#10b981'
+                })
+            else:
+                hints.append('三买待确认: 回抽进入中枢区间，三买不成立')
+                signals.append({
+                    'date': bi[-1][3], 'price': round(bi[-1][2], 2),
+                    'type': '三买待确认', 'desc': '回抽入中枢·三买未确立', 'color': '#f59e0b'
+                })
         elif pos == '下方' and cur_dir == '向下':
-            hints.append('三卖形态: 向下击穿中枢后次反弹不进中枢下轨')
-            signals.append({
-                'date': bi[-1][3], 'price': round(bi[-1][2], 2),
-                'type': '三卖警戒', 'desc': '三卖警戒', 'color': '#ef4444'
-            })
+            # 三卖回抽验证 (2026-10-25): 最后一笔(顶分型)必须在中枢下轨之下
+            # 才算有效三卖，否则反弹已进入中枢区间，三卖不成立
+            pullback_price = bi[-1][2]
+            if pullback_price < zs_lo:
+                hints.append('三卖形态: 向下击穿中枢后次反弹不进中枢下轨')
+                signals.append({
+                    'date': bi[-1][3], 'price': round(bi[-1][2], 2),
+                    'type': '三卖警戒', 'desc': '三卖警戒', 'color': '#ef4444'
+                })
+            else:
+                hints.append('三卖待确认: 反弹进入中枢区间，三卖不成立')
+                signals.append({
+                    'date': bi[-1][3], 'price': round(bi[-1][2], 2),
+                    'type': '三卖待确认', 'desc': '反弹入中枢·三卖未确立', 'color': '#f59e0b'
+                })
 
     # 4. 背驰与一类/二类买卖点判断
     def leg_area(a, b):
-        """两笔之间的 MACD 面积（力度），用于背驰比较
+        """两笔之间的 MACD 同方向面积（力度），用于背驰比较
+
+        修复 (2026-10-25): 原实现 sum(abs(x) for x in seg) 对每个 hist 值取
+        绝对值后再求和，会丢失段内方向信息——当一段内同时有正负 hist 值时，
+        abs 会虚增面积。缠中说禅原著中背驰比较的是同方向趋势的面积，应保留
+        段内正负抵消：先带符号求和 sum(seg) 得到净面积，再取绝对值用于比较。
+        这样 abs 仅作用于最终净面积，而非逐元素，不丢失段内方向信息。
 
         加固 (2026-10-18): a[4]/b[4] 是 K 线原始索引。合并 K 线后原始索引
         可能大于 hist 长度（hist 与 closes 等长），原来的切片虽然 Python 会
@@ -244,7 +284,7 @@ def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
         lo_i = max(0, min(lo_i, len(hist) - 1))
         hi_i = max(lo_i, min(hi_i, len(hist) - 1))
         seg = hist[lo_i:hi_i + 1]
-        return sum(abs(x) for x in seg)
+        return abs(sum(seg))
 
     sig_str = ''
     # 加固: 只取结构完整、方向字段合法的笔段，避免脏数据导致 KeyError/IndexError
@@ -255,6 +295,7 @@ def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
     if len(dn) >= 2:
         (a1, b1), (a2, b2) = dn[-2], dn[-1]
         if b2[2] < b1[2] and leg_area(a2, b2) < leg_area(a1, b1):
+            # 下跌段净面积：后段<前段 → 力度减弱 → 底背驰
             sig_str = '底背驰候选(价创新低·动能收缩)'
             signals.append({
                 'date': b2[3], 'price': round(b2[2], 2),
@@ -274,6 +315,7 @@ def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
     if len(up) >= 2:
         (a1, b1), (a2, b2) = up[-2], up[-1]
         if b2[2] > b1[2] and leg_area(a2, b2) < leg_area(a1, b1):
+            # 上涨段净面积：后段<前段 → 力度减弱 → 顶背驰
             sig_str = '顶背驰候选(价创新高·动能收缩)'
             signals.append({
                 'date': b2[3], 'price': round(b2[2], 2),
@@ -292,7 +334,7 @@ def chan_analysis_structured(kl: List[Any], code: str = '') -> Dict[str, Any]:
             hints.append('二卖警戒: 次笔反弹不破前高，顶部滞涨防守')
 
     hint = '；'.join(hints)
-    summary_parts = [f"当前处于日线【{cur_dir}的一笔】"]
+    summary_parts = [f"当前处于{period_label}【{cur_dir}的一笔】"]
     if last_zs:
         summary_parts.append(f"中枢区间 [{last_zs['lo']} ~ {last_zs['hi']}]，现价位于中枢【{pos}】")
     if hint:

@@ -75,6 +75,43 @@ for args in [(0, 0, 0, 0, 0), (None, None, None, None, None)]:
     except Exception as e:
         check('_is_one_word_bar(%s) 不崩溃' % (args,), False, repr(e))
 
+# ============================================================
+# 竞价爆量「抢筹」判定必须带方向门禁
+# 背景 (2026-10-26): 三峡新材 600293 一字跌停(-9.98%)、买盘全空、卖一压 30 万手，
+# 却因为「量比 5.3 + 成交占昨 513%」被判成「超预期抢筹」。
+# 原 auction_boom 是一条纯量能表达式，完全不看方向。
+# ============================================================
+print()
+print('=== 竞价爆量抢筹的方向门禁 ===')
+
+# 真实踩坑样本：跌停 + 巨量 + 极端卖压
+sanxia = dict(pct=-9.98, is_dt=True, order_ratio=-86.9, vol_ratio=5.3,
+              amount_ratio_pct=513.26, is_one_word=False, seal_amount_yi=0.0)
+check('三峡新材(一字跌停+巨量) 不得判为抢筹', ar.is_auction_boom(sanxia) is False)
+
+# 正常抢筹：高开 + 买盘主导 + 放量
+check('高开5%放量买盘主导 → 抢筹',
+      ar.is_auction_boom(dict(pct=5.0, is_dt=False, order_ratio=62.0, vol_ratio=4.2,
+                              amount_ratio_pct=9.0, is_one_word=False, seal_amount_yi=0.0)) is True)
+# 一字涨停：封单巨大、委比极高
+check('一字涨停封单0.8亿 → 抢筹',
+      ar.is_auction_boom(dict(pct=10.0, is_dt=False, order_ratio=99.0, vol_ratio=1.1,
+                              amount_ratio_pct=1.0, is_one_word=True, seal_amount_yi=0.8)) is True)
+# 高开但卖压压倒性（委比 -60）：不算抢筹
+check('高开但卖压压倒性(委比-60) → 不算抢筹',
+      ar.is_auction_boom(dict(pct=1.2, is_dt=False, order_ratio=-60.0, vol_ratio=4.0,
+                              amount_ratio_pct=8.0, is_one_word=False, seal_amount_yi=0.0)) is False)
+# 低开放量（-2%）：不算抢筹
+check('低开-2%放量 → 不算抢筹',
+      ar.is_auction_boom(dict(pct=-2.0, is_dt=False, order_ratio=10.0, vol_ratio=5.0,
+                              amount_ratio_pct=12.0, is_one_word=False, seal_amount_yi=0.0)) is False)
+# 平开但完全没量：不算抢筹
+check('平开无量(量比1.0/占昨2%) → 不算抢筹',
+      ar.is_auction_boom(dict(pct=0.0, is_dt=False, order_ratio=5.0, vol_ratio=1.0,
+                              amount_ratio_pct=2.0, is_one_word=False, seal_amount_yi=0.0)) is False)
+# 脏数据不炸
+check('字段缺失/脏值安全返回 False', ar.is_auction_boom({}) is False and ar.is_auction_boom(None) is False)
+
 print()
 if fails:
     print('FAILED:', fails); sys.exit(1)

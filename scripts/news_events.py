@@ -34,7 +34,17 @@ ROOT = _HERE.parent
 DATA_DIR = ROOT / 'data'
 NEWS_DIR = DATA_DIR / 'news'
 NAMES_PATH = DATA_DIR / 'stock_names.json'
-SECTOR_FLOW_PATH = DATA_DIR / 'stock_data' / 'sector_flow.json'
+# 板块资金缓存由 stock_dashboard.sector_flow() 按「口径+日期」分文件写入:
+#   sector_flow_d1_<YYYYMMDD>.json / sector_flow_d5_<YYYYMMDD>.json
+# 旧的单一 sector_flow.json 已停止写入(仅历史遗留), 不可再作为数据源。
+SECTOR_FLOW_DIR = DATA_DIR / 'stock_data'
+
+
+def _sector_flow_cache_path(days, date_str=None):
+    """返回指定口径+日期的板块资金缓存路径。days: 1(当日f62) / 5(近5日f164)。
+    date_str 为空时取今天; 接受 'YYYY-MM-DD' 或 'YYYYMMDD'。"""
+    d = (date_str or dt.date.today().strftime('%Y-%m-%d')).replace('-', '')[:8]
+    return SECTOR_FLOW_DIR / f'sector_flow_d{days}_{d}.json'
 
 w = sd.w
 
@@ -308,14 +318,20 @@ def dedupe(items, thresh=0.72):
 def load_sector_vocab(date_str=None):
     """板块/题材词表：板块资金名单 + 当日涨跌停池行业 + 题材小词表"""
     vocab = set(CONCEPT_WORDS)
-    try:
-        j = json.loads(SECTOR_FLOW_PATH.read_text(encoding='utf-8'))
-        for k in ('inflow', 'outflow'):
-            for it in (j.get(k) or []):
-                if it.get('name'):
-                    vocab.add(str(it['name']))
-    except Exception as e:
-        w(f'  [板块词表] 板块资金读取失败: {e}')
+    # 板块资金名单: 用当日 5 日口径缓存(f164, 盘前情报口径)。
+    # 文件不存在(如盘前未跑过 sector_flow / 非交易日)直接跳过 —— 词表还有其他三个来源,
+    # 不能因缺一个缓存就阻塞; 旧实现读固定的 sector_flow.json, 该文件已停止写入,
+    # 读到的会是冻结数日前的历史名单。
+    _sf = _sector_flow_cache_path(5, date_str)
+    if _sf.exists():
+        try:
+            j = json.loads(_sf.read_text(encoding='utf-8'))
+            for k in ('inflow', 'outflow'):
+                for it in (j.get(k) or []):
+                    if it.get('name'):
+                        vocab.add(str(it['name']))
+        except Exception as e:
+            w(f'  [板块词表] 板块资金读取失败({_sf.name}): {e}')
     ymd = (date_str or dt.date.today().strftime('%Y-%m-%d')).replace('-', '')
     pool_names = set()
     for kind in ('ZT', 'DT'):

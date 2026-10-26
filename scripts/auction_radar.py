@@ -41,6 +41,39 @@ def calc_amount_ratio_pct(curr_amount_yuan, prev_amount_yuan):
     return round((curr / prev) * 100, 2)
 
 
+def is_auction_boom(x):
+    """竞价爆量「抢筹」判定：必须同时满足「有量」+「没在往下砸」。
+
+    历史 bug（2026-10-26 三峡新材 600293）：原实现是一条纯量能表达式
+    `vol_ratio>=3 or is_one_word or seal>=0.3亿 or amount_ratio_pct>=5`，
+    **完全不看方向**，于是这只 -9.98% 一字跌停、买盘全空、卖一压 30 万手的票
+    被判成「超预期抢筹」，理由写着"竞价占昨比 513%"。
+
+    抢筹的前提是买盘主动、价格不跌，所以这里加三道方向门禁：
+      ① 不是跌停（is_dt）
+      ② 竞价涨跌幅 >= 0（不低开）
+      ③ 五档委比不极端偏卖（order_ratio > -40，即卖压不超过买压的 2.3 倍）
+    任一条不满足 → 不是抢筹，交给 big_loss（核按钮）去处理。
+    """
+    try:
+        if not isinstance(x, dict):
+            return False
+        if x.get('is_dt'):
+            return False
+        if float(x.get('pct') or 0.0) < 0.0:
+            return False
+        if float(x.get('order_ratio') or 0.0) <= -40.0:
+            return False
+        return bool(
+            float(x.get('vol_ratio') or 0.0) >= 3.0
+            or x.get('is_one_word')
+            or float(x.get('seal_amount_yi') or 0.0) >= 0.3
+            or float(x.get('amount_ratio_pct') or 0.0) >= 5.0
+        )
+    except (TypeError, ValueError):
+        return False
+
+
 def is_fake_high_open(open_pct, vol_ratio, amount_yi, amount_ratio_pct):
     """识别缩量假高开（主力挂撤诱多，极易出现开盘跳水吃大面）
 
@@ -631,7 +664,8 @@ def get_auction_radar():
     fake_high_opens.sort(key=lambda x: -x['open_pct'])
 
     # 3. 竞价爆量与一字板封单 (量比>=3.0 或 一字板 或 实时竞价封单>0.3亿 或 金额占昨比>=5%)
-    auction_boom = [x for x in zt_stats_items if x['vol_ratio'] >= 3.0 or x['is_one_word'] or x.get('seal_amount_yi', 0) >= 0.3 or x.get('amount_ratio_pct', 0) >= 5.0]
+    #    ⚠️ 必须过 is_auction_boom 的方向门禁：跌停/低开/极端卖压一律不进抢筹池
+    auction_boom = [x for x in zt_stats_items if is_auction_boom(x)]
     auction_boom.sort(key=lambda x: (x.get('seal_amount_yi', 0) if x.get('is_zt') else 0, x.get('amount_ratio_pct', 0), x['vol_ratio']), reverse=True)
 
     # 4. 亏钱效应大面榜 (天地大面 / 冲高大回撤 / 跌停)
@@ -660,7 +694,7 @@ def get_auction_radar():
                         'prev_close': prev_c,
                         'open_pct': 0,
                         'pct': pct,
-                        'high_pct': high_pct,
+                        'high_pct': round((high_c - prev_c) / prev_c * 100, 2),
                         'drop_from_high': drop,
                         'vol_ratio': 1.0,
                         'amount_yi': 0,
@@ -671,19 +705,74 @@ def get_auction_radar():
     except Exception:
         pass
 
+    # 亏钱效应榜排序：一字跌停的 high==low==跌停价，`drop_from_high` 恒为 0，
+    # 若只按回撤升序取前 12，最惨的跌停票反而会被挤掉（2026-10-26 三峡新材即如此，
+    # 结果它在 boom 榜里被当成"抢筹"、在核按钮榜里又看不见）。
+    # 改为：跌停/深水优先 → 跌幅更深优先 → 回撤更大优先。
+    def _big_loss_severity(x):
+        pct = _safe_float(x.get('pct'), 0.0)
+        drop = _safe_float(x.get('drop_from_high'), 0.0)
+        return (0 if pct <= -9.5 else 1, pct, drop)
+
     big_loss = sorted([x for x in big_loss_candidates if x['drop_from_high'] <= -4.0 or x['pct'] <= -7.0],
-                      key=lambda x: x['drop_from_high'])[:12]
+                      key=_big_loss_severity)[:12]
 
     elapsed = round((dt.datetime.now() - t0).total_seconds(), 2)
+
+    # 金额口径：9:25~9:30 的成交额才是真正的「竞价成交额」；开盘后 amount 会一直累加，
+    # 此时「占昨比」是"当日累计成交/昨日全天"，不是"竞价占昨"。必须如实标注，
+    # 否则会出现"竞价额 3.56 亿 / 占昨 513%"这种看着吓人、其实是盘中累计的数字。
+    _now = dt.datetime.now()
+    if _now.hour < 9 or (_now.hour == 9 and _now.minute < 25):
+        amount_basis = 'pre'
+    # 9:30:00 起已是连续竞价，只有 9:25~9:29:59 的成交额才是真正的竞价额
+    elif _now.hour == 9 and _now.minute < 30:
+        amount_basis = 'auction'
+    else:
+        amount_basis = 'intraday'
+
+    # ================= weak_to_strong × auction_boom 交叉去重 =================
+    # 同一股票可能同时满足弱转强和抢筹条件，保留信号强度更高的，去重另一个。
+    # 信号强度评分：max(open_pct, 0) + vol_ratio（开盘强度 + 量能强度）
+    # 去重后在保留项上附加 cross_dedup 字段，记录被去重的来源信号。
+    wts_codes = {x['code'] for x in weak_to_strong}
+    boom_codes = {x['code'] for x in auction_boom}
+    overlap_codes = wts_codes & boom_codes
+
+    cross_dedup_log = []
+    if overlap_codes:
+        def _signal_strength(item):
+            return max(item.get('open_pct', 0) or 0, 0) + (item.get('vol_ratio', 0) or 0)
+
+        for code in overlap_codes:
+            wts_item = next(x for x in weak_to_strong if x['code'] == code)
+            boom_item = next(x for x in auction_boom if x['code'] == code)
+            wts_score = _signal_strength(wts_item)
+            boom_score = _signal_strength(boom_item)
+            if wts_score >= boom_score:
+                # 保留 weak_to_strong，从 auction_boom 移除
+                wts_item['cross_dedup'] = 'auction_boom'
+                auction_boom = [x for x in auction_boom if x['code'] != code]
+                cross_dedup_log.append({'code': code, 'kept': 'weak_to_strong', 'removed': 'auction_boom',
+                                        'scores': {'wts': round(wts_score, 2), 'boom': round(boom_score, 2)}})
+            else:
+                # 保留 auction_boom，从 weak_to_strong 移除
+                boom_item['cross_dedup'] = 'weak_to_strong'
+                weak_to_strong = [x for x in weak_to_strong if x['code'] != code]
+                cross_dedup_log.append({'code': code, 'kept': 'auction_boom', 'removed': 'weak_to_strong',
+                                        'scores': {'wts': round(wts_score, 2), 'boom': round(boom_score, 2)}})
+
     radar_out = {
         'status': 'ok',
         'elapsed': elapsed,
+        'amount_basis': amount_basis,
         'promotion_metrics': promotion_metrics,
         'premium_summary': premium_summary,
         'weak_to_strong': weak_to_strong[:12],
         'fake_high_opens': fake_high_opens[:12],
         'auction_boom': auction_boom[:12],
         'big_loss': big_loss,
+        'cross_dedup': cross_dedup_log if cross_dedup_log else None,
         # 数据缺失可观测性：腾讯批量接口失败批次。非空说明部分个股的实时行情
         # 未能取到（依赖同花顺兜底），页面若出现"缺票"可据此定位。
         'data_warn': ({'tencent_batch_fail': len(_batch_fail),
@@ -693,11 +782,172 @@ def get_auction_radar():
     }
 
     # 自动保存早盘竞价推荐池快照（供 15:00 收盘对账闭环核验）
+    #
+    # 归档日必须用"盘面实际对应的交易日" t_date，不能用 dt.date.today()。
+    # 休市日（周末/节假日）跑雷达时，today 并不是交易日，却会把最近交易日的盘面
+    # 存成"今天"的快照 → 生成一条不存在的交易日的对账记录。
+    # 实测事故：20261025（周六）跑了一次，打脸账本里就多出一条
+    # "20261025 弱转强3只 / 封板率33.3% / 胜率33.3%" 的假样本。
+    # 与情绪存档 20261001 假记录是同一类事故，教训一致：默认怀疑"今天"。
     try:
         import auction_audit as _aa
-        _cur_ymd = dt.date.today().strftime('%Y%m%d')
-        _aa.save_auction_candidates_snapshot(_cur_ymd, radar_out)
+        _cur_ymd = t_date or dt.date.today().strftime('%Y%m%d')
+        # 时点闸门：只有 9:15~9:35 之间抓的快照才是"9:25 决策快照"；
+        # 其余时点（盘后/休市日复盘）抓到的是收盘后行情，含后见之明，标 synthetic，
+        # 打脸账本会把它排除在命中率统计之外。
+        _now_min = dt.datetime.now().hour * 60 + dt.datetime.now().minute
+        _phase = 'auction' if (9 * 60 + 15) <= _now_min <= (9 * 60 + 35) else 'post_close'
+        _aa.save_auction_candidates_snapshot(_cur_ymd, radar_out, phase=_phase)
     except Exception:
         pass
 
     return radar_out
+
+
+# ====================== 全市场竞价扫描（独立于接力雷达） ======================
+
+def get_full_market_auction_scan():
+    """全市场竞价扫描：一次拉全A股竞价快照，严格阈值信号判定。
+
+    与 get_auction_radar()（接力雷达）完全独立，不依赖昨日涨停/炸板身份。
+    用东财clist接口 pz=5500 一个请求拿全市场，不分批。
+
+    信号类型：
+      SUPER_GRAB      — 超预期抢筹：open_pct>=2.0 AND vol_ratio>=2.0 AND 非跌停
+      NUCLEAR_BUTTON  — 竞价核按钮：open_pct<=-5.0 OR (open_pct<=-3.0 AND vol_ratio>=2.0)
+      LOCKED_LIMIT_UP — 一字封单：open_pct>=9.8（启发式，不拉涨停价）
+      FAKE_HIGH       — 缩量假高开：open_pct>=3.0 AND vol_ratio<1.0（高开无量=诱多）
+
+    排除：ST股（名称含ST/ST*）、停牌（现价=0或昨收=0）
+    每类信号取 top 30，按强度排序。
+    """
+    url = (
+        'https://push2.eastmoney.com/api/qt/clist/get'
+        '?pn=1&pz=5500&po=1&np=1&fltt=2&fid=f3'
+        '&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23'
+        '&fields=f12,f14,f2,f3,f4,f5,f6,f8,f10,f15,f16,f18,f62'
+    )
+    try:
+        raw = sd.http(url, timeout=8, retries=2)
+        j = json.loads(raw)
+    except Exception as e:
+        return {'status': 'error', 'msg': f'东财接口异常: {e}'}
+
+    d = j.get('data') or {}
+    diff = d.get('diff') or []
+    if not diff:
+        return {'status': 'error', 'msg': '东财返回空数据'}
+
+    super_grab = []
+    nuclear_button = []
+    locked_limit = []
+    fake_high = []
+    total_scanned = 0
+
+    for r in diff:
+        code = r.get('f12')
+        name = r.get('f14')
+        price = r.get('f2')
+        pct = r.get('f3')
+        vol_ratio = r.get('f10')
+        amount = r.get('f6')
+        prev_close = r.get('f18')
+        high = r.get('f15')
+        low = r.get('f16')
+        seal_amount = r.get('f62')
+
+        # 排除停牌
+        if not price or not prev_close or float(prev_close) == 0:
+            continue
+        # 排除ST
+        if name and ('ST' in str(name).upper()):
+            continue
+
+        total_scanned += 1
+
+        price = float(price)
+        prev_close = float(prev_close)
+        pct = float(pct or 0.0)
+        vol_ratio = float(vol_ratio or 0.0)
+        amount = float(amount or 0.0)
+        high = float(high or 0.0)
+        low = float(low or 0.0)
+        seal_amount = float(seal_amount or 0.0)
+
+        # 竞价阶段最新价≈竞价价
+        open_pct = round((price - prev_close) / prev_close * 100, 2)
+
+        item = {
+            'code': code,
+            'name': name,
+            'price': price,
+            'open_pct': open_pct,
+            'pct': pct,
+            'vol_ratio': vol_ratio,
+            'amount': amount,
+            'high': high,
+            'low': low,
+            'prev_close': prev_close,
+            'seal_amount': seal_amount,
+        }
+
+        # NUCLEAR_BUTTON（核按钮优先判定，避免跌停票被抢筹误判）
+        if open_pct <= -5.0 or (open_pct <= -3.0 and vol_ratio >= 2.0):
+            item['signal'] = 'NUCLEAR_BUTTON'
+            item['signalLabel'] = '竞价核按钮'
+            item['_intensity'] = abs(open_pct)  # 跌得越多越靠前
+            nuclear_button.append(item)
+
+        # LOCKED_LIMIT_UP（一字封单）
+        elif open_pct >= 9.8:
+            item['signal'] = 'LOCKED_LIMIT_UP'
+            item['signalLabel'] = '一字封单'
+            item['_intensity'] = open_pct + (seal_amount / 1e8)  # 封单额加成
+            locked_limit.append(item)
+
+        # SUPER_GRAB（超预期抢筹）
+        elif open_pct >= 2.0 and vol_ratio >= 2.0:
+            item['signal'] = 'SUPER_GRAB'
+            item['signalLabel'] = '超预期抢筹'
+            item['_intensity'] = open_pct * vol_ratio  # 开涨幅×量比
+            super_grab.append(item)
+
+        # FAKE_HIGH（缩量假高开）
+        elif open_pct >= 3.0 and vol_ratio < 1.0:
+            item['signal'] = 'FAKE_HIGH'
+            item['signalLabel'] = '缩量假高开'
+            item['_intensity'] = open_pct  # 高开越多越危险
+            fake_high.append(item)
+
+    # 每类信号取 top 30，按强度降序
+    super_grab.sort(key=lambda x: -x['_intensity'])
+    nuclear_button.sort(key=lambda x: -x['_intensity'])
+    locked_limit.sort(key=lambda x: -x['_intensity'])
+    fake_high.sort(key=lambda x: -x['_intensity'])
+
+    super_grab = super_grab[:30]
+    nuclear_button = nuclear_button[:30]
+    locked_limit = locked_limit[:30]
+    fake_high = fake_high[:30]
+
+    # 合并去重（同一只票可能被多类信号选中，保留强度最高的）
+    seen = set()
+    scan_items = []
+    for pool in [nuclear_button, locked_limit, super_grab, fake_high]:
+        for item in pool:
+            if item['code'] in seen:
+                continue
+            seen.add(item['code'])
+            item.pop('_intensity', None)
+            scan_items.append(item)
+
+    return {
+        'status': 'ok',
+        'scan_items': scan_items,
+        'grabCount': len(super_grab),
+        'nuclearCount': len(nuclear_button),
+        'fakeHighCount': len(fake_high),
+        'lockedCount': len(locked_limit),
+        'total_scanned': total_scanned,
+        'updated_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+    }
