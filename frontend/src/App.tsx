@@ -25,6 +25,9 @@ const CallAuctionRadarPlugin = React.lazy(() =>
 const UltraShortQuantWorkbench = React.lazy(() =>
   import('./components/UltraShortQuantWorkbench').then((m) => ({ default: m.UltraShortQuantWorkbench }))
 );
+const StockScreenerPanel = React.lazy(() =>
+  import('./components/StockScreenerPanel').then((m) => ({ default: m.StockScreenerPanel }))
+);
 import { marketWsClient } from './services/wsClient';
 import { useMarketStore } from './store/useMarketStore';
 import {
@@ -380,6 +383,7 @@ export default function App() {
               )}
               {workspaceMode === 'auction' && <CallAuctionRadarPlugin />}
               {workspaceMode === 'quant' && <UltraShortQuantWorkbench />}
+              {workspaceMode === 'screener' && <StockScreenerPanel />}
             </React.Suspense>
           </LazyBoundary>
 

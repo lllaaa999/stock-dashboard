@@ -1,5 +1,5 @@
 import React from 'react';
-import { Keyboard, Radar, Layers, BarChart2, ShieldAlert } from 'lucide-react';
+import { Keyboard, Radar, Layers, BarChart2, ShieldAlert, Filter } from 'lucide-react';
 import { useMarketStore } from '../store/useMarketStore';
 
 export const TopNavBar: React.FC = () => {
@@ -95,6 +95,20 @@ export const TopNavBar: React.FC = () => {
         >
           <ShieldAlert className="w-3.5 h-3.5" />
           <span>连板梯队与异动逆推</span>
+        </button>
+
+        <button
+          type="button"
+          data-testid="nav-screener"
+          onClick={() => setWorkspaceMode('screener')}
+          className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
+            workspaceMode === 'screener'
+              ? 'bg-[#2EB872] text-white font-semibold shadow-sm'
+              : 'text-[#9ca3af] hover:text-[#2EB872] hover:bg-[#1e222d]'
+          }`}
+        >
+          <Filter className="w-3.5 h-3.5" />
+          <span>选股</span>
         </button>
       </nav>
 

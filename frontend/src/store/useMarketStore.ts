@@ -170,7 +170,7 @@ export interface MarketStoreState {
   isArchModalOpen: boolean;
 
   // 超短游资量化工作台模式与子模块切换
-  workspaceMode: 'chart' | 'auction' | 'quant';
+  workspaceMode: 'chart' | 'auction' | 'quant' | 'screener';
   isCommandPaletteOpen: boolean;
   commandPaletteInitialQuery: string;
   quantModuleTab:
