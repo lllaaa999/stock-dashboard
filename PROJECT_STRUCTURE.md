@@ -278,7 +278,7 @@ py -3.12 -m unittest discover -s tests -t .
 
 | # | 项 | 说明 |
 |---|---|---|
-| 5 | `/api/sectors` → **404** | 前端请求了后端不存在的路由（板块数据实际在 `/api/market.sectors`） |
+| 5 | ~~`/api/sectors` → 404~~ | ✅ 复核：前后端代码中已无对该路由的引用 |
 | 6 | 情绪面板未 React 化 | `/api/market.emotion` 有 70 只首板 / 37 个题材 / 四层晋级率 / 断层诊断，前端 `grep emotion` = 0 处引用 |
 | 7 | 19 个孤儿端点 | 有数据、无前端入口（`/emotion/history`、`/screen`、`/strategies`、`/paper/*`、`/backtest/*`、`/stock/{code}`…） |
 | 8 | 板块资金估算无标识 | 东财失败降级新浪时 `source=sina_estimated`，`flow = 成交额×涨跌幅×0.15` 经验系数；前端未展示该标识 |
@@ -290,7 +290,7 @@ py -3.12 -m unittest discover -s tests -t .
 | 9 | ~~`main.py` `dumpCount: 0`~~ | ✅ 已改为按 `OVERHEAT_DUMP` 信号实际统计（当前映射未产出该分类，故仍为 0，但不再是硬编码常量） |
 | 10 | `main.py:396` | `signal != 'NORMAL'` 恒真（`NORMAL` 从未被赋值） |
 | 11 | `quant_data_service.py:431-433` | `ebbTideRiskScore` 只有 78/35 两个常数，不是算出来的 |
-| 12 | **情绪 v2 量程缺陷** | v2 权重合计 = 10+18+17+12+25 = **82**，而 `emotion_band` 的亢奋线是 **85** → 「亢奋」永不触发，`M 情绪总开关` 的亢奋分支是死代码。极端牛市样本实测顶到 82.0 |
+| 12 | ~~**情绪 v2 量程缺陷**~~ | ✅ 已修：`emotion_band` 亢奋线早已标定为 72；本次把 `stock_dashboard._cycle_stage` 里仍写死的 `sc >= 85`（v2 上限 82，永不触发）改为常量 `_EUPHORIA_SCORE = 80`，即下方方案 A，权重与历史存档不动 |
 | 13 | 交易日回退 | 三处逻辑不一致（情绪回溯 7 天 / 梯队 5 天 / 竞价不回溯） |
 
 > **#12 的处理说明**：曾有改动把权重抬到 15/22/18/15/30（上限 100）以让 85 可达，但那样会让**全部历史存档、42/68/65 等实证阈值全部失效**（同一天 20261023 会从 65.02 跳到 81.0）。因此本次**回退了权重**（保留新增的 `eff.score` 越界 clamp），把「85 分不可达」作为已知缺口记录在此。若要真正修，两条路：
@@ -302,8 +302,8 @@ py -3.12 -m unittest discover -s tests -t .
 | # | 项 | 影响 |
 |---|---|---|
 | 14 | ~~`web/dist` 新产物未入库~~ | ✅ 已入库：`git add web/dist` 把新 hash 的 js/css 与 index.html/sw.js 一并暂存，旧 hash 的删除同步登记（提交后不会 404） |
-| 15 | `frontend/package.json` | 名字还是 `react-example`；`dev`/`start` 指向不存在的 `server.ts`（`bun run dev` 必失败）；`lightweight-charts` / `@google/genai` / `express` / `dotenv` 零引用 |
-| 16 | `requirements.txt` | `jinja2` 已无引用（Jinja 模板已删） |
+| 15 | `frontend/package.json` | 名字已改；`dev` 已改为 `vite`、已删指向不存在 `server.ts` 的 `start`。仍待清理（需重装以更新 `bun.lock`）：`lightweight-charts` / `@google/genai` / `express` / `dotenv` 零引用 |
+| 16 | ~~`requirements.txt`~~ | ✅ `jinja2` 已不在清单中 |
 | 17 | `data/llm/` | 残留 `sim-*.json` / `ledger.jsonl`，对应模块 `sim_llm.py` / `sim_score.py` 已删 |
 | 18 | `scratch/` | 1.9k+ 文件：10 个 `_server*.log`、6 个 `*_before_*.py`、3 个 `backup_*` 目录；审计文档在 `scratch/audit/` |
 | 19 | 文档漂移 | ✅ 已修：SKILL/README/PROJECT_STRUCTURE 三份文档已按实测对齐 |

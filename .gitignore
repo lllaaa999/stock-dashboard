@@ -15,6 +15,8 @@ node_modules/
 !web/dist/**
 # 前端构建同步的临时目录（vite 插件先写这里再整体换名）
 web/.dist-tmp/
+# PWA 开发模式产物目录（vite-plugin-pwa devOptions.enabled=true 时产出）
+frontend/dev-dist/
 downloads/
 eggs/
 .eggs/

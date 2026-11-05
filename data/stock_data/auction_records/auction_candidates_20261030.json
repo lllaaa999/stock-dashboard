@@ -1,0 +1,1850 @@
+{
+  "date": "20261030",
+  "recorded_at": "2026-11-01 03:01:07",
+  "phase": "post_close",
+  "synthetic": true,
+  "weak_to_strong": [
+    {
+      "code": "301079",
+      "name": "邵阳液压",
+      "price": 36.79,
+      "prev_close": 34.0,
+      "open_price": 37.55,
+      "open_pct": 10.44,
+      "pct": 8.21,
+      "high_pct": 17.59,
+      "low_p": 35.88,
+      "drop_from_high": -7.98,
+      "vol_ratio": 3.37,
+      "turnover": 44.03,
+      "amount_yi": 12.8,
+      "prev_amount_yi": 4.73,
+      "amount_ratio_pct": 270.69,
+      "is_fake_high_open": false,
+      "limit_up": 40.8,
+      "limit_down": 27.2,
+      "is_zt": false,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        36.79,
+        41.0
+      ],
+      "ask1": [
+        36.8,
+        234.0
+      ],
+      "bids": [
+        [
+          36.79,
+          41.0
+        ],
+        [
+          36.78,
+          158.0
+        ],
+        [
+          36.77,
+          145.0
+        ],
+        [
+          36.76,
+          57.0
+        ],
+        [
+          36.75,
+          120.0
+        ]
+      ],
+      "asks": [
+        [
+          36.8,
+          234.0
+        ],
+        [
+          36.81,
+          13.0
+        ],
+        [
+          36.83,
+          4.0
+        ],
+        [
+          36.85,
+          58.0
+        ],
+        [
+          36.88,
+          113.0
+        ]
+      ],
+      "total_bid_vol": 521.0,
+      "total_ask_vol": 422.0,
+      "order_ratio": 10.5,
+      "weibi": 10.5,
+      "bid1_amount_yi": 0.0,
+      "ask1_amount_yi": 0.01,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "工程机械",
+      "zbc": 0,
+      "fbt": 95845,
+      "prev_amount": 472972368.0,
+      "reason": "昨首板(今加速高开+10.4%,量比3.4,量12.8亿/占昨270.69%)",
+      "cross_dedup": "auction_boom"
+    },
+    {
+      "code": "600592",
+      "name": "龙溪股份",
+      "price": 15.68,
+      "prev_close": 17.41,
+      "open_price": 18.8,
+      "open_pct": 7.98,
+      "pct": -9.94,
+      "high_pct": 9.02,
+      "low_p": 15.67,
+      "drop_from_high": -17.39,
+      "vol_ratio": 3.5,
+      "turnover": 15.61,
+      "amount_yi": 10.53,
+      "prev_amount_yi": 2.47,
+      "amount_ratio_pct": 426.3,
+      "is_fake_high_open": false,
+      "limit_up": 19.15,
+      "limit_down": 15.67,
+      "is_zt": false,
+      "is_dt": true,
+      "is_one_word": false,
+      "bid1": [
+        15.68,
+        880.0
+      ],
+      "ask1": [
+        15.69,
+        29.0
+      ],
+      "bids": [
+        [
+          15.68,
+          880.0
+        ],
+        [
+          15.67,
+          864.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "asks": [
+        [
+          15.69,
+          29.0
+        ],
+        [
+          15.7,
+          22.0
+        ],
+        [
+          15.71,
+          33.0
+        ],
+        [
+          15.72,
+          16.0
+        ],
+        [
+          15.73,
+          491.0
+        ]
+      ],
+      "total_bid_vol": 1744.0,
+      "total_ask_vol": 591.0,
+      "order_ratio": 49.38,
+      "weibi": 49.38,
+      "bid1_amount_yi": 0.01,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "通用设备",
+      "zbc": 0,
+      "fbt": 93017,
+      "prev_amount": 247028038.0,
+      "reason": "昨首板(今加速高开+8.0%,量比3.5,量10.53亿/占昨426.3%)"
+    },
+    {
+      "code": "605598",
+      "name": "上海港湾",
+      "price": 26.14,
+      "prev_close": 24.9,
+      "open_price": 26.37,
+      "open_pct": 5.9,
+      "pct": 4.98,
+      "high_pct": 10.0,
+      "low_p": 25.57,
+      "drop_from_high": -4.56,
+      "vol_ratio": 6.79,
+      "turnover": 10.73,
+      "amount_yi": 6.89,
+      "prev_amount_yi": 1.38,
+      "amount_ratio_pct": 501.44,
+      "is_fake_high_open": false,
+      "limit_up": 27.39,
+      "limit_down": 22.41,
+      "is_zt": false,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        26.14,
+        44.0
+      ],
+      "ask1": [
+        26.15,
+        69.0
+      ],
+      "bids": [
+        [
+          26.14,
+          44.0
+        ],
+        [
+          26.13,
+          39.0
+        ],
+        [
+          26.11,
+          11.0
+        ],
+        [
+          26.1,
+          81.0
+        ],
+        [
+          26.09,
+          89.0
+        ]
+      ],
+      "asks": [
+        [
+          26.15,
+          69.0
+        ],
+        [
+          26.16,
+          130.0
+        ],
+        [
+          26.17,
+          8.0
+        ],
+        [
+          26.18,
+          15.0
+        ],
+        [
+          26.19,
+          19.0
+        ]
+      ],
+      "total_bid_vol": 264.0,
+      "total_ask_vol": 241.0,
+      "order_ratio": 4.55,
+      "weibi": 4.55,
+      "bid1_amount_yi": 0.0,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "专业工程",
+      "zbc": 0,
+      "fbt": 100258,
+      "prev_amount": 137500626.0,
+      "reason": "昨首板(今加速高开+5.9%,量比6.8,量6.89亿/占昨501.44%)",
+      "cross_dedup": "auction_boom"
+    },
+    {
+      "code": "002275",
+      "name": "桂林三金",
+      "price": 14.98,
+      "prev_close": 13.62,
+      "open_price": 14.3,
+      "open_pct": 4.99,
+      "pct": 9.99,
+      "high_pct": 9.99,
+      "low_p": 14.24,
+      "drop_from_high": 0.0,
+      "vol_ratio": 3.84,
+      "turnover": 4.18,
+      "amount_yi": 3.52,
+      "prev_amount_yi": 3.1,
+      "amount_ratio_pct": 113.71,
+      "is_fake_high_open": false,
+      "limit_up": 14.98,
+      "limit_down": 12.26,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        14.98,
+        71569.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          14.98,
+          71569.0
+        ],
+        [
+          14.97,
+          2612.0
+        ],
+        [
+          14.96,
+          39.0
+        ],
+        [
+          14.95,
+          92.0
+        ],
+        [
+          14.94,
+          5.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 74317.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 1.07,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 1.07,
+      "seal_wan": 10700.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "中药Ⅱ",
+      "zbc": 2,
+      "fbt": 94457,
+      "prev_amount": 309836336.0,
+      "reason": "昨炸2次(今高开+5.0%,量比3.8,量3.52亿/占昨113.71%)",
+      "cross_dedup": "auction_boom"
+    },
+    {
+      "code": "002172",
+      "name": "澳洋健康",
+      "price": 5.91,
+      "prev_close": 5.37,
+      "open_price": 5.61,
+      "open_pct": 4.47,
+      "pct": 10.06,
+      "high_pct": 10.06,
+      "low_p": 5.27,
+      "drop_from_high": 0.0,
+      "vol_ratio": 1.71,
+      "turnover": 29.99,
+      "amount_yi": 12.89,
+      "prev_amount_yi": 7.57,
+      "amount_ratio_pct": 170.16,
+      "is_fake_high_open": false,
+      "limit_up": 5.91,
+      "limit_down": 4.83,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        5.91,
+        102096.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          5.91,
+          102096.0
+        ],
+        [
+          5.9,
+          909.0
+        ],
+        [
+          5.89,
+          446.0
+        ],
+        [
+          5.88,
+          1087.0
+        ],
+        [
+          5.87,
+          344.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 104882.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 0.6,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.6,
+      "seal_wan": 6000.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 2,
+      "hybk": "医疗服务",
+      "zbc": 4,
+      "fbt": 93048,
+      "prev_amount": 757232208.0,
+      "reason": "昨炸4次(今高开+4.5%,量比1.7,量12.89亿/占昨170.16%)",
+      "cross_dedup": "auction_boom"
+    },
+    {
+      "code": "600428",
+      "name": "中远海特",
+      "price": 11.47,
+      "prev_close": 11.39,
+      "open_price": 11.7,
+      "open_pct": 2.72,
+      "pct": 0.7,
+      "high_pct": 3.51,
+      "low_p": 11.22,
+      "drop_from_high": -2.71,
+      "vol_ratio": 2.93,
+      "turnover": 3.08,
+      "amount_yi": 9.7,
+      "prev_amount_yi": 4.24,
+      "amount_ratio_pct": 229.0,
+      "is_fake_high_open": false,
+      "limit_up": 12.53,
+      "limit_down": 10.25,
+      "is_zt": false,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        11.47,
+        342.0
+      ],
+      "ask1": [
+        11.48,
+        356.0
+      ],
+      "bids": [
+        [
+          11.47,
+          342.0
+        ],
+        [
+          11.46,
+          60.0
+        ],
+        [
+          11.45,
+          653.0
+        ],
+        [
+          11.44,
+          1121.0
+        ],
+        [
+          11.43,
+          142.0
+        ]
+      ],
+      "asks": [
+        [
+          11.48,
+          356.0
+        ],
+        [
+          11.49,
+          113.0
+        ],
+        [
+          11.5,
+          461.0
+        ],
+        [
+          11.51,
+          25.0
+        ],
+        [
+          11.52,
+          44.0
+        ]
+      ],
+      "total_bid_vol": 2318.0,
+      "total_ask_vol": 999.0,
+      "order_ratio": 39.76,
+      "weibi": 39.76,
+      "bid1_amount_yi": 0.0,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "航运港口",
+      "zbc": 2,
+      "fbt": 93025,
+      "prev_amount": 423744112.0,
+      "reason": "昨炸2次(今高开+2.7%,量比2.9,量9.7亿/占昨229.0%)"
+    }
+  ],
+  "auction_boom": [
+    {
+      "code": "600261",
+      "name": "阳光照明",
+      "price": 4.09,
+      "prev_close": 3.72,
+      "open_price": 4.09,
+      "open_pct": 9.95,
+      "pct": 9.95,
+      "high_pct": 9.95,
+      "low_p": 4.09,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.41,
+      "turnover": 2.51,
+      "amount_yi": 1.37,
+      "prev_amount_yi": 2.79,
+      "amount_ratio_pct": 49.18,
+      "is_fake_high_open": true,
+      "limit_up": 4.09,
+      "limit_down": 3.35,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": true,
+      "bid1": [
+        4.09,
+        1491547.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          4.09,
+          1491547.0
+        ],
+        [
+          4.08,
+          8915.0
+        ],
+        [
+          4.07,
+          1836.0
+        ],
+        [
+          4.06,
+          3236.0
+        ],
+        [
+          4.05,
+          3773.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 1509307.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 6.1,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 6.1,
+      "seal_wan": 61000.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "照明设备",
+      "zbc": 2,
+      "fbt": 93223,
+      "prev_amount": 278628288.0
+    },
+    {
+      "code": "603131",
+      "name": "上海沪工",
+      "price": 17.55,
+      "prev_close": 15.95,
+      "open_price": 17.55,
+      "open_pct": 10.03,
+      "pct": 10.03,
+      "high_pct": 10.03,
+      "low_p": 17.55,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.57,
+      "turnover": 3.21,
+      "amount_yi": 1.9,
+      "prev_amount_yi": 5.75,
+      "amount_ratio_pct": 33.02,
+      "is_fake_high_open": true,
+      "limit_up": 17.55,
+      "limit_down": 14.36,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": true,
+      "bid1": [
+        17.55,
+        146739.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          17.55,
+          146739.0
+        ],
+        [
+          17.54,
+          1589.0
+        ],
+        [
+          17.53,
+          111.0
+        ],
+        [
+          17.52,
+          49.0
+        ],
+        [
+          17.51,
+          171.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 148659.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 2.58,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 2.58,
+      "seal_wan": 25800.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 2,
+      "hybk": "通用设备",
+      "zbc": 0,
+      "fbt": 95029,
+      "prev_amount": 574523840.0
+    },
+    {
+      "code": "603703",
+      "name": "盛洋科技",
+      "price": 11.95,
+      "prev_close": 10.86,
+      "open_price": 11.95,
+      "open_pct": 10.04,
+      "pct": 10.04,
+      "high_pct": 10.04,
+      "low_p": 11.95,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.28,
+      "turnover": 1.84,
+      "amount_yi": 0.91,
+      "prev_amount_yi": 3.61,
+      "amount_ratio_pct": 25.23,
+      "is_fake_high_open": true,
+      "limit_up": 11.95,
+      "limit_down": 9.77,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": true,
+      "bid1": [
+        11.95,
+        203224.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          11.95,
+          203224.0
+        ],
+        [
+          11.94,
+          2698.0
+        ],
+        [
+          11.93,
+          97.0
+        ],
+        [
+          11.92,
+          291.0
+        ],
+        [
+          11.91,
+          40.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 206350.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 2.43,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 2.43,
+      "seal_wan": 24300.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "光学光电",
+      "zbc": 0,
+      "fbt": 100530,
+      "prev_amount": 361176208.0
+    },
+    {
+      "code": "003032",
+      "name": "传智教育",
+      "price": 9.96,
+      "prev_close": 9.05,
+      "open_price": 9.92,
+      "open_pct": 9.61,
+      "pct": 10.06,
+      "high_pct": 10.06,
+      "low_p": 9.24,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.68,
+      "turnover": 6.64,
+      "amount_yi": 1.86,
+      "prev_amount_yi": 2.12,
+      "amount_ratio_pct": 87.41,
+      "is_fake_high_open": true,
+      "limit_up": 9.96,
+      "limit_down": 8.15,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        9.96,
+        95287.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          9.96,
+          95287.0
+        ],
+        [
+          9.95,
+          916.0
+        ],
+        [
+          9.94,
+          144.0
+        ],
+        [
+          9.93,
+          149.0
+        ],
+        [
+          9.92,
+          173.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 96669.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 0.95,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.95,
+      "seal_wan": 9500.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "教育",
+      "zbc": 0,
+      "fbt": 93203,
+      "prev_amount": 212346760.0
+    },
+    {
+      "code": "002086",
+      "name": "东方海洋",
+      "price": 2.83,
+      "prev_close": 2.57,
+      "open_price": 2.7,
+      "open_pct": 5.06,
+      "pct": 10.12,
+      "high_pct": 10.12,
+      "low_p": 2.62,
+      "drop_from_high": 0.0,
+      "vol_ratio": 1.29,
+      "turnover": 27.18,
+      "amount_yi": 11.9,
+      "prev_amount_yi": 8.37,
+      "amount_ratio_pct": 142.21,
+      "is_fake_high_open": false,
+      "limit_up": 2.83,
+      "limit_down": 2.31,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        2.83,
+        288178.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          2.83,
+          288178.0
+        ],
+        [
+          2.82,
+          7311.0
+        ],
+        [
+          2.81,
+          847.0
+        ],
+        [
+          2.8,
+          4104.0
+        ],
+        [
+          2.79,
+          7707.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 308147.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 0.82,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.82,
+      "seal_wan": 8200.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "农产品加",
+      "zbc": 0,
+      "fbt": 135336,
+      "prev_amount": 836997776.0
+    },
+    {
+      "code": "001219",
+      "name": "青岛食品",
+      "price": 19.94,
+      "prev_close": 18.13,
+      "open_price": 19.94,
+      "open_pct": 9.98,
+      "pct": 9.98,
+      "high_pct": 9.98,
+      "low_p": 19.51,
+      "drop_from_high": 0.0,
+      "vol_ratio": 7.62,
+      "turnover": 24.9,
+      "amount_yi": 9.44,
+      "prev_amount_yi": 0.54,
+      "amount_ratio_pct": 1739.38,
+      "is_fake_high_open": false,
+      "limit_up": 19.94,
+      "limit_down": 16.32,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        19.94,
+        28623.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          19.94,
+          28623.0
+        ],
+        [
+          19.93,
+          399.0
+        ],
+        [
+          19.92,
+          32.0
+        ],
+        [
+          19.91,
+          14.0
+        ],
+        [
+          19.9,
+          203.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 29271.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 0.57,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.57,
+      "seal_wan": 5700.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 4,
+      "hybk": "休闲食品",
+      "zbc": 0,
+      "fbt": 92500,
+      "prev_amount": 54276760.0
+    },
+    {
+      "code": "605338",
+      "name": "巴比食品",
+      "price": 20.88,
+      "prev_close": 18.98,
+      "open_price": 19.09,
+      "open_pct": 0.58,
+      "pct": 10.01,
+      "high_pct": 10.01,
+      "low_p": 18.72,
+      "drop_from_high": 0.0,
+      "vol_ratio": 5.34,
+      "turnover": 6.46,
+      "amount_yi": 3.1,
+      "prev_amount_yi": 0.96,
+      "amount_ratio_pct": 322.47,
+      "is_fake_high_open": false,
+      "limit_up": 20.88,
+      "limit_down": 17.08,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        20.88,
+        1863.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          20.88,
+          1863.0
+        ],
+        [
+          20.87,
+          864.0
+        ],
+        [
+          20.82,
+          9.0
+        ],
+        [
+          20.8,
+          9.0
+        ],
+        [
+          20.79,
+          14.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 2759.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 0.04,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.04,
+      "seal_wan": 400.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "食品加工",
+      "zbc": 0,
+      "fbt": 95921,
+      "prev_amount": 95984658.0
+    },
+    {
+      "code": "002149",
+      "name": "西部材料",
+      "price": 33.57,
+      "prev_close": 32.31,
+      "open_price": 32.31,
+      "open_pct": 0.0,
+      "pct": 3.9,
+      "high_pct": 10.0,
+      "low_p": 32.3,
+      "drop_from_high": -5.54,
+      "vol_ratio": 3.89,
+      "turnover": 21.09,
+      "amount_yi": 35.36,
+      "prev_amount_yi": 18.47,
+      "amount_ratio_pct": 191.39,
+      "is_fake_high_open": false,
+      "limit_up": 35.54,
+      "limit_down": 29.08,
+      "is_zt": false,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        33.57,
+        864.0
+      ],
+      "ask1": [
+        33.58,
+        185.0
+      ],
+      "bids": [
+        [
+          33.57,
+          864.0
+        ],
+        [
+          33.56,
+          407.0
+        ],
+        [
+          33.55,
+          304.0
+        ],
+        [
+          33.54,
+          37.0
+        ],
+        [
+          33.53,
+          10.0
+        ]
+      ],
+      "asks": [
+        [
+          33.58,
+          185.0
+        ],
+        [
+          33.59,
+          111.0
+        ],
+        [
+          33.6,
+          185.0
+        ],
+        [
+          33.61,
+          98.0
+        ],
+        [
+          33.62,
+          284.0
+        ]
+      ],
+      "total_bid_vol": 1622.0,
+      "total_ask_vol": 863.0,
+      "order_ratio": 30.54,
+      "weibi": 30.54,
+      "bid1_amount_yi": 0.03,
+      "ask1_amount_yi": 0.01,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "小金属",
+      "zbc": 1,
+      "fbt": 105412,
+      "prev_amount": 1847363520.0
+    },
+    {
+      "code": "600997",
+      "name": "开滦股份",
+      "price": 5.43,
+      "prev_close": 5.39,
+      "open_price": 5.39,
+      "open_pct": 0.0,
+      "pct": 0.74,
+      "high_pct": 3.34,
+      "low_p": 5.1,
+      "drop_from_high": -2.51,
+      "vol_ratio": 3.89,
+      "turnover": 3.27,
+      "amount_yi": 2.79,
+      "prev_amount_yi": 1.65,
+      "amount_ratio_pct": 169.31,
+      "is_fake_high_open": false,
+      "limit_up": 5.93,
+      "limit_down": 4.85,
+      "is_zt": false,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        5.43,
+        1259.0
+      ],
+      "ask1": [
+        5.44,
+        67.0
+      ],
+      "bids": [
+        [
+          5.43,
+          1259.0
+        ],
+        [
+          5.42,
+          302.0
+        ],
+        [
+          5.41,
+          248.0
+        ],
+        [
+          5.4,
+          625.0
+        ],
+        [
+          5.39,
+          34.0
+        ]
+      ],
+      "asks": [
+        [
+          5.44,
+          67.0
+        ],
+        [
+          5.45,
+          43.0
+        ],
+        [
+          5.46,
+          102.0
+        ],
+        [
+          5.47,
+          587.0
+        ],
+        [
+          5.48,
+          411.0
+        ]
+      ],
+      "total_bid_vol": 2468.0,
+      "total_ask_vol": 1210.0,
+      "order_ratio": 34.2,
+      "weibi": 34.2,
+      "bid1_amount_yi": 0.01,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "焦炭Ⅱ",
+      "zbc": 3,
+      "fbt": 94103,
+      "prev_amount": 164820034.0
+    },
+    {
+      "code": "600118",
+      "name": "中国卫星",
+      "price": 55.91,
+      "prev_close": 55.9,
+      "open_price": 56.0,
+      "open_pct": 0.18,
+      "pct": 0.02,
+      "high_pct": 6.83,
+      "low_p": 54.9,
+      "drop_from_high": -6.38,
+      "vol_ratio": 3.48,
+      "turnover": 7.49,
+      "amount_yi": 50.7,
+      "prev_amount_yi": 31.13,
+      "amount_ratio_pct": 162.84,
+      "is_fake_high_open": false,
+      "limit_up": 61.49,
+      "limit_down": 50.31,
+      "is_zt": false,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        55.91,
+        273.0
+      ],
+      "ask1": [
+        55.92,
+        1380.0
+      ],
+      "bids": [
+        [
+          55.91,
+          273.0
+        ],
+        [
+          55.9,
+          1648.0
+        ],
+        [
+          55.89,
+          28.0
+        ],
+        [
+          55.88,
+          200.0
+        ],
+        [
+          55.87,
+          22.0
+        ]
+      ],
+      "asks": [
+        [
+          55.92,
+          1380.0
+        ],
+        [
+          55.93,
+          75.0
+        ],
+        [
+          55.94,
+          6.0
+        ],
+        [
+          55.95,
+          171.0
+        ],
+        [
+          55.96,
+          9.0
+        ]
+      ],
+      "total_bid_vol": 2171.0,
+      "total_ask_vol": 1641.0,
+      "order_ratio": 13.9,
+      "weibi": 13.9,
+      "bid1_amount_yi": 0.02,
+      "ask1_amount_yi": 0.08,
+      "seal_amount_yi": 0.0,
+      "seal_wan": 0.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "航天装备",
+      "zbc": 8,
+      "fbt": 102458,
+      "prev_amount": 3113427488.0
+    }
+  ],
+  "fake_high_opens": [
+    {
+      "code": "603703",
+      "name": "盛洋科技",
+      "price": 11.95,
+      "prev_close": 10.86,
+      "open_price": 11.95,
+      "open_pct": 10.04,
+      "pct": 10.04,
+      "high_pct": 10.04,
+      "low_p": 11.95,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.28,
+      "turnover": 1.84,
+      "amount_yi": 0.91,
+      "prev_amount_yi": 3.61,
+      "amount_ratio_pct": 25.23,
+      "is_fake_high_open": true,
+      "limit_up": 11.95,
+      "limit_down": 9.77,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": true,
+      "bid1": [
+        11.95,
+        203224.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          11.95,
+          203224.0
+        ],
+        [
+          11.94,
+          2698.0
+        ],
+        [
+          11.93,
+          97.0
+        ],
+        [
+          11.92,
+          291.0
+        ],
+        [
+          11.91,
+          40.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 206350.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 2.43,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 2.43,
+      "seal_wan": 24300.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "光学光电",
+      "zbc": 0,
+      "fbt": 100530,
+      "prev_amount": 361176208.0,
+      "reason": "缩量诱多预警: 高开+10.0%但量比仅0.3, 金额0.91亿(占昨25.23%)",
+      "risk_tag": "缩量诱多"
+    },
+    {
+      "code": "603131",
+      "name": "上海沪工",
+      "price": 17.55,
+      "prev_close": 15.95,
+      "open_price": 17.55,
+      "open_pct": 10.03,
+      "pct": 10.03,
+      "high_pct": 10.03,
+      "low_p": 17.55,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.57,
+      "turnover": 3.21,
+      "amount_yi": 1.9,
+      "prev_amount_yi": 5.75,
+      "amount_ratio_pct": 33.02,
+      "is_fake_high_open": true,
+      "limit_up": 17.55,
+      "limit_down": 14.36,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": true,
+      "bid1": [
+        17.55,
+        146739.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          17.55,
+          146739.0
+        ],
+        [
+          17.54,
+          1589.0
+        ],
+        [
+          17.53,
+          111.0
+        ],
+        [
+          17.52,
+          49.0
+        ],
+        [
+          17.51,
+          171.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 148659.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 2.58,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 2.58,
+      "seal_wan": 25800.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 2,
+      "hybk": "通用设备",
+      "zbc": 0,
+      "fbt": 95029,
+      "prev_amount": 574523840.0,
+      "reason": "缩量诱多预警: 高开+10.0%但量比仅0.6, 金额1.9亿(占昨33.02%)",
+      "risk_tag": "缩量诱多"
+    },
+    {
+      "code": "600261",
+      "name": "阳光照明",
+      "price": 4.09,
+      "prev_close": 3.72,
+      "open_price": 4.09,
+      "open_pct": 9.95,
+      "pct": 9.95,
+      "high_pct": 9.95,
+      "low_p": 4.09,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.41,
+      "turnover": 2.51,
+      "amount_yi": 1.37,
+      "prev_amount_yi": 2.79,
+      "amount_ratio_pct": 49.18,
+      "is_fake_high_open": true,
+      "limit_up": 4.09,
+      "limit_down": 3.35,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": true,
+      "bid1": [
+        4.09,
+        1491547.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          4.09,
+          1491547.0
+        ],
+        [
+          4.08,
+          8915.0
+        ],
+        [
+          4.07,
+          1836.0
+        ],
+        [
+          4.06,
+          3236.0
+        ],
+        [
+          4.05,
+          3773.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 1509307.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 6.1,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 6.1,
+      "seal_wan": 61000.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "照明设备",
+      "zbc": 2,
+      "fbt": 93223,
+      "prev_amount": 278628288.0,
+      "reason": "缩量诱多预警: 高开+9.9%但量比仅0.4, 金额1.37亿(占昨49.18%)",
+      "risk_tag": "缩量诱多"
+    },
+    {
+      "code": "003032",
+      "name": "传智教育",
+      "price": 9.96,
+      "prev_close": 9.05,
+      "open_price": 9.92,
+      "open_pct": 9.61,
+      "pct": 10.06,
+      "high_pct": 10.06,
+      "low_p": 9.24,
+      "drop_from_high": 0.0,
+      "vol_ratio": 0.68,
+      "turnover": 6.64,
+      "amount_yi": 1.86,
+      "prev_amount_yi": 2.12,
+      "amount_ratio_pct": 87.41,
+      "is_fake_high_open": true,
+      "limit_up": 9.96,
+      "limit_down": 8.15,
+      "is_zt": true,
+      "is_dt": false,
+      "is_one_word": false,
+      "bid1": [
+        9.96,
+        95287.0
+      ],
+      "ask1": [
+        0.0,
+        0.0
+      ],
+      "bids": [
+        [
+          9.96,
+          95287.0
+        ],
+        [
+          9.95,
+          916.0
+        ],
+        [
+          9.94,
+          144.0
+        ],
+        [
+          9.93,
+          149.0
+        ],
+        [
+          9.92,
+          173.0
+        ]
+      ],
+      "asks": [
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0
+        ]
+      ],
+      "total_bid_vol": 96669.0,
+      "total_ask_vol": 0.0,
+      "order_ratio": 100.0,
+      "weibi": 100.0,
+      "bid1_amount_yi": 0.95,
+      "ask1_amount_yi": 0.0,
+      "seal_amount_yi": 0.95,
+      "seal_wan": 9500.0,
+      "dt_pressure_yi": 0.0,
+      "dt_wan": 0.0,
+      "src": "ZT",
+      "lbc": 1,
+      "hybk": "教育",
+      "zbc": 0,
+      "fbt": 93203,
+      "prev_amount": 212346760.0,
+      "reason": "缩量诱多预警: 高开+9.6%但量比仅0.7, 金额1.86亿(占昨87.41%)",
+      "risk_tag": "缩量诱多"
+    }
+  ]
+}
