@@ -29,6 +29,7 @@ import stock_dashboard as sd
 import strategic_decision as sd_engine
 import news_events
 import threshold_evidence
+import daily_archive
 
 DATA_DIR = pathlib.Path(sd.DATA_DIR)
 REPORT_PATH = DATA_DIR / 'daily_pipeline_report.json'
@@ -186,6 +187,29 @@ def step_threshold_calibration():
         return {'status': 'error', 'error': str(e)}
 
 
+def step_daily_archive(ymd, force=False):
+    """
+    每日事实归档 + 连续性校验（B1）。
+    只读已落盘的事实（情绪历史/涨停池/竞价候选/板块资金/决策台账），
+    不新增上游请求；缺失块写 available=false，不伪造 0。
+    """
+    try:
+        res = daily_archive.build_daily_archive(ymd, force=force)
+        status = daily_archive.archive_status(days=60, end_ymd=ymd)
+        res['continuity'] = status
+        if res.get('status') == 'ok':
+            log(f"每日归档完成: {res['path']} | 缺失块={res.get('gaps')} | "
+                f"近60交易日缺档={status.get('missing_count')}天")
+        else:
+            log(f"每日归档跳过: {res.get('reason')} ({ymd})", level='WARN')
+        if status.get('missing_count'):
+            log(f"⚠️ 归档连续性缺口: {status.get('missing_dates')[:10]}", level='WARN')
+        return res
+    except Exception as e:
+        log(f"每日归档异常: {e}", level='WARN')
+        return {'status': 'error', 'error': str(e)}
+
+
 def run_daily_pipeline(target_date=None, force=False):
     """
     全自动主控流程 (100% 聚焦权威收盘数据收集、真实对账与分位数实证校准，剔除预测脑补)
@@ -232,6 +256,7 @@ def run_daily_pipeline(target_date=None, force=False):
     pipeline_results['steps']['news_events'] = step_news_events(date_str)
     pipeline_results['steps']['auction_audit'] = step_auction_audit(ymd, force=force)
     pipeline_results['steps']['threshold_calibration'] = step_threshold_calibration()
+    pipeline_results['steps']['daily_archive'] = step_daily_archive(ymd, force=force)
 
     duration = round(time.time() - start_time, 2)
     pipeline_results['duration_sec'] = duration

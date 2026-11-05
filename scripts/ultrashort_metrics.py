@@ -638,6 +638,7 @@ def calc_intraday_dvr(
     min_amplitude_pct: float = 6.0,
     dvr_threshold: float = 0.35,
     min_price_pos_ratio: float = 0.55,
+    volume_1m: Optional[np.ndarray] = None,
 ) -> DVRResult:
     close_1m = np.asarray(close_1m, dtype=float)
     high_1m = np.asarray(high_1m, dtype=float)
@@ -646,18 +647,26 @@ def calc_intraday_dvr(
     if len(close_1m) < 5 or pre_close <= 0:
         return DVRResult(0.5, 0.0, 0.5, False, "➖ 样本不足")
 
-    intraday_rets = np.diff(close_1m) / close_1m[:-1]
-    if open_1m is not None and len(open_1m) > 0 and open_1m[0] > 0:
-        first_bar_ret = (close_1m[0] - open_1m[0]) / open_1m[0]
-        rets = np.concatenate(([first_bar_ret], intraday_rets))
-    else:
-        rets = intraday_rets
+    intraday_rets = np.diff(close_1m) / np.maximum(close_1m[:-1], 1e-12)
+    # 第一根相对昨收，把开盘跳空算进下行方差。open_1m 只覆盖开盘到第一根收盘，会漏掉跳空。
+    gap_ret = (close_1m[0] - pre_close) / pre_close
+    rets = np.concatenate(([gap_ret], intraday_rets))
 
-    rv_total = float(np.sum(np.square(rets)))
+    weights = np.ones(len(rets), dtype=float)
+    if volume_1m is not None:
+        vol = np.asarray(volume_1m, dtype=float)
+        if len(vol) == len(close_1m) and np.nansum(vol) > 0:
+            # 跳空权重用第一分钟量，其后每根收益用后一根的量
+            weights = np.concatenate(([max(vol[0], 0.0)], np.maximum(vol[1:], 0.0)))
+            mean_w = float(np.mean(weights)) or 1.0
+            weights = weights / mean_w
+
+    sq = np.square(rets) * weights
+    rv_total = float(np.sum(sq))
     if rv_total <= 1e-12:
         return DVRResult(0.0, 0.0, 0.5, False, "➖ 极窄幅横盘")
 
-    rv_down = float(np.sum(np.square(rets[rets < 0])))
+    rv_down = float(np.sum(sq[rets < 0]))
     dvr = rv_down / rv_total
 
     day_high = float(np.max(high_1m))

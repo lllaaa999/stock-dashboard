@@ -8,6 +8,11 @@ import math
 from typing import Dict, Any, Tuple, Optional
 
 
+# 与周期阶段共用的两端阈值。72~80 若各用各的，band 已是亢奋而 stage 还停在活跃。
+ICE_SCORE = 33.0
+EUPHORIA_SCORE = 72.0
+
+
 def emotion_band(s: float) -> str:
     """情绪区间文字映射: 冰点 / 退潮/偏冷 / 中性 / 活跃 / 亢奋
 
@@ -21,7 +26,7 @@ def emotion_band(s: float) -> str:
       冰点 5.3% / 退潮 28.9% / 中性 23.7% / 活跃 26.3% / 亢奋 15.8%
     - 仅改阈值不改权重，历史存档分数值不变，可比性不受影响。
     """
-    return ('冰点' if s < 33 else '退潮/偏冷' if s < 45 else '中性' if s < 60 else '活跃' if s < 72 else '亢奋')
+    return ('冰点' if s < ICE_SCORE else '退潮/偏冷' if s < 45 else '中性' if s < 60 else '活跃' if s < EUPHORIA_SCORE else '亢奋')
 
 
 # 兼容旧命名

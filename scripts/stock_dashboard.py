@@ -30,7 +30,7 @@ if ROOT_DIR not in sys.path:
 # 通过 sd.limit_up_quality 引用，必须保留导出；_lu_* 系列内部函数已无外部引用。
 from core.chan import chan_analysis_structured
 from core.quality import limit_up_quality
-from core.emotion import _emotion_band, _emotion_score_v1, _emotion_score_v2, _effect_flat
+from core.emotion import _emotion_band, _emotion_score_v1, _emotion_score_v2, _effect_flat, ICE_SCORE, EUPHORIA_SCORE
 
 CTX = ssl.create_default_context(); CTX.check_hostname = False; CTX.verify_mode = ssl.CERT_NONE
 _cand = os.path.join(ROOT_DIR, 'data')
@@ -229,15 +229,16 @@ def sector_flow(days=1):
                  'https://push2delay.eastmoney.com',
                  'https://48.push2.eastmoney.com']
         for tag, po, pz in [('流入TOP8', 1, 8), ('流出TOP5', 0, 5)]:
-            urls = [_h + '/api/qt/clist/get?pn=1&pz=%d&po=%d&np=1&fltt=2&fid=%s&fs=m:90+t:2&fields=f12,f14,f62,f164,f184' % (pz, po, fid) for _h in hosts]
+            urls = [_h + '/api/qt/clist/get?pn=1&pz=%d&po=%d&np=1&fltt=2&fid=%s&fs=m:90+t:2&fields=f12,f14,f3,f62,f164,f184' % (pz, po, fid) for _h in hosts]
             j = json.loads(_get_first_ok(urls, retries=1, timeout=3))
             if not (j.get('data') or {}).get('diff'):
                 raise RuntimeError('push2无数据')
             w(f'-- {tag} --')
             dst = out['inflow'] if po == 1 else out['outflow']
             for d in j['data']['diff']:
-                fv, pv = _num(d.get(fid)), _num(d.get('f184'))
-                row = dict(name=d['f14'], flow=round(fv / 1e8, 1), pct=round(pv, 2))
+                fv, pv = _num(d.get(fid)), _num(d.get('f3'))
+                row = dict(name=d['f14'], flow=round(fv / 1e8, 1), pct=round(pv, 2),
+                           main_force_pct=round(_num(d.get('f184')), 2), pct_basis='change_percent')
                 w(f"{d['f14']}: {fv/1e8:+.1f}亿 ({pv:+.2f}%)")
                 dst.append(row)
         if out['inflow'] or out['outflow']:
@@ -284,7 +285,8 @@ def sector_flow(days=1):
                 # 每次重新计算，避免污染 day=1/day=5 的口径。
                 out['source'] = 'sina_estimated'
                 out['estimated'] = True
-                out['days'] = days
+                out['days'] = 1
+                out['pct_basis'] = 'change_percent'
                 w(f'[新浪板块资金降级成功] 获取流入{len(out["inflow"])}只, 流出{len(out["outflow"])}只 (估算值, 不落盘)')
                 return out
     except Exception as e2:
@@ -437,9 +439,20 @@ def _pool(kind, ymd):
 
 _EFFECT_CACHE = {'t': 0.0, 'data': None}
 
-def _effect_metrics(ttl=300.0):
+def _effect_metrics(ymd=None, ttl=300.0):
     """赚钱效应指标: 复用竞价雷达(premium_summary / promotion_metrics), 结果缓存 ttl 秒。
-    竞价雷达单次约 6s, 缓存避免 web 每次刷新都付这个代价。"""
+    竞价雷达单次约 6s, 缓存避免 web 每次刷新都付这个代价。
+
+    ymd 为历史交易日时不能复用「今天」的雷达，否则回补档案会混入当日赚钱效应。
+    历史日没有同日竞价切片时返回 available=False，由打分公式按中性 12.5 计入。
+    """
+    today = dt.date.today().strftime('%Y%m%d')
+    if ymd and str(ymd) != today:
+        return {
+            'available': False,
+            'reason': 'historical %s has no same-day auction effect; refuse today snapshot' % ymd,
+            'as_of': str(ymd),
+        }
     now = time.time()
     if _EFFECT_CACHE['data'] is not None and (now - _EFFECT_CACHE['t']) < ttl:
         return _EFFECT_CACHE['data']
@@ -821,7 +834,7 @@ def emotion(ymd=None):
         n_zt, n_zb, n_dt = len(zt), len(zb), len(dtl)
         max_lb = max([d.get('lbc', 1) for d in zt], default=0)
         br = n_zb / (n_zt + n_zb) * 100 if (n_zt + n_zb) else 0
-        eff = _effect_metrics()
+        eff = _effect_metrics(ymd=ymd)
         s_v1 = _emotion_score_v1(n_zt, n_zb, n_dt, max_lb)
         s, diverge = _emotion_score_v2(n_zt, n_zb, n_dt, max_lb, eff)
         band = _emotion_band(s)
@@ -897,15 +910,36 @@ def emotion(ymd=None):
         # === 晋级梯队（通过历史涨停池连续出现次数判断连板数，不依赖lbc字段）===
         promotion = {}
         try:
-            _base = dt.datetime.strptime(ymd, '%Y%m%d').date()
-            # 获取最近8个自然日的涨停池（足够判断最高连板）。
-            # 关键: 断档日(周末/休市/接口无数据)必须保留为空集合占位, 不能跳过 ——
-            # 旧实现 `if _pool_data: append` 会把空日挤出列表, 让 _streak 的连续遍历
-            # 跨过断档继续累加(如 T-2 无数据时把 T-3 当作 T-2 的延续), 连板数虚高。
-            _pools = []  # [(date_str, [row...]), ...] 从今日往前, 含空日
-            for _i in range(0, 8):
-                _day = (_base - dt.timedelta(days=_i)).strftime('%Y%m%d')
-                _pools.append((_day, _pool('ZT', _day) or []))
+            # 最近 8 个交易日（不是自然日）。周末/节假日东财会回吐最近交易日池，
+            # 若按自然日占位，周一的「昨日」会变成周日=周五池，连板被连数多次。
+            # 真实交易日即使池子为空也保留空集合，避免跨断档累加。
+            _pools = []
+            try:
+                import trading_calendar as _tcal
+                _dates = _tcal._load_trading_dates() or set()
+            except Exception:
+                _dates = set()
+            if _dates:
+                _cands = sorted([d for d in _dates if d <= ymd], reverse=True)[:8]
+                for _day in _cands:
+                    _pools.append((_day, _pool('ZT', _day) or []))
+            else:
+                _base = dt.datetime.strptime(ymd, '%Y%m%d').date()
+                _seen_fp = set()
+                for _i in range(0, 16):
+                    _dd = _base - dt.timedelta(days=_i)
+                    if _dd.weekday() >= 5:
+                        continue
+                    _day = _dd.strftime('%Y%m%d')
+                    _rows = _pool('ZT', _day) or []
+                    _fp = tuple(sorted(str(z.get('c') or '') for z in _rows))
+                    if _rows and _fp in _seen_fp:
+                        _rows = []
+                    elif _rows:
+                        _seen_fp.add(_fp)
+                    _pools.append((_day, _rows))
+                    if len(_pools) >= 8:
+                        break
             # 至少要有今日+昨日的**实际数据**才谈得上晋级统计
             if len([1 for _, _rows in _pools if _rows]) >= 2:
                 _pools_set = [(_day, {d.get('c', '') for d in _rows}) for _day, _rows in _pools]
@@ -1494,13 +1528,27 @@ _CYCLE_ADV = {
     '冰点': '空仓观望只跟踪; 盯首只逆势换手4板(新周期种子), 冰点次日的首阳反抽可轻仓试错',
     '退潮': '总仓位压到2成以下, 不打板不接力不半路; 高位股集体补跌=出清信号, 等跌停清零+炸板率降到20%%以内再回来',
     '修复/震荡': '轻仓试错新题材首板和超跌反转龙, 快进快出严格止损, 不恋战',
+    '修复': '轻仓试错新题材首板和超跌反转龙, 快进快出严格止损, 不恋战',
     '主升': '主线内持股为主, 龙头分批追, 梯队中军和补涨龙轮动做; 龙头首次断板减半仓',
     '亢奋': '只卖不买兑现浮盈, 一致性加速日警惕放量见顶大阴线; 空仓等下一轮冰点'}
 
 _STAGE_ORDER = ['冰点', '修复', '主升', '亢奋', '退潮']   # 阶段环, 与 _CYCLE_ADV 轮转一致
+_STAGE_ALIAS = {'修复/震荡': '修复'}
+
+# 与 core.emotion.emotion_band 同一套两端阈值，避免 72~80 区间 band/stage 打架。
+_EUPHORIA_SCORE = EUPHORIA_SCORE
+_ICE_SCORE = ICE_SCORE
+
+def _canon_stage(name):
+    if not name:
+        return name
+    return _STAGE_ALIAS.get(name, name)
 
 def _stage_dist(a, b):
-    """五阶段环上两阶段的最短距离(1=相邻 2=隔一级)"""
+    """五阶段环上两阶段的最短距离(1=相邻 2=隔一级)。未知阶段不抛异常。"""
+    a, b = _canon_stage(a), _canon_stage(b)
+    if a not in _STAGE_ORDER or b not in _STAGE_ORDER:
+        return 1
     i, j = _STAGE_ORDER.index(a), _STAGE_ORDER.index(b)
     d = abs(i - j)
     return min(d, len(_STAGE_ORDER) - d)
@@ -1519,9 +1567,9 @@ def _cycle_stage(recs, prev_stage):
     ma7 = sum(s_[-7:]) / min(7, n)
     zt_ma5 = sum(zts[-5:]) / min(5, n)
     peak_lb = max(lbs[-10:])
-    if sc >= 85:
+    if sc >= _EUPHORIA_SCORE:
         raw = '亢奋'
-    elif sc < 30 or (zts[-1] <= 15 and lbs[-1] <= 2):
+    elif sc < _ICE_SCORE or (zts[-1] <= 15 and lbs[-1] <= 2):
         raw = '冰点'
     elif sc < 45 and dts_[-1] >= 3:          # ★ 退潮短路: 弱情绪+真实跌停≥3家
         raw = '退潮'
@@ -1530,13 +1578,15 @@ def _cycle_stage(recs, prev_stage):
     elif ma3 >= ma7 and (lbs[-1] >= 4 or zt_ma5 >= 55):
         raw = '主升'
     else:
-        raw = '修复/震荡'
+        raw = '修复'
     # 迁移校验: 五阶段环上任意两点最短距离≤2, 无禁止迁移; 隔一级降置信
-    if not prev_stage:
+    raw = _canon_stage(raw)
+    prev_c = _canon_stage(prev_stage)
+    if not prev_c:
         return raw, dict(trans='coldstart', conf=0, raw=raw)
-    if raw == prev_stage:
+    if raw == prev_c:
         return raw, dict(trans='stay', conf=3, raw=raw)
-    if _stage_dist(raw, prev_stage) == 1:
+    if _stage_dist(raw, prev_c) == 1:
         return raw, dict(trans='adjacent', conf=2, raw=raw)
     return raw, dict(trans='skip', conf=1, raw=raw)
 

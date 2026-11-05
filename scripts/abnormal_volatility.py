@@ -68,6 +68,7 @@ class VolatilityEvaluationResult:
     will_Upgrade_to_severe_on_normal: bool  # 今日若触发普通异动，是否直接凑满次数升级为严重异动
     binding_window: dict[str, Any]      # 当前最严苛的瓶颈窗口详情
     action_advice: str                  # 盘口实战操作建议徽章
+    severe_10d_current_dev: float | None = None  # 含今日的 10 日累计偏离（个股-指数）
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -655,6 +656,15 @@ def evaluate_stock_volatility(
             f"🔵 普通异动射程内：龙虎榜安全价 {normal_safe_price:.2f} 元（剩余 {headroom_pct * 100:.2f}%），今日无严重异动风险"
         )
 
+    severe_10d_current_dev = None
+    if today_idx >= 9:
+        p_base = float(all_p_bases[today_idx - 9])
+        i_base = float(all_i_bases[today_idx - 9])
+        if p_base > 0 and i_base > 0:
+            severe_10d_current_dev = round(
+                (curr_price / p_base - 1.0) - (curr_index / i_base - 1.0), 4
+            )
+
     result = VolatilityEvaluationResult(
         stock_code=stock_code,
         board_name=rule.board_name,
@@ -672,6 +682,7 @@ def evaluate_stock_volatility(
         is_severe_triggered_now=is_severe_triggered_now,
         is_severe_locked=is_severe_locked,
         normal_triggers_in_prev_9d=normal_cnt_prev_9d,
+        severe_10d_current_dev=severe_10d_current_dev,
         will_Upgrade_to_severe_on_normal=upgrade_normal_to_severe,
         binding_window=asdict(binding_detail),
         action_advice=advice,

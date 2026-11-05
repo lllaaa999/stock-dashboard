@@ -171,13 +171,32 @@ def is_market_closed() -> bool:
 # 3. 实时行情：多源自动降级 (Tencent -> Sina -> EastMoney)
 # ==========================================
 def normalize_code(c: str) -> tuple[str, str, str]:
-    """返回 (pure_code, full_code, em_secid)，例如 ('600519', 'sh600519', '1.600519')"""
-    code = c.replace('sh', '').replace('sz', '').replace('bj', '').strip()
-    is_sh = code.startswith(('6', '5', '9'))
-    is_bj = code.startswith(('4', '8'))
-    prefix = 'sh' if is_sh else ('bj' if is_bj else 'sz')
+    """返回 (pure_code, full_code, em_secid)，例如 ('600519', 'sh600519', '1.600519')。
+
+    显式 .SH/.SZ/.BJ 优先。920/4/8 为北交所，避免 920 被「9 开头」判成沪市，
+    也避免 000001.SH 被剥掉后缀后当成深市平安银行。
+    """
+    raw = str(c or '').strip()
+    low = raw.lower().replace(' ', '')
+    explicit = None
+    if low.startswith(('bj.', 'bj')) or low.endswith('.bj'):
+        explicit = 'bj'
+    elif low.startswith(('sh.', 'sh')) or low.endswith(('.sh', '.ss')):
+        explicit = 'sh'
+    elif low.startswith(('sz.', 'sz')) or low.endswith('.sz'):
+        explicit = 'sz'
+    digits = ''.join(ch for ch in low if ch.isdigit())
+    code = digits[:6].zfill(6) if len(digits) >= 6 else digits
+    if explicit:
+        prefix = explicit
+    elif code.startswith('920') or code.startswith(('4', '8')):
+        prefix = 'bj'
+    elif code.startswith(('6', '5', '9')):
+        prefix = 'sh'
+    else:
+        prefix = 'sz'
     full = prefix + code
-    secid = ('1.' if is_sh else '0.') + code
+    secid = ('1.' if prefix == 'sh' else '0.') + code
     return code, full, secid
 
 _QUOTE_FULL_FIELDS = {
@@ -283,10 +302,13 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                 seal_amount_yi = bid1_amt_yi if is_zt else 0.0
                 dt_pressure_yi = ask1_amt_yi if is_dt else 0.0
 
+                float_cap_yi = float(f[45]) if len(f) > 45 and f[45] else 0.0
                 result[c] = {
                     'code': c,
                     'name': f[1],
                     'price': price,
+                    'amount_raw': amt * 10000.0,
+                    'float_mcap': float_cap_yi,
                     'prev_close': prev_close,
                     'open': open_p,
                     'high': high,
@@ -403,7 +425,7 @@ def get_realtime_quotes(codes: List[str]) -> Dict[str, Dict[str, Any]]:
                 price = float(parts[3]) if parts[3] else 0.0
                 high = float(parts[4]) if parts[4] else price
                 low = float(parts[5]) if parts[5] else price
-                vol = float(parts[8]) if len(parts) > 8 and parts[8] else 0.0
+                vol = (float(parts[8]) / 100.0) if len(parts) > 8 and parts[8] else 0.0
                 amt = float(parts[9]) if len(parts) > 9 and parts[9] else 0.0
                 amts = (f'{amt/1e8:,.1f}亿' if amt >= 1e8 else (f'{amt/1e4:,.0f}万' if amt > 0 else '-'))
                 pct = round((price - prev_close) / prev_close * 100, 2) if prev_close > 0 else 0.0

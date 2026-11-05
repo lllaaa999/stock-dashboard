@@ -1,6 +1,18 @@
 from dataclasses import dataclass
+import json
+import os
 from typing import Dict, List, Optional, Tuple
 import numpy as np
+
+# 无静态先验、无历史对账时的中性 gamma。必须 > 0，否则净买入席位得分恒为 0，
+# 微观验身（vw_dvr / 封单强度）整段被旁路。
+NEUTRAL_GAMMA = 0.15
+
+_DEFAULT_LEDGER_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    'data',
+    'lhb_seat_ledger.json',
+)
 
 
 @dataclass
@@ -32,11 +44,18 @@ class SeatReputationLedger:
     # 存储结构: seat_name -> shape (N, 3) 矩阵 [r_open_excess, d_nuc_5m, u_trap]
     self.history: Dict[str, np.ndarray] = {}
     self.static_priors: Dict[str, float] = {}
+    # 最近一次上榜收盘，供下一交易日对账。元素: {seat, date, close}
+    self.pending: List[dict] = []
+    # 静态先验只全局注册一次，避免反复覆盖已载入/已设置的值
+    self._priors_registered: bool = False
 
   def register_static_priors(self, priors: Dict[str, float]) -> None:
-    """注册极弱静态先验 (-1.0 ~ +1.0)"""
+    """注册极弱静态先验 (-1.0 ~ +1.0)。全局只注册一次，防止并发请求重复覆盖。"""
+    if self._priors_registered:
+      return
     for seat, val in priors.items():
       self.static_priors[seat] = float(np.clip(val, -1.0, 1.0))
+    self._priors_registered = True
 
   def record_post_performance(
       self,
@@ -53,17 +72,47 @@ class SeatReputationLedger:
       updated = np.vstack([self.history[seat_name], new_row])
       self.history[seat_name] = updated[-self.cfg.ledger_window :]
 
+  def observe_board(self, trade_date: str, observations: List[Tuple[str, float]]) -> None:
+    """跨日再次见到同一席位时，用两次收盘价变化落一笔事后收益。
+
+    没有次日开盘与 5 分钟核按钮数据时，d_nuc / u_trap 记 0，只积累真实收益方向，
+    避免用虚构的核按钮记录污染账本。
+    """
+    trade_date = str(trade_date or '')[:10]
+    if not trade_date:
+      return
+    prev = {}
+    for row in self.pending:
+      if str(row.get('date') or '') < trade_date:
+        prev[str(row.get('seat'))] = float(row.get('close') or 0)
+    for seat, close in observations:
+      try:
+        close_f = float(close)
+      except (TypeError, ValueError):
+        continue
+      old = prev.get(seat)
+      if old and old > 0 and close_f > 0:
+        self.record_post_performance(seat, (close_f - old) / old, 0.0, 0.0)
+    self.pending = [
+        {'seat': seat, 'date': trade_date, 'close': float(close)}
+        for seat, close in observations
+        if seat
+    ]
+
   def get_dynamic_reputation(self, seat_name: str) -> Tuple[float, bool]:
     """计算单个席位的当前后验信誉系数 tilde_gamma_i 及是否触发【核按钮黑名单】
 
     返回: (tilde_gamma_i in [-1, 1], is_nuclear_harvester)
     """
     eps = 1e-9
+    has_prior = seat_name in self.static_priors
     p0 = self.static_priors.get(seat_name, 0.0)
     hist = self.history.get(seat_name, None)
 
     if hist is None or len(hist) == 0:
-      return float(self.cfg.prior_weight * p0), False
+      if not has_prior:
+        return float(NEUTRAL_GAMMA), False
+      return float(max(self.cfg.prior_weight * p0, NEUTRAL_GAMMA)), False
 
     r_open = hist[:, 0]
     d_nuc = hist[:, 1]
@@ -116,6 +165,50 @@ class SeatReputationLedger:
         + (1.0 - self.cfg.prior_weight) * gamma_dynamic
     )
     return float(np.clip(tilde_gamma, -1.0, 1.0)), is_nuclear_harvester
+
+  def to_dict(self) -> Dict[str, object]:
+    return {
+        'static_priors': dict(self.static_priors),
+        'history': {k: v.tolist() for k, v in self.history.items()},
+        'pending': list(self.pending),
+    }
+
+  def load_dict(self, payload: Dict[str, object]) -> None:
+    priors = payload.get('static_priors') or {}
+    if isinstance(priors, dict):
+      self.register_static_priors({str(k): float(v) for k, v in priors.items()})
+    hist = payload.get('history') or {}
+    if isinstance(hist, dict):
+      for name, rows in hist.items():
+        arr = np.asarray(rows, dtype=np.float64)
+        if arr.ndim == 1:
+          arr = arr.reshape(1, -1)
+        if arr.size and arr.shape[-1] == 3:
+          self.history[str(name)] = arr[-self.cfg.ledger_window:]
+    pending = payload.get('pending') or []
+    if isinstance(pending, list):
+      self.pending = [p for p in pending if isinstance(p, dict)]
+
+  def save(self, path: Optional[str] = None) -> None:
+    path = path or _DEFAULT_LEDGER_PATH
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+      json.dump(self.to_dict(), f, ensure_ascii=False)
+    os.replace(tmp, path)
+
+  @classmethod
+  def load(cls, path: Optional[str] = None) -> 'SeatReputationLedger':
+    path = path or _DEFAULT_LEDGER_PATH
+    ledger = cls()
+    if not os.path.exists(path):
+      return ledger
+    try:
+      with open(path, 'r', encoding='utf-8') as f:
+        ledger.load_dict(json.load(f))
+    except Exception:
+      return cls()
+    return ledger
 
 
 class LHBOrthogonalEvaluator:

@@ -11,6 +11,9 @@
 import sys
 import os
 import json
+import math
+import shutil
+import threading
 import datetime as dt
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -18,15 +21,145 @@ import stock_dashboard as sd
 
 DECISION_LOG_PATH = os.path.join(sd.DATA_DIR, 'strategy_decisions.jsonl')
 
+# 决策台账幂等写入门闩：/api/market 由多线程并发刷新，读尾+追加必须原子化
+_LOG_LOCK = threading.Lock()
+
+# 关键输入的分桶步长：盘中每一跳的浮点抖动不产生新记录，
+# 只有阶段/仓位/开火态或输入出现「有决策意义的位移」才追加。
+_FP_BUCKETS = (
+    ('sh_pct', 0.5),        # 指数涨跌 (百分点)
+    ('zb_rate', 2.0),       # 炸板率 (百分点)
+    ('premium', 0.5),       # 接力溢价 (百分点)
+    ('max_quality', 2.0),   # 最高质量分
+)
+
+
+def _fp_bucket(value, step):
+    """把连续值归入粗桶；None/NaN/非数值一律 None（缺失即 unknown，不伪造 0）"""
+    try:
+        if value is None:
+            return None
+        f = float(value)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return round(f / step)
+    except (TypeError, ValueError):
+        return None
+
+
+def decision_fingerprint(rec):
+    """
+    决策指纹 = 交易日 + 阶段 + 仓位上限 + 开火态 + 实际持仓只数 + 关键输入粗桶。
+    指纹相同视为「同一天的同一决策」，不重复记账。
+    """
+    if not isinstance(rec, dict):
+        return None
+    fp = [
+        str(rec.get('date') or ''),
+        rec.get('phase_key'),
+        rec.get('pos_pct_limit'),
+        rec.get('fire_status'),
+        rec.get('actual_stocks_count'),
+    ]
+    for key, step in _FP_BUCKETS:
+        fp.append(_fp_bucket(rec.get(key), step))
+    return tuple(fp)
+
+
+def _iter_decision_records(path=None):
+    """逐行读取台账；坏行跳过（去重/迁移不能因单行损坏而失败）"""
+    path = path or DECISION_LOG_PATH
+    if not os.path.exists(path):
+        return []
+    rows = []
+    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+    return rows
+
+
+def _already_recorded(rec, path=None):
+    """当天是否已有同指纹记录。日期升序，遇到更早日期即可提前退出"""
+    target_date = str(rec.get('date') or '')
+    if not target_date:
+        return False
+    fp = decision_fingerprint(rec)
+    for obj in reversed(_iter_decision_records(path)):
+        d = str(obj.get('date') or '')
+        if d and d < target_date:
+            break
+        if d == target_date and decision_fingerprint(obj) == fp:
+            return True
+    return False
+
 
 def _log_decision_record(rec):
-    """持久化战略判定记录，供次日对账与回测核验"""
+    """
+    持久化战略判定记录（幂等）：
+    同一交易日 + 同指纹 -> 跳过；阶段变更或关键输入变化 -> 追加一条。
+    返回 True 表示本次实际写入。
+    """
     try:
         os.makedirs(sd.DATA_DIR, exist_ok=True)
-        with open(DECISION_LOG_PATH, 'a', encoding='utf-8') as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+        with _LOG_LOCK:
+            if _already_recorded(rec):
+                return False
+            with open(DECISION_LOG_PATH, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + '\n')
+            return True
     except Exception:
-        pass
+        return False
+
+
+def compact_decision_log(path=None, keep_backup=True):
+    """
+    台账去重迁移（可重复执行）：
+      - 按 (交易日 + 决策指纹) 分组，仅保留每组**最后一条**（最新数值），
+        从而留住「阶段变更/输入变化」的真实决策序列，删掉秒级刷屏。
+      - 首次执行前把原文件备份为 *.dedupe.bak（历史数据可回滚）。
+      - 原子替换；再跑一次 removed=0，不产生任何写操作。
+    """
+    path = path or DECISION_LOG_PATH
+    if not os.path.exists(path):
+        return {'path': path, 'skipped': True, 'reason': 'file_not_found',
+                'before': 0, 'after': 0, 'removed': 0}
+    recs = _iter_decision_records(path)
+    if not recs:
+        return {'path': path, 'skipped': True, 'reason': 'no_valid_records',
+                'before': 0, 'after': 0, 'removed': 0}
+
+    last_index = {}
+    for i, obj in enumerate(recs):
+        fp = decision_fingerprint(obj)
+        last_index[fp] = i          # 同指纹保留最后一次出现的位置
+    keep_idx = set(last_index.values())
+    kept = [obj for i, obj in enumerate(recs) if i in keep_idx]
+    removed = len(recs) - len(kept)
+
+    if removed <= 0:
+        return {'path': path, 'skipped': True, 'reason': 'already_compact',
+                'before': len(recs), 'after': len(recs), 'removed': 0}
+
+    if keep_backup:
+        bak = path + '.dedupe.bak'
+        if not os.path.exists(bak):
+            shutil.copy2(path, bak)
+
+    tmp = path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        for obj in kept:
+            f.write(json.dumps(obj, ensure_ascii=False) + '\n')
+    os.replace(tmp, path)
+    return {'path': path, 'skipped': False, 'before': len(recs),
+            'after': len(kept), 'removed': removed}
 
 
 def analyze_strategic_decision(emo=None, sec=None, idxs=None, portfolio=None, account_equity=None):
@@ -622,6 +755,19 @@ def format_cli_output(d):
 
 
 if __name__ == '__main__':
+    import argparse
+
+    parser = argparse.ArgumentParser(description='战略战术决策中枢')
+    parser.add_argument('--compact-decisions', action='store_true',
+                        help='对 strategy_decisions.jsonl 做幂等去重迁移（保留每个决策指纹的最后一条）')
+    parser.add_argument('--no-backup', action='store_true', help='去重迁移时跳过备份')
+    args = parser.parse_args()
+
+    if args.compact_decisions:
+        print(json.dumps(compact_decision_log(keep_backup=not args.no_backup),
+                         ensure_ascii=False, indent=2))
+        raise SystemExit(0)
+
     demo_portfolio = [
         {'code': '600519', 'shares': 200, 'cost': 1450.0, 'stop_loss': 1380.0},
         {'code': '300750', 'shares': 800, 'cost': 235.0, 'stop_loss': 220.0}

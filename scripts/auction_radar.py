@@ -6,7 +6,7 @@
 - 竞价爆量与一字封单
 - 日内天地大面榜 (风险警报)
 """
-import json, datetime as dt
+import os, json, datetime as dt
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import stock_dashboard as sd
 
@@ -25,6 +25,22 @@ except ImportError:
         from scripts import trading_calendar as tcal
     except ImportError:
         tcal = None
+
+def _in_call_auction(now=None):
+    """集合竞价窗口 09:15~09:30。09:30 起成交额是盘中累计，不能再当竞价额。"""
+    now = now or dt.datetime.now()
+    minutes = now.hour * 60 + now.minute
+    return (9 * 60 + 15) <= minutes < (9 * 60 + 30)
+
+
+def _tx_prefix(code: str) -> str:
+    c = str(code or '').zfill(6)
+    if c.startswith('920') or c.startswith(('4', '8')):
+        return 'bj'
+    if c.startswith(('6', '5', '9')):
+        return 'sh'
+    return 'sz'
+
 
 def calc_amount_ratio_pct(curr_amount_yuan, prev_amount_yuan):
     """计算当前/竞价成交额占昨日全天成交额的百分比(%)
@@ -64,17 +80,19 @@ def is_auction_boom(x):
             return False
         if float(x.get('order_ratio') or 0.0) <= -40.0:
             return False
+        # 09:30 之后腾讯 parts[37] 是盘中累计成交额，不能再拿占昨比>=5% 当抢筹
+        in_auction = _in_call_auction()
         return bool(
             float(x.get('vol_ratio') or 0.0) >= 3.0
             or x.get('is_one_word')
             or float(x.get('seal_amount_yi') or 0.0) >= 0.3
-            or float(x.get('amount_ratio_pct') or 0.0) >= 5.0
+            or (in_auction and float(x.get('amount_ratio_pct') or 0.0) >= 5.0)
         )
     except (TypeError, ValueError):
         return False
 
 
-def is_fake_high_open(open_pct, vol_ratio, amount_yi, amount_ratio_pct):
+def is_fake_high_open(open_pct, vol_ratio, amount_yi, amount_ratio_pct, now=None):
     """识别缩量假高开（主力挂撤诱多，极易出现开盘跳水吃大面）
 
     规则 (结合游资打板心法与寻龙诀量化门禁):
@@ -82,6 +100,9 @@ def is_fake_high_open(open_pct, vol_ratio, amount_yi, amount_ratio_pct):
     2. 资金极度匮乏 (满足其一即判定为假高开):
        - 量比极弱 (vol_ratio < 1.0) 且成交额占昨比 < 2.0%
        - 绝对金额过小: 竞价金额 < 500 万 (amount_yi < 0.05) 且占昨比 < 1.0%
+
+    now: 可选 datetime，用于时间窗判定；未传时取当前时间（真实运行场景）。
+         显式传参主要用于测试注入固定时钟（避免时段性非确定性）。
     """
     try:
         op = float(open_pct or 0.0)
@@ -93,6 +114,10 @@ def is_fake_high_open(open_pct, vol_ratio, amount_yi, amount_ratio_pct):
 
     if op < 1.5:
         return False
+
+    # 盘中占昨比已被累计成交额撑大，缩量假高开只看量比，否则预警会在开盘后消失
+    if not _in_call_auction(now=now):
+        return vr < 1.0
 
     # 量比弱且资金占比过低
     if vr < 1.0 and ratio < 2.0:
@@ -363,7 +388,7 @@ def get_auction_radar():
                 'prev_amount': _safe_float(d.get('amount'), 0.0),  # 昨日全天成交额(元)
             }
 
-    codes = [('sh' if c.startswith(('6', '5', '9')) else 'sz') + c for c in all_targets if c]
+    codes = [_tx_prefix(c) + c for c in all_targets if c]
 
     # 分批极速拉取实时行情 (Tencent 毫秒级)
     quotes = {}
@@ -821,11 +846,17 @@ def get_full_market_auction_scan():
     排除：ST股（名称含ST/ST*）、停牌（现价=0或昨收=0）
     每类信号取 top 30，按强度排序。
     """
+    now_dt = dt.datetime.now()
+    today_ymd = now_dt.strftime('%Y%m%d')
+    in_auction = _in_call_auction(now_dt)
+    scan_snap_dir = os.path.join(sd.DATA_DIR, 'auction_records') if hasattr(sd, 'DATA_DIR') else None
+    scan_snap_file = os.path.join(scan_snap_dir, f'full_market_scan_{today_ymd}.json') if scan_snap_dir else None
+
     url = (
         'https://push2.eastmoney.com/api/qt/clist/get'
         '?pn=1&pz=5500&po=1&np=1&fltt=2&fid=f3'
         '&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23'
-        '&fields=f12,f14,f2,f3,f4,f5,f6,f8,f10,f15,f16,f18,f62'
+        '&fields=f12,f14,f2,f3,f4,f5,f6,f8,f10,f15,f16,f17,f18,f31,f32,f34'
     )
     try:
         raw = sd.http(url, timeout=8, retries=2)
@@ -838,6 +869,38 @@ def get_full_market_auction_scan():
     if not diff:
         return {'status': 'error', 'msg': '东财返回空数据'}
 
+    # 09:30 开盘后若已有当日 09:25 竞价快照，则冻结竞价信号/量比/封单额，仅刷新现价与现涨幅
+    if not in_auction and scan_snap_file and os.path.exists(scan_snap_file):
+        try:
+            with open(scan_snap_file, 'r', encoding='utf-8') as f:
+                frozen = json.load(f)
+            if frozen and frozen.get('status') == 'ok' and frozen.get('scan_items'):
+                live_map = {}
+                for r in diff:
+                    c = r.get('f12')
+                    if c:
+                        live_map[str(c)] = r
+                for item in frozen['scan_items']:
+                    lr = live_map.get(str(item.get('code')))
+                    if lr:
+                        try:
+                            if lr.get('f2'):
+                                item['price'] = float(lr['f2'])
+                            if lr.get('f3') is not None:
+                                item['pct'] = float(lr['f3'])
+                            if lr.get('f15'):
+                                item['high'] = float(lr['f15'])
+                            if lr.get('f16'):
+                                item['low'] = float(lr['f16'])
+                        except (TypeError, ValueError):
+                            pass
+                frozen['basis'] = 'auction_frozen'
+                frozen['updated_at'] = now_dt.strftime('%Y-%m-%d %H:%M:%S')
+                return frozen
+        except Exception:
+            pass
+
+    basis = 'auction' if in_auction else 'intraday'
     super_grab = []
     nuclear_button = []
     locked_limit = []
@@ -854,7 +917,13 @@ def get_full_market_auction_scan():
         prev_close = r.get('f18')
         high = r.get('f15')
         low = r.get('f16')
-        seal_amount = r.get('f62')
+        open_px = r.get('f17')
+        # 东财 clist 字段：
+        #   f31=买一价(等于最新价)、f32=卖一价(涨停封死=0)、f34=委买总量(手)、f62=主力净流入(元)
+        # 封单额：仅在集合竞价阶段或盘中卖一为空档（涨停封死 f32==0）时用 买一价 × 委买总量(手) × 100
+        bid1_px = r.get('f31')
+        ask1_px = r.get('f32')
+        total_bid_lots = r.get('f34')  # 全市场委买总量（手）
 
         # 排除停牌
         if not price or not prev_close or float(prev_close) == 0:
@@ -872,15 +941,37 @@ def get_full_market_auction_scan():
         amount = float(amount or 0.0)
         high = float(high or 0.0)
         low = float(low or 0.0)
-        seal_amount = float(seal_amount or 0.0)
+        try:
+            open_px = float(open_px) if open_px else 0.0
+        except (TypeError, ValueError):
+            open_px = 0.0
+        if open_px <= 0:
+            open_px = price
+        try:
+            bid1_px_f = float(bid1_px or 0)
+            total_bid_f = float(total_bid_lots or 0)
+        except (TypeError, ValueError):
+            bid1_px_f, total_bid_f = 0.0, 0.0
+        try:
+            ask1_px_f = float(ask1_px) if ask1_px not in (None, '-', '') else 0.0
+        except (TypeError, ValueError):
+            ask1_px_f = 0.0
+        # 竞价阶段或涨停封死（卖一价为0）时委买堆在买一，普通盘中连续竞价不把全市场委买当封单额
+        is_locked_book = in_auction or (ask1_px_f <= 0 and bid1_px_f > 0)
+        seal_amount = (
+            bid1_px_f * total_bid_f * 100.0
+            if is_locked_book and bid1_px_f > 0 and total_bid_f > 0
+            else 0.0
+        )
 
-        # 竞价阶段最新价≈竞价价
-        open_pct = round((price - prev_close) / prev_close * 100, 2)
+        # 竞价涨幅用今开 f17，不能用最新价 f2（开盘后全员涨跌会被当成竞价高低开）
+        open_pct = round((open_px - prev_close) / prev_close * 100, 2)
 
         item = {
             'code': code,
             'name': name,
             'price': price,
+            'open_price': open_px,
             'open_pct': open_pct,
             'pct': pct,
             'vol_ratio': vol_ratio,
@@ -889,6 +980,7 @@ def get_full_market_auction_scan():
             'low': low,
             'prev_close': prev_close,
             'seal_amount': seal_amount,
+            'basis': basis,
         }
 
         # NUCLEAR_BUTTON（核按钮优先判定，避免跌停票被抢筹误判）
@@ -941,13 +1033,22 @@ def get_full_market_auction_scan():
             item.pop('_intensity', None)
             scan_items.append(item)
 
-    return {
+    res = {
         'status': 'ok',
+        'basis': basis,
         'scan_items': scan_items,
         'grabCount': len(super_grab),
         'nuclearCount': len(nuclear_button),
         'fakeHighCount': len(fake_high),
         'lockedCount': len(locked_limit),
         'total_scanned': total_scanned,
-        'updated_at': dt.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'updated_at': now_dt.strftime('%Y-%m-%d %H:%M:%S'),
     }
+    if in_auction and scan_snap_file and scan_items:
+        try:
+            os.makedirs(scan_snap_dir, exist_ok=True)
+            with open(scan_snap_file, 'w', encoding='utf-8') as f:
+                json.dump(res, f, ensure_ascii=False)
+        except Exception:
+            pass
+    return res

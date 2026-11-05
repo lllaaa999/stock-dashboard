@@ -171,6 +171,22 @@ def get_recent_trading_days(n=2, end_ymd=None, pool_fetcher=None):
     return found
 
 
+def trading_days_between(start_ymd, end_ymd=None, limit=400):
+    """
+    返回 [start_ymd, end_ymd] 内的**真实交易日**（升序）。
+    日历不可用时返回 []，调用方应显式降级为 unknown，不要按自然日伪造。
+    """
+    start = str(start_ymd or '').strip()
+    end = str(end_ymd or dt.date.today().strftime('%Y%m%d')).strip()
+    if not (len(start) == 8 and start.isdigit() and len(end) == 8 and end.isdigit()):
+        return []
+    dates = _load_trading_dates()
+    if not dates:
+        return []
+    rows = sorted(d for d in dates if start <= d <= end)
+    return rows[-limit:] if limit else rows
+
+
 def purge_non_trading_records(jsonl_path, key='date'):
     """
     清理情绪历史存档里落在非交易日上的错误记录。

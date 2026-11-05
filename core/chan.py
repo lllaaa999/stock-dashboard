@@ -153,17 +153,52 @@ def chan_analysis_structured(kl: List[Any], code: str = '', period_label: str = 
         elif p1[2] < p0[2] and p1[2] < p2[2]:
             fx.append([i, '底', p1[2], p1[0], p1[3]])
 
+    def _more_extreme(a, b):
+        if a[1] == '顶':
+            return a[2] > b[2]
+        return a[2] < b[2]
+
+    def _price_ok(left, right):
+        """顶必须高于相邻底，否则跳空会生成倒挂笔。"""
+        if left[1] == '底' and right[1] == '顶':
+            return right[2] > left[2]
+        if left[1] == '顶' and right[1] == '底':
+            return right[2] < left[2]
+        return False
+
     bi = []
+    pending = None  # 间隔不足 4 根时暂存的反向极值
     for f in fx:
         if not bi:
             bi.append(f)
             continue
         lf = bi[-1]
         if f[1] == lf[1]:
-            if (f[1] == '顶' and f[2] > lf[2]) or (f[1] == '底' and f[2] < lf[2]):
+            if _more_extreme(f, lf):
                 bi[-1] = f
-        elif f[0] - lf[0] >= 4:
-            bi.append(f)
+                pending = None
+            continue
+        if not _price_ok(lf, f):
+            continue
+        if f[0] - lf[0] >= 4:
+            chosen = f
+            # 先前暂存的更高高点/更低低点才是这笔终点，不能被后面较弱的分型盖掉
+            if pending and pending[1] == f[1] and _more_extreme(pending, f) and _price_ok(lf, pending):
+                chosen = pending
+            bi.append(chosen)
+            pending = None
+            continue
+        if pending is None or pending[1] != f[1] or _more_extreme(f, pending):
+            pending = f
+        prev_same = next((b for b in reversed(bi) if b[1] == pending[1]), None)
+        crossed = prev_same is not None and (
+            (pending[1] == '顶' and pending[2] > prev_same[2])
+            or (pending[1] == '底' and pending[2] < prev_same[2])
+        )
+        # 次级别急拉已越过前高/前低：即使合并 K 不足 4 根也纳入
+        if crossed and _price_ok(lf, pending):
+            bi.append(pending)
+            pending = None
 
     if len(bi) < 4:
         return {
@@ -185,7 +220,7 @@ def chan_analysis_structured(kl: List[Any], code: str = '', period_label: str = 
     cur_dir = '向下' if bi[-1][1] == '顶' else '向上'
     bi_points = [[b[3], round(b[2], 2), b[1], b[4]] for b in bi]
 
-    # 3. 中枢识别: 三笔重叠区间
+    # 3. 中枢识别: 三笔重叠区间；相邻重叠震荡合并为同一中枢（延伸不改 ZD/ZG）
     legs = [(bi[j - 1], bi[j]) for j in range(1, len(bi))]
     zhongshu_list = []
     for idx in range(len(legs) - 2):
@@ -194,12 +229,18 @@ def chan_analysis_structured(kl: List[Any], code: str = '', period_label: str = 
         his = [max(a[2], b[2]) for a, b in sub]
         z_lo, z_hi = max(los), min(his)
         if z_lo < z_hi:
-            zhongshu_list.append({
+            nxt = {
                 'lo': round(z_lo, 2),
                 'hi': round(z_hi, 2),
                 'start_date': sub[0][0][3],
                 'end_date': sub[-1][1][3]
-            })
+            }
+            if zhongshu_list:
+                prev = zhongshu_list[-1]
+                if nxt['lo'] < prev['hi'] and nxt['hi'] > prev['lo']:
+                    prev['end_date'] = nxt['end_date']
+                    continue
+            zhongshu_list.append(nxt)
 
     # 加固 (2026-10-18): legs 是 bi 相邻两点组成的"笔段"，其长度恒为 len(bi)-1。
     # 上方已保证 len(bi)>=4，故 legs>=3 理论上成立；但若 bi 结构被异常数据破坏，
@@ -207,8 +248,9 @@ def chan_analysis_structured(kl: List[Any], code: str = '', period_label: str = 
     # 这里显式守卫，宁可没有中枢也不要崩掉整个分析。
     last_zs = None
     pos = None
-    if len(legs) >= 3:
-        l3 = legs[-3:]
+    # 三买/三卖的中枢不能把最后一笔回抽算进去，否则回抽价恒落在中枢内，三买永远不成立。
+    if len(legs) >= 4:
+        l3 = legs[-4:-1]
         los = [min(a[2], b[2]) for a, b in l3]
         his = [max(a[2], b[2]) for a, b in l3]
         zs_lo, zs_hi = (max(los), min(his)) if (los and his) else (0.0, 0.0)
@@ -292,46 +334,56 @@ def chan_analysis_structured(kl: List[Any], code: str = '', period_label: str = 
           if len(lg) == 2 and len(lg[1]) > 1 and lg[1][1] == '底']
     up = [lg for lg in legs
           if len(lg) == 2 and len(lg[1]) > 1 and lg[1][1] == '顶']
-    if len(dn) >= 2:
-        (a1, b1), (a2, b2) = dn[-2], dn[-1]
-        if b2[2] < b1[2] and leg_area(a2, b2) < leg_area(a1, b1):
-            # 下跌段净面积：后段<前段 → 力度减弱 → 底背驰
-            sig_str = '底背驰候选(价创新低·动能收缩)'
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '底背驰', 'desc': '底背驰', 'color': '#10b981'
-            })
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '一买候选', 'desc': '一买潜力(中枢外趋势背驰)', 'color': '#10b981'
-            })
-            hints.append('一买候选: 趋势底背驰，极值底确立')
-        elif b2[2] >= b1[2]:
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '二买候选', 'desc': '二买潜力(次笔回抽不破前低)', 'color': '#10b981'
-            })
-            hints.append('二买候选: 次笔回抽不破前低，底部形态确认')
-    if len(up) >= 2:
-        (a1, b1), (a2, b2) = up[-2], up[-1]
-        if b2[2] > b1[2] and leg_area(a2, b2) < leg_area(a1, b1):
-            # 上涨段净面积：后段<前段 → 力度减弱 → 顶背驰
-            sig_str = '顶背驰候选(价创新高·动能收缩)'
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '顶背驰', 'desc': '顶背驰', 'color': '#ef4444'
-            })
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '一卖警戒', 'desc': '一卖警戒(中枢外趋势背驰)', 'color': '#ef4444'
-            })
-            hints.append('一卖警戒: 趋势顶背驰，极值顶防守')
-        elif b2[2] <= b1[2]:
-            signals.append({
-                'date': b2[3], 'price': round(b2[2], 2),
-                'type': '二卖警戒', 'desc': '二卖警戒(次笔反弹不破前高)', 'color': '#ef4444'
-            })
-            hints.append('二卖警戒: 次笔反弹不破前高，顶部滞涨防守')
+
+    def _emit(date, price, typ, desc, color, hint):
+        signals.append({
+            'date': date, 'price': round(price, 2),
+            'type': typ, 'desc': desc, 'color': color
+        })
+        if hint:
+            hints.append(hint)
+
+    # 二买/二卖必须先有一买/一卖背驰；收敛三角不能同时报两边
+    had_buy1 = False
+    had_sell1 = False
+    buy2 = None
+    sell2 = None
+    for i in range(1, len(dn)):
+        (a1, b1), (a2, b2) = dn[i - 1], dn[i]
+        divergent = b2[2] < b1[2] and leg_area(a2, b2) < leg_area(a1, b1)
+        if divergent:
+            had_buy1 = True
+            if i == len(dn) - 1:
+                sig_str = '底背驰候选(价创新低·动能收缩)'
+                _emit(b2[3], b2[2], '底背驰', '底背驰', '#10b981', '')
+                _emit(b2[3], b2[2], '一买候选', '一买潜力(中枢外趋势背驰)', '#10b981',
+                      '一买候选: 趋势底背驰，极值底确立')
+        elif i == len(dn) - 1 and had_buy1 and b2[2] >= b1[2]:
+            buy2 = (b2[3], b2[2])
+    for i in range(1, len(up)):
+        (a1, b1), (a2, b2) = up[i - 1], up[i]
+        divergent = b2[2] > b1[2] and leg_area(a2, b2) < leg_area(a1, b1)
+        if divergent:
+            had_sell1 = True
+            if i == len(up) - 1:
+                sig_str = '顶背驰候选(价创新高·动能收缩)'
+                _emit(b2[3], b2[2], '顶背驰', '顶背驰', '#ef4444', '')
+                _emit(b2[3], b2[2], '一卖警戒', '一卖警戒(中枢外趋势背驰)', '#ef4444',
+                      '一卖警戒: 趋势顶背驰，极值顶防守')
+        elif i == len(up) - 1 and had_sell1 and b2[2] <= b1[2]:
+            sell2 = (b2[3], b2[2])
+    if buy2 and sell2:
+        # 收敛三角不能同时报二买和二卖，只保留与当前笔方向一致的一侧
+        if cur_dir == '向下':
+            buy2 = None
+        else:
+            sell2 = None
+    if buy2:
+        _emit(buy2[0], buy2[1], '二买候选', '二买潜力(一买后次笔回抽不破前低)', '#10b981',
+              '二买候选: 一买背驰后次笔回抽不破前低')
+    if sell2:
+        _emit(sell2[0], sell2[1], '二卖警戒', '二卖警戒(一卖后次笔反弹不破前高)', '#ef4444',
+              '二卖警戒: 一卖背驰后次笔反弹不破前高')
 
     hint = '；'.join(hints)
     summary_parts = [f"当前处于{period_label}【{cur_dir}的一笔】"]

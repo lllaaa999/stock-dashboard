@@ -35,22 +35,57 @@ _pytdx_client = None
 _active_server = None
 _tdx_disabled_until = 0
 
-def _clean_code(code: str) -> Tuple[int, str]:
-    """规范化股票代码 -> (market: 1=sh/0=sz, pure_code: 6位字符串)
+# 上证指数族：6 位以 000 开头且市场为沪。个股 000001 无后缀时仍是深市平安银行。
+_SH_INDEX_PREFIX = '000'
 
-    支持格式: 600519 / 600519.SH / 600519.SH.SS / sh600519 / sh.600519 / SH600519
-    实现要点(修复): 旧版用 c.replace('sh','') 直接删子串, 会把 '600519.sh' 变成
-    '600519.' —— 后缀形式(前端 600519.SH 正是此格式)全部解析失败, 导致日K/分钟K
-    三级容灾拿到的都是带点脏代码, 层层返回空。现改为只取前 6 位连续数字。
+def _market_prefix(market: int) -> str:
+    """1=沪 sh, 0=深 sz, 2=北交所 bj"""
+    return {1: 'sh', 0: 'sz', 2: 'bj'}.get(int(market), 'sz')
+
+
+def _is_index(market: int, pure: str) -> bool:
+    """指数不能走个股通道：TDX/AKShare 按纯数字会把 000001 取成平安银行。"""
+    if market == 1 and pure.startswith(_SH_INDEX_PREFIX):
+        return True
+    if market == 0 and pure.startswith('399'):
+        return True
+    if market == 2 and pure.startswith('899'):
+        return True
+    return False
+
+
+def _clean_code(code: str) -> Tuple[int, str]:
+    """规范化股票代码 -> (market: 1=sh / 0=sz / 2=bj, pure_code: 6位字符串)
+
+    市场判定优先相信显式前缀/后缀（sh/sz/bj、.SH/.SZ/.BJ）。
+    没有标记时：920/4/8 开头为北交所，6/5/9 为沪，其余为深。
+    因此 000001.SH / 000300.SH / 000688.SH 保持沪市指数，
+    而无后缀的 000001 仍是深市个股。
     """
-    c = str(code).strip().lower()
-    # 先剥离常见前缀/后缀标记, 再兜底: 提取第一段 6 位数字
-    for t in ('sh.', 'sz.', 'sh', 'sz', '.ss', '.sz', '.sh', 'xshg', 'xsse'):
+    raw = str(code).strip().lower().replace(' ', '')
+    explicit = None
+    if raw.startswith(('bj.', 'bj')) or raw.endswith('.bj'):
+        explicit = 2
+    elif raw.startswith(('sh.', 'sh')) or raw.endswith(('.sh', '.ss')) or 'xshg' in raw:
+        explicit = 1
+    elif raw.startswith(('sz.', 'sz')) or raw.endswith('.sz') or 'xsse' in raw:
+        explicit = 0
+
+    c = raw
+    for t in ('xshg', 'xsse', 'sh.', 'sz.', 'bj.', '.ss', '.sz', '.sh', '.bj'):
         c = c.replace(t, '')
+    c = re.sub(r'^(sh|sz|bj)', '', c)
     m = re.search(r'\d{6}', c)
     pure = m.group(0) if m else c
-    market = 1 if pure.startswith(('6', '5', '9')) else 0
-    return market, pure
+
+    if explicit is not None:
+        return explicit, pure
+    # 920 必须先于「9 开头=沪」判断，否则新北交所代码会被当成沪市
+    if pure.startswith('920') or pure.startswith(('4', '8')):
+        return 2, pure
+    if pure.startswith(('6', '5', '9')):
+        return 1, pure
+    return 0, pure
 
 
 def get_tdx_client():
@@ -183,7 +218,7 @@ def kline_baostock(code: str, days: int = 160) -> Optional[List[List[Any]]]:
     try:
         import baostock as bs
         market, pure = _clean_code(code)
-        bs_code = ('sh.' if market == 1 else 'sz.') + pure
+        bs_code = _market_prefix(market) + '.' + pure
         start_date = (datetime.date.today() - datetime.timedelta(days=int(days * 1.8))).strftime('%Y-%m-%d')
         rs = bs.query_history_k_data_plus(
             bs_code,
@@ -343,7 +378,7 @@ def _kline_akshare(code: str, days: int = 160) -> Optional[List[List[Any]]]:
         return None
 
     market, pure = _clean_code(code)
-    prefix = 'sh' if market == 1 else 'sz'
+    prefix = _market_prefix(market)
     try:
         end = datetime.date.today() + datetime.timedelta(days=1)
         # 多取一些自然日以覆盖 days 个交易日（含节假日余量）
@@ -376,9 +411,90 @@ def _kline_akshare(code: str, days: int = 160) -> Optional[List[List[Any]]]:
 
 
 
+def _kline_tencent(market: int, pure: str, days: int, period: str = 'day') -> Optional[List[List[Any]]]:
+    """腾讯前复权 K 线。period: day / week / month。指数与个股同一接口，前缀决定品种。"""
+    full = _market_prefix(market) + pure
+    tx_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full},{period},,,{days},qfq"
+    raw = http_get(tx_url, timeout=3.5)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        sub = data.get('data', {}).get(full, {})
+        rows = sub.get(f'qfq{period}') or sub.get(period) or []
+        result = []
+        for r in rows:
+            result.append([
+                r[0], float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])
+            ])
+        return result or None
+    except Exception:
+        return None
+
+
+def kline_eastmoney(code: str, limit: int = 160, klt: int = 101) -> Optional[List[List[Any]]]:
+    """东财 K 线容灾。klt: 1/5/15/30/60 分钟, 101 日, 102 周, 103 月。
+
+    日/周/月: [date, open, close, high, low, vol]
+    分钟:     [datetime, open, close, high, low, vol, amount]
+    """
+    market, pure = _clean_code(code)
+    secid = ('1.' if market == 1 else '0.') + pure
+    url = (
+        'https://push2his.eastmoney.com/api/qt/stock/kline/get'
+        f'?secid={secid}&klt={int(klt)}&fqt=1&lmt={int(limit)}&end=20500101'
+        '&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57'
+    )
+    raw = http_get(url, timeout=4.0)
+    if not raw:
+        return None
+    try:
+        rows = ((json.loads(raw).get('data') or {}).get('klines')) or []
+    except Exception:
+        return None
+    minute = int(klt) < 100
+    result = []
+    for line in rows:
+        parts = str(line).split(',')
+        if len(parts) < 6:
+            continue
+        try:
+            o, c, h, l = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
+            v = float(parts[5])
+            if minute:
+                amt = float(parts[6]) if len(parts) > 6 else v * c * 100
+                result.append([parts[0], o, c, h, l, v, amt])
+            else:
+                result.append([parts[0][:10], o, c, h, l, v])
+        except Exception:
+            continue
+    return result or None
+
+
+def kline_period(code: str, days: int = 160, period: str = 'day') -> Optional[List[List[Any]]]:
+    """周/月 K。禁止用日 K 冒充。period: week / month。"""
+    market, pure = _clean_code(code)
+    klt = 102 if period == 'week' else 103
+    em = kline_eastmoney(f'{_market_prefix(market)}{pure}', limit=days, klt=klt)
+    if em:
+        return em
+    return _kline_tencent(market, pure, days, period=period)
+
+
+def _kline_index(market: int, pure: str, days: int) -> Optional[List[List[Any]]]:
+    """指数专用通道：baostock / 腾讯。不降级到 TDX 或 AKShare 个股日 K。"""
+    tagged = _market_prefix(market) + pure
+    bs_kl = kline_baostock(tagged, days=days)
+    if bs_kl and len(bs_kl) >= 1:
+        return bs_kl
+    return _kline_tencent(market, pure, days, period='day')
+
+
 def kline(code: str, days: int = 160) -> Optional[List[List[Any]]]:
     """获取日K线：标准格式 [[date, open, close, high, low, vol], ...]"""
     market, pure = _clean_code(code)
+    if _is_index(market, pure):
+        return _kline_index(market, pure, days)
 
     # --- 1. TDX 极速日K ---
     client = get_tdx_client()
@@ -414,28 +530,14 @@ def kline(code: str, days: int = 160) -> Optional[List[List[Any]]]:
         return ak_kl
 
     # --- 4. 腾讯 HTTP 前复权日K 兜底 ---
-    full = ('sh' if market == 1 else 'sz') + pure
-    tx_url = f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={full},day,,,{days},qfq"
-    raw = http_get(tx_url, timeout=3.5)
-    if raw:
-        try:
-            data = json.loads(raw)
-            sub = data.get('data', {}).get(full, {})
-            rows = sub.get('qfqday') or sub.get('day') or []
-            result = []
-            for r in rows:
-                result.append([
-                    r[0],
-                    float(r[1]),
-                    float(r[2]),
-                    float(r[3]),
-                    float(r[4]),
-                    float(r[5])
-                ])
-            if result:
-                return result
-        except Exception:
-            pass
+    tx_kl = _kline_tencent(market, pure, days, period='day')
+    if tx_kl:
+        return tx_kl
+
+    # --- 5. 东财日K ---
+    em_kl = kline_eastmoney(f'{_market_prefix(market)}{pure}', limit=days, klt=101)
+    if em_kl:
+        return em_kl
 
     return None
 
@@ -468,6 +570,14 @@ def min_kline(code: str, n: int = 800, freq: str = '5m') -> Optional[List[List[A
                 return result
         except Exception:
             pass
+
+    # 腾讯/TDX 不可用时走东财分钟 K，避免直接返回空数组
+    klt_map = {'1m': 1, '5m': 5, '15m': 15, '30m': 30, '60m': 60}
+    klt = klt_map.get(freq.lower())
+    if klt:
+        em = kline_eastmoney(f'{_market_prefix(market)}{pure}', limit=n, klt=klt)
+        if em:
+            return em
     return None
 
 # ============================================================================

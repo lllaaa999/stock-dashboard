@@ -11,6 +11,18 @@
 from typing import Dict, Any, Tuple, Optional
 
 
+def _parse_fbt(v: Any) -> int:
+    """封板时间：整数 92500，或 '09:25:00'。带冒号的字符串不能直接 int()。"""
+    if v is None or v == '':
+        return 0
+    if isinstance(v, (int, float)):
+        return int(v)
+    s = str(v).strip().replace(':', '')
+    if s.isdigit():
+        return int(s)
+    return 0
+
+
 def _lu_num(v: Any) -> float:
     """安全数值转换"""
     return float(v) if isinstance(v, (int, float)) else 0.0
@@ -56,7 +68,13 @@ def _lu_board_score(lbc: Optional[int]) -> Optional[float]:
     """
     if not lbc:
         return None
-    return {1: 4.0, 2: 10.0, 3: 6.0, 4: 2.0}.get(int(lbc), 0.0)
+    n = int(lbc)
+    table = {1: 4.0, 2: 10.0, 3: 6.0, 4: 2.0, 5: 1.0}
+    if n in table:
+        return table[n]
+    if n > 5:
+        return round(max(0.2, 1.0 - 0.15 * (n - 5)), 2)
+    return 0.0
 
 
 def limit_up_quality(d: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
@@ -67,10 +85,7 @@ def limit_up_quality(d: Dict[str, Any]) -> Tuple[float, Dict[str, Any]]:
     E/F/H 策略用它当首要排序键, 并通过 x['qlty'] 把分数带给 CLI 与 Web。
     返回 (score, detail)。
     """
-    try:
-        fbt = int(d.get('fbt') or 0)
-    except Exception:
-        fbt = 0
+    fbt = _parse_fbt(d.get('fbt'))
     try:
         lbc = int(d.get('lbc') or 0)
     except Exception:
