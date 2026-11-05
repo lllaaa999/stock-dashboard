@@ -12,12 +12,18 @@ import {
   Zap,
 } from 'lucide-react';
 import { useMarketStore } from '../store/useMarketStore';
-import { useRealLadder, useRealRegulatory } from '../hooks/useRealQuantData';
+import {
+  useRealAuctionRadar,
+  useRealLadder,
+  useRealRegulatory,
+  useRegulatoryHistories,
+} from '../hooks/useRealQuantData';
 import type {
   AuctionSignalType,
   DragonRoleTag,
   DragonTigerPresetMode,
   DragonTigerSeatNature,
+  RegulatoryHistory,
   ThemeResonanceScenarioPreset,
   TickData,
   UltraShortProfile,
@@ -95,30 +101,9 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
   const [realDragonTigerData, setRealDragonTigerData] =
     useState<DragonTigerAnalysisData | null>(null);
   const [realLhbFocusList, setRealLhbFocusList] = useState<{ code: string; symbol: string; name: string; reason: string }[]>([]);
-  const [realAuctionList, setRealAuctionList] =
-    useState<AuctionRadarItemData[] | null>(null);
-  // 交易所法规引擎（真实口径）+ 该标的 T-1/T-2 真实涨跌幅：统一走共享钩子（含 60s 模块级缓存）
+  // 后端真实全市场竞价雷达 + 连板梯队 + 交易所法规引擎：统一走共享钩子（含模块级缓存）
+  const realAuctionList = useRealAuctionRadar() as AuctionRadarItemData[] | null;
   const { regulatory: realRegulatory, history: realRegHistory } = useRealRegulatory(selectedSymbol);
-
-  // 异步获取后端真实全市场竞价雷达
-  useEffect(() => {
-    let isMounted = true;
-    fetch('/api/quant/auction_radar')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (isMounted && data && data.status === 'ok' && Array.isArray(data.radar_items)) {
-          setRealAuctionList(data.radar_items as AuctionRadarItemData[]);
-        }
-      })
-      .catch((e) => {
-        console.error('[UltraShortQuantWorkbench] 获取竞价雷达数据失败:', e);
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  // 后端真实全市场连板梯队：走共享钩子，与主图页顶部六维条共用同一份请求
   const realLadderData = useRealLadder() as LadderSummaryData | null;
 
   // 异步获取后端真实龙虎榜明细与今日上榜列表
@@ -278,6 +263,32 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
     regulatoryPoolQuotes.find((q) => q.symbol === selectedSymbol) ??
     allQuotes[0];
 
+  // F-13：池内多只票的真实日K批量预取（只在监管/总览页启用，避免其它 tab 白拉 40 只）
+  const regPoolSymbols = useMemo(() => {
+    if (quantModuleTab !== 'regulatory' && quantModuleTab !== 'overview') return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const q of regulatoryPoolQuotes) {
+      const s = String(q.symbol || '').toUpperCase();
+      if (!s || seen.has(s)) continue;
+      seen.add(s);
+      out.push(s);
+      if (out.length >= 40) break;
+    }
+    return out;
+  }, [quantModuleTab, regulatoryPoolQuotes]);
+
+  const { histories: regPoolHistories } = useRegulatoryHistories(regPoolSymbols);
+
+  // 选中股优先用单票接口（额外带 9 日内触发次数/10 日偏离），其余用批量结果
+  const regHistoryMap = useMemo(() => {
+    const map: Record<string, RegulatoryHistory> = { ...regPoolHistories };
+    if (realRegHistory && selectedSymbol) {
+      map[String(selectedSymbol).toUpperCase()] = realRegHistory;
+    }
+    return map;
+  }, [regPoolHistories, realRegHistory, selectedSymbol]);
+
   // 1. 09:25 竞价雷达全量计算 (真实全市场竞价雷达优先，未就绪时降级本地计算)
   const auctionList = useMemo(() => {
     if (realAuctionList && realAuctionList.length > 0) {
@@ -317,17 +328,18 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
   }, [themeScenario, realThemeData, localThemeOverview]);
 
   // 4. 监管异动监测 (2/3日涨跌幅实时监控、k ∈ {2, 3} 法定异动窗口与红黄灯特停预警)
-  //    T-1/T-2 优先用后端真实日K（realRegHistory），没有再退回占位值并标记估算
+  //    T-1/T-2 优先用后端真实日K（选中股走单票、其余走批量 regHistoryMap），
+  //    都没有才退回 0 并把 historySource 标成 estimated（UI 显示「—」，不再伪造 +0.00%）
   const activeRegDeviation = useMemo(
     () =>
       activeQuote
         ? calculateRegulatoryDeviation(
             activeQuote,
             simulatedIndexPct !== null ? simulatedIndexPct : undefined,
-            realRegHistory ?? undefined
+            regHistoryMap[String(activeQuote.symbol).toUpperCase()]
           )
         : null,
-    [activeQuote, simulatedIndexPct, realRegHistory]
+    [activeQuote, simulatedIndexPct, regHistoryMap]
   );
 
   const regulatoryOverview = useMemo(
@@ -335,9 +347,9 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
       analyzeMarketRegulatoryOverview(
         regulatoryPoolQuotes,
         simulatedIndexPct !== null ? simulatedIndexPct : undefined,
-        realRegHistory && selectedSymbol ? { [selectedSymbol]: realRegHistory } : undefined
+        Object.keys(regHistoryMap).length > 0 ? regHistoryMap : undefined
       ),
-    [regulatoryPoolQuotes, simulatedIndexPct, realRegHistory, selectedSymbol]
+    [regulatoryPoolQuotes, simulatedIndexPct, regHistoryMap]
   );
 
   const handleSelectRegulatoryStock = useCallback(
@@ -370,8 +382,8 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
     return analyzeStockDragonTigerList(activeQuote, dragonTigerPreset);
   }, [activeQuote, dragonTigerPreset]);
   const activeDragonTiger = useMemo(() => {
-    if (dragonTigerPreset === 'live' && realDragonTigerData) {
-      return realDragonTigerData;
+    if (dragonTigerPreset === 'live') {
+      return realDragonTigerData ?? null;
     }
     return localDragonTiger;
   }, [dragonTigerPreset, realDragonTigerData, localDragonTiger]);
@@ -393,7 +405,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
   return (
     <div
       data-testid="ultrashort-quant-workbench"
-      className="flex flex-col flex-1 min-h-0 bg-[#0d0e12] text-[#d1d4dc] overflow-hidden select-none"
+      className="flex flex-col flex-1 min-h-0 bg-[#0d0e12] text-[#d1d4dc] overflow-hidden select-none neon-panel neon-border-violet"
     >
       {/* 顶部子模块导航栏 */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#131722] border-b border-[#2a2e39] shrink-0">
@@ -408,7 +420,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                 onClick={() => setQuantModuleTab(tab.id)}
                 className={`px-2.5 py-1 text-xs font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   active
-                    ? 'bg-[#2962ff] text-white font-semibold'
+                    ? 'bg-[#2962ff] text-white font-semibold glow-up'
                     : 'text-[#9ca3af] hover:text-white hover:bg-[#1e222d]'
                 }`}
               >
@@ -433,7 +445,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
         {(quantModuleTab === 'overview' || quantModuleTab === 'auction') && (
           <section
             aria-label="09:25 集合竞价雷达"
-            className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden"
+            className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden neon-panel neon-border-red"
           >
             <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#131722] border-b border-[#2a2e39]">
               <div className="flex items-center gap-2">
@@ -585,7 +597,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
           <section
             aria-label="涨跌停连板梯队与断层监测"
             data-testid="ladder-fault-monitor-section"
-            className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden"
+            className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden neon-panel neon-border-teal"
           >
             {/* 顶部标题栏 + 梯队断层场景沙盘切换 */}
             <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#131722] border-b border-[#2a2e39]">
@@ -1099,7 +1111,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
           activeVWDVR && (
             <section
               aria-label="真实成交量加权承接算子 VW-DVR"
-              className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden"
+              className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden neon-panel neon-border-violet"
             >
               <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#131722] border-b border-[#2a2e39]">
                 <div className="flex items-center gap-2">
@@ -1109,8 +1121,13 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                   </h2>
                 </div>
                 <span className="text-[11px] font-mono tabular-nums text-[#9ca3af]">
-                  当前选中：{activeVWDVR.name} ({activeVWDVR.symbol}) · VW-DVR 得分{' '}
-                  <strong className="text-white">{activeVWDVR.vwDvrScore}</strong>
+                  当前选中：{activeVWDVR.name} ({activeVWDVR.symbol}) ·{' '}
+                  {typeof activeVWDVR.dvrRatio === 'number' && (
+                    <>
+                      下行方差比 DVR <strong className="text-[#38bdf8]">{activeVWDVR.dvrRatio.toFixed(3)}</strong> ·{' '}
+                    </>
+                  )}
+                  承接得分 <strong className="text-white">{activeVWDVR.vwDvrScore}</strong>
                 </span>
               </div>
 
@@ -1156,7 +1173,15 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                 </div>
 
                 <div className="p-2.5 rounded bg-[#1e222d] border border-[#2a2e39]">
-                  <div className="text-[11px] text-[#787b86]">VW-DVR 综合承接定性</div>
+                  <div className="text-[11px] text-[#787b86] flex items-center justify-between">
+                    <span>VW-DVR 承接与下行方差比</span>
+                    <span className="font-mono text-[10px] text-[#38bdf8]">
+                      DVR{' '}
+                      {typeof activeVWDVR.dvrRatio === 'number'
+                        ? activeVWDVR.dvrRatio.toFixed(3)
+                        : '—'}
+                    </span>
+                  </div>
                   <div className="mt-1 flex items-baseline justify-between">
                     <span
                       className={`font-mono tabular-nums text-lg font-bold ${
@@ -1191,6 +1216,9 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                       </th>
                       <th className="py-2 px-2.5 text-right whitespace-nowrap">
                         下影线韧性 β_shadow
+                      </th>
+                      <th className="py-2 px-2.5 text-right whitespace-nowrap">
+                        下行方差比 DVR
                       </th>
                       <th className="py-2 px-2.5 text-right whitespace-nowrap">VW-DVR 得分</th>
                       <th className="py-2 px-2.5 whitespace-nowrap">承接状态定性</th>
@@ -1233,6 +1261,9 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                         <td className="py-2 px-2.5 text-right font-mono tabular-nums text-white whitespace-nowrap">
                           {item.lowerShadowResilience.toFixed(1)}%
                         </td>
+                        <td className="py-2 px-2.5 text-right font-mono tabular-nums text-[#38bdf8] whitespace-nowrap">
+                          {typeof item.dvrRatio === 'number' ? item.dvrRatio.toFixed(3) : '—'}
+                        </td>
                         <td className="py-2 px-2.5 text-right font-mono tabular-nums font-bold text-[#F6465D] whitespace-nowrap">
                           {item.vwDvrScore.toFixed(1)}
                         </td>
@@ -1262,11 +1293,25 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
 
         {/* ==================== 模块六：龙虎榜席位性质分析 (游资常用席位 / 机构专用 / 量化大本营) ==================== */}
         {(quantModuleTab === 'overview' || quantModuleTab === 'dragon_tiger') &&
+          dragonTigerPreset === 'live' &&
+          !activeDragonTiger && (
+            <section
+              aria-label="龙虎榜席位性质分析"
+              data-testid="dragon-tiger-section"
+              className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden neon-panel neon-border-red"
+            >
+              <div className="px-3 py-6 text-center text-xs text-[#9ca3af]">
+                近两周未披露龙虎榜
+              </div>
+            </section>
+          )}
+
+        {(quantModuleTab === 'overview' || quantModuleTab === 'dragon_tiger') &&
           activeDragonTiger && (
             <section
               aria-label="龙虎榜席位性质分析"
               data-testid="dragon-tiger-section"
-              className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden"
+              className="bg-[#1e222d] border border-[#2a2e39] rounded-md overflow-hidden neon-panel neon-border-red"
             >
               {/* 顶部标题栏 + 席位结构沙盘推演切换 */}
               <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#131722] border-b border-[#2a2e39]">
@@ -1281,9 +1326,15 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                 </div>
 
                 <div className="flex items-center gap-1.5 text-xs">
-                  <span className="px-2.5 py-1 rounded bg-[#38bdf8]/20 text-[#38bdf8] border border-[#38bdf8]/40 font-semibold">
-                    真实席位客观验身 (无主观推演)
-                  </span>
+                  {dragonTigerPreset === 'live' && realDragonTigerData ? (
+                    <span className="px-2.5 py-1 rounded bg-[#38bdf8]/20 text-[#38bdf8] border border-[#38bdf8]/40 font-semibold">
+                      真实席位客观验身 (无主观推演)
+                    </span>
+                  ) : (
+                    <span className="px-2.5 py-1 rounded bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/40 font-semibold">
+                      沙盘推演席位
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -1478,6 +1529,55 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
                     <strong className="text-[#38bdf8]">次日博弈预案：</strong>
                     {activeDragonTiger.actionablePlaybook}
                   </p>
+                  {typeof activeDragonTiger.totalLhbScore === 'number' && (
+                    <div
+                      data-testid="dragon-tiger-orthogonal-bar"
+                      className="flex flex-wrap items-center gap-2 pt-1 text-[11px] font-mono tabular-nums"
+                    >
+                      <span
+                        className={`px-1.5 py-0.5 rounded border font-semibold ${
+                          activeDragonTiger.gatePassed !== false
+                            ? 'bg-[#0ECB81]/15 text-[#0ECB81] border-[#0ECB81]/40'
+                            : 'bg-[#F6465D]/20 text-[#F6465D] border-[#F6465D]/50'
+                        }`}
+                      >
+                        {activeDragonTiger.gatePassed !== false
+                          ? '正交风控闸门 · 通过'
+                          : '正交风控闸门 · 一票否决'}
+                      </span>
+                      <span className="text-[#9ca3af]">
+                        正交验身得分:{' '}
+                        <strong
+                          className={
+                            activeDragonTiger.totalLhbScore >= 0
+                              ? 'text-[#F6465D]'
+                              : 'text-[#0ECB81]'
+                          }
+                        >
+                          {activeDragonTiger.totalLhbScore >= 0 ? '+' : ''}
+                          {activeDragonTiger.totalLhbScore.toFixed(2)}
+                        </strong>
+                      </span>
+                      {typeof activeDragonTiger.lhbNetImbalance === 'number' && (
+                        <span className="text-[#9ca3af]">
+                          全榜去重净失衡度:{' '}
+                          <strong className="text-[#d1d4dc]">
+                            {(activeDragonTiger.lhbNetImbalance * 100).toFixed(1)}%
+                          </strong>
+                        </span>
+                      )}
+                      {activeDragonTiger.tradeDate && (
+                        <span className="text-[#787b86]">
+                          榜单日: {activeDragonTiger.tradeDate}
+                        </span>
+                      )}
+                      {activeDragonTiger.vetoTags && activeDragonTiger.vetoTags.length > 0 && (
+                        <span className="text-[#F59E0B]">
+                          风险标签: {activeDragonTiger.vetoTags.join(' / ')}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex items-center gap-2 bg-[#1e222d] px-3 py-2 rounded border border-[#2a2e39] shrink-0">

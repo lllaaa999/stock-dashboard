@@ -351,12 +351,12 @@ test('题材点面共振与先锋龙身位识别：点面共振得分、板块�
   const themes = calculateThemeResonance(quotes);
 
   assert.ok(themes.length >= 5);
-  // 人工智能板块含 6板三六零 + 3板科大讯飞及梯队涨停标杆，应排在主线强共振前列
+  // 人工智能板块含 6板三六零 + 3板科大讯飞（去硬编码种子花名册后为2只真实涨停标的），应排在主线强共振前列
   const aiTheme = themes.find((t) => t.sectorName === '人工智能');
   assert.ok(aiTheme);
   assert.equal(aiTheme.resonanceStatus, '主线强共振');
   assert.equal(aiTheme.pioneerDragon.symbol, '601360.SH');
-  assert.ok(aiTheme.limitUpCount >= 5);
+  assert.ok(aiTheme.limitUpCount >= 2);
   assert.ok(aiTheme.limitUpDensityPercent >= 25);
   assert.equal(aiTheme.densityLevel, '涨停潮高密区');
   assert.equal(aiTheme.dragonLinkageStatus, '先锋中军强联动');
@@ -522,15 +522,18 @@ test('D3.js 龙虎榜游资席位关联网络图与席位活跃度画像：连�
 test('板块/题材共振监测与主流资金进攻方向识别：涨停密度、龙头联动与沙盘推演对比', () => {
   const quotes = Object.values(createInitialQuotes());
 
-  // 1. 实盘题材共振全景分析
+  // 1. 实盘题材共振全景分析（去硬编码种子花名册后，仅统计传入的真实标的）
   const liveOverview = analyzeMarketThemeResonance(quotes, 'live');
   assert.ok(liveOverview.themes.length >= 8);
   assert.ok(liveOverview.mainstreamAttackSectors.includes('人工智能'));
-  assert.ok(liveOverview.mainstreamAttackSectors.includes('半导体'));
+  assert.ok(
+    liveOverview.mainstreamAttackSectors.includes('半导体') ||
+      liveOverview.subRotationSectors.includes('半导体')
+  );
   assert.ok(liveOverview.retreatSectors.includes('家用电器'));
-  assert.ok(liveOverview.marketResonanceScore >= 70);
+  assert.ok(liveOverview.marketResonanceScore >= 60);
   assert.ok(liveOverview.mainstreamConcentrationPercent >= 30);
-  assert.ok(liveOverview.totalMarketLimitUpCount >= 12);
+  assert.ok(liveOverview.totalMarketLimitUpCount >= 2);
 
   // 验证全市场进攻火力权重百分比总和接近 100%
   const sumShare = liveOverview.themes.reduce(

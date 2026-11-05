@@ -37,6 +37,7 @@ interface StrategiesResponse {
   updated?: string;
   elapsed?: number;
   from_cache?: boolean;
+  cache_age?: number;
 }
 
 interface ScreenItem {
@@ -57,7 +58,10 @@ export const StockScreenerPanel: React.FC = () => {
   const setSelectedSymbol = useMarketStore((s) => s.setSelectedSymbol);
   const setWorkspaceMode = useMarketStore((s) => s.setWorkspaceMode);
 
-  const [tab, setTab] = useState<'strategies' | 'screen'>('strategies');
+  const [tab, setTab] = useState<'strategies' | 'screen' | 'ledger'>('strategies');
+  const [stratMode, setStratMode] = useState('auto');
+  const [patternQuery, setPatternQuery] = useState('');
+  const [expandedPatterns, setExpandedPatterns] = useState<Record<string, boolean>>({});
 
   // 策略选股状态
   const [stratData, setStratData] = useState<StrategiesResponse | null>(null);
@@ -73,7 +77,7 @@ export const StockScreenerPanel: React.FC = () => {
     setStratLoading(true);
     setStratError(null);
     try {
-      const url = `/api/strategies?mode=auto${refresh ? '&refresh=true' : ''}`;
+      const url = `/api/strategies?mode=${encodeURIComponent(stratMode)}${refresh ? '&refresh=true' : ''}`;
       const res = await fetch(url);
       const data = await res.json();
       if (data.status === 'error') throw new Error(data.error || '策略接口返回错误');
@@ -83,7 +87,7 @@ export const StockScreenerPanel: React.FC = () => {
     } finally {
       setStratLoading(false);
     }
-  }, []);
+  }, [stratMode]);
 
   useEffect(() => {
     loadStrategies();
@@ -97,7 +101,8 @@ export const StockScreenerPanel: React.FC = () => {
       // 全市场扫描约1-2分钟，给足超时
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 180000);
-      const res = await fetch('/api/screen', { signal: controller.signal });
+      const qs = patternQuery.trim() ? `?patterns=${encodeURIComponent(patternQuery.trim())}` : '';
+      const res = await fetch(`/api/screen${qs}`, { signal: controller.signal });
       clearTimeout(timer);
       const data = await res.json();
       if (data.status === 'error') throw new Error(data.error || '扫描失败');
@@ -111,7 +116,7 @@ export const StockScreenerPanel: React.FC = () => {
     } finally {
       setScreenLoading(false);
     }
-  }, []);
+  }, [patternQuery]);
 
   const handlePickStock = useCallback(
     (code: string) => {
@@ -136,13 +141,31 @@ export const StockScreenerPanel: React.FC = () => {
     }
     if (!stratData) return null;
 
-    const activeStrats = (stratData.strategies || []).filter((s) => s.active && s.count > 0);
+    const activeStrats = (stratData.strategies || []).filter((s) =>
+      stratMode === 'auto' ? s.active && s.count > 0 : true
+    );
     const totalCandidates = activeStrats.reduce((sum, s) => sum + s.count, 0);
 
     return (
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {/* 情绪周期状态条 */}
         <div className="rounded-lg border border-[#2a2e39] bg-[#131722] p-3 flex flex-wrap items-center gap-3 text-xs">
+          <label className="flex items-center gap-1 text-[#787b86]">
+            模式
+            <select
+              value={stratMode}
+              onChange={(e) => setStratMode(e.target.value)}
+              className="bg-[#1e222d] border border-[#2a2e39] rounded px-1 py-0.5 text-[#d1d4dc]"
+            >
+              <option value="auto">auto 情绪自适应</option>
+              <option value="all">all 全部策略</option>
+              {['E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].map((k) => (
+                <option key={k} value={k}>
+                  仅 {k}
+                </option>
+              ))}
+            </select>
+          </label>
           <span className="text-[#787b86]">当前周期</span>
           <span className="px-2 py-0.5 rounded bg-[#2962ff]/20 text-[#2962ff] font-semibold">{stratData.stage || '-'}</span>
           <span className="text-[#d1d4dc]">{stratData.advice || ''}</span>
@@ -169,6 +192,9 @@ export const StockScreenerPanel: React.FC = () => {
                 <span className="px-1.5 py-0.5 rounded bg-[#F59E0B]/20 text-[#F59E0B] text-[10px] font-mono">{sg.key}</span>
                 <span className="text-sm font-semibold text-white">{sg.name}</span>
                 <span className="text-[10px] text-[#787b86]">{sg.stage_hint}</span>
+                {!sg.active && (
+                  <span className="text-[10px] text-[#787b86] border border-[#2a2e39] rounded px-1">未激活</span>
+                )}
                 <span className="ml-auto text-[10px] text-[#787b86]">{sg.count} 只</span>
               </div>
               <div className="divide-y divide-[#1e222d]">
@@ -212,6 +238,12 @@ export const StockScreenerPanel: React.FC = () => {
               <div className="text-[11px] text-[#787b86]">
                 打板 / 趋势 / 龙回头 / 首阴反包 / N字反包 / 均线粘合 / 地量反转 / 缺口突破 / 低吸
               </div>
+              <input
+                value={patternQuery}
+                onChange={(e) => setPatternQuery(e.target.value)}
+                placeholder="只扫指定形态，逗号分隔；留空扫全部"
+                className="mt-2 w-full bg-[#0d0e12] border border-[#2a2e39] rounded px-2 py-1 text-[11px] text-[#d1d4dc]"
+              />
             </div>
             <button
               onClick={runScreen}
@@ -241,7 +273,7 @@ export const StockScreenerPanel: React.FC = () => {
                     <span className="ml-auto text-[10px] text-[#787b86]">{list.length} 只</span>
                   </div>
                   <div className="divide-y divide-[#1e222d] max-h-80 overflow-y-auto">
-                    {list.slice(0, 15).map((it) => (
+                    {(expandedPatterns[pattern] ? list : list.slice(0, 15)).map((it) => (
                       <button
                         key={it.code}
                         onClick={() => handlePickStock(it.code)}
@@ -255,8 +287,14 @@ export const StockScreenerPanel: React.FC = () => {
                         <span className="text-[10px] text-[#787b86] w-12 text-right">{it.price.toFixed(2)}</span>
                       </button>
                     ))}
-                    {list.length > 15 && (
-                      <div className="px-3 py-1.5 text-[10px] text-[#787b86]">还有 {list.length - 15} 只…</div>
+                    {list.length > 15 && !expandedPatterns[pattern] && (
+                      <button
+                        type="button"
+                        onClick={() => setExpandedPatterns((prev) => ({ ...prev, [pattern]: true }))}
+                        className="w-full px-3 py-1.5 text-left text-[10px] text-[#38bdf8] hover:text-white"
+                      >
+                        展开其余 {list.length - 15} 只
+                      </button>
                     )}
                   </div>
                 </div>
@@ -270,6 +308,8 @@ export const StockScreenerPanel: React.FC = () => {
       </div>
     );
   };
+
+  const renderLedger = () => <ResearchLedger />;
 
   return (
     <div className="flex flex-col h-full min-h-0 bg-[#0d0e12]">
@@ -295,8 +335,106 @@ export const StockScreenerPanel: React.FC = () => {
         >
           形态选股（全市场扫描）
         </button>
+        <button
+          onClick={() => setTab('ledger')}
+          className={`px-3 py-1.5 rounded text-xs font-medium transition-colors ${
+            tab === 'ledger'
+              ? 'bg-[#F59E0B] text-[#0d0e12]'
+              : 'text-[#9ca3af] hover:text-white hover:bg-[#1e222d]'
+          }`}
+        >
+          数据 / 回测 / 模拟盘
+        </button>
       </div>
-      {tab === 'strategies' ? renderStrategies() : renderScreen()}
+      {tab === 'strategies' ? renderStrategies() : tab === 'screen' ? renderScreen() : renderLedger()}
+    </div>
+  );
+};
+
+const ResearchLedger: React.FC = () => {
+  const [statusText, setStatusText] = useState('加载中…');
+  const [presets, setPresets] = useState<{ key: string; name: string; default_code?: string }[]>([]);
+  const [report, setReport] = useState<string>('尚未读取');
+  const [backtest, setBacktest] = useState<string>('');
+
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/data_status')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!alive) return;
+        const sources = j?.sources || {};
+        const bits = Object.entries(sources)
+          .slice(0, 6)
+          .map(([name, info]) => {
+            const st = (info as { status?: string })?.status || 'unknown';
+            return `${name}:${st}`;
+          });
+        setStatusText(bits.join(' · ') || '无数据源状态');
+      })
+      .catch(() => { if (alive) setStatusText('数据源状态不可用'); });
+    fetch('/api/backtest/presets')
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows) => { if (alive) setPresets(Array.isArray(rows) ? rows : []); })
+      .catch(() => { if (alive) setPresets([]); });
+    fetch('/api/paper/report')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!alive) return;
+        if (!j) {
+          setReport('模拟盘报告不可用');
+          return;
+        }
+        setReport(
+          `成交 ${j.trades ?? '—'} 笔 · 胜率 ${j.win_rate_pct ?? '—'}% · 回撤 ${j.max_drawdown_pct ?? '—'}%`
+        );
+      })
+      .catch(() => { if (alive) setReport('模拟盘报告不可用'); });
+    return () => { alive = false; };
+  }, []);
+
+  const runPreset = (key: string, code: string) => {
+    setBacktest(`${key} 回测中…`);
+    const q = new URLSearchParams({ strategy: key, code: code || 'sh000001', days: '120' });
+    fetch(`/api/backtest/run?${q}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j) => {
+        if (!j) {
+          setBacktest('回测失败');
+          return;
+        }
+        const m = j.summary || j.metrics || j;
+        setBacktest(
+          `${key} 收益 ${m.total_return_pct ?? '—'}% 回撤 ${m.max_drawdown_pct ?? '—'}%`
+        );
+      })
+      .catch(() => setBacktest('回测失败'));
+  };
+
+  return (
+    <div className="flex-1 overflow-y-auto p-4 space-y-3 text-xs text-[#d1d4dc]">
+      <div className="rounded border border-[#2a2e39] bg-[#131722] p-3">
+        <div className="text-[#787b86] mb-1">数据源健康</div>
+        <div>{statusText}</div>
+      </div>
+      <div className="rounded border border-[#2a2e39] bg-[#131722] p-3">
+        <div className="text-[#787b86] mb-1">模拟盘</div>
+        <div>{report}</div>
+      </div>
+      <div className="rounded border border-[#2a2e39] bg-[#131722] p-3 space-y-2">
+        <div className="text-[#787b86]">回测预设（点击运行）</div>
+        {presets.map((p) => (
+          <button
+            key={p.key}
+            type="button"
+            onClick={() => runPreset(p.key, p.default_code || 'sh000001')}
+            className="block w-full text-left px-2 py-1 rounded hover:bg-[#1e222d]"
+          >
+            {p.name}
+          </button>
+        ))}
+        {backtest && <div className="text-[#F59E0B]">{backtest}</div>}
+      </div>
     </div>
   );
 };

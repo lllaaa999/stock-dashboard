@@ -854,45 +854,81 @@ export const RegulatoryMonitorPanel: React.FC<RegulatoryMonitorPanelProps> = ({
                     {formatSignedPercent(row.currentChangePercent)})
                   </td>
 
-                  {/* 4. T-2 / T-1 历史涨幅 */}
+                  {/* 4. T-2 / T-1 历史涨幅。无真实日K时不把 0 画成 +0.00%。 */}
                   <td className="py-2 px-2 text-right font-mono tabular-nums whitespace-nowrap">
-                    <span className={getSignedColorClass(row.stockReturnT2Percent)}>
-                      {formatSignedPercent(row.stockReturnT2Percent)}
-                    </span>
-                    <span className="text-[#787b86] mx-1">/</span>
-                    <span className={getSignedColorClass(row.stockReturnT1Percent)}>
-                      {formatSignedPercent(row.stockReturnT1Percent)}
-                    </span>
+                    {row.historySource === 'estimated' ? (
+                      <span
+                        className="text-[#787b86]"
+                        title={row.historyReason || '该标的无真实日K，T-1/T-2 不可用'}
+                        data-testid="reg-history-missing"
+                      >
+                        {row.historyReason ? '缺日K' : '—'}
+                      </span>
+                    ) : (
+                      <>
+                        <span className={getSignedColorClass(row.stockReturnT2Percent)}>
+                          {formatSignedPercent(row.stockReturnT2Percent)}
+                        </span>
+                        <span className="text-[#787b86] mx-1">/</span>
+                        <span className={getSignedColorClass(row.stockReturnT1Percent)}>
+                          {formatSignedPercent(row.stockReturnT1Percent)}
+                        </span>
+                      </>
+                    )}
                   </td>
 
                   {/* 5. 2日累涨 / k=2偏离 */}
                   <td className="py-2 px-2 text-right font-mono tabular-nums whitespace-nowrap">
-                    <span
-                      className={`font-semibold ${getSignedColorClass(
-                        row.stockCumReturn2DayPercent
-                      )}`}
-                    >
-                      {formatSignedPercent(row.stockCumReturn2DayPercent)}
-                    </span>
-                    <span className="text-[#787b86] mx-1">/</span>
-                    <span className="text-white">
-                      偏{formatSignedPercent(row.dev2DayCurrentPercent)}
-                    </span>
+                    {row.historySource === 'estimated' ? (
+                      <span
+                        className="text-[#787b86]"
+                        title={row.historyReason || '该标的无真实日K，T-1/T-2 不可用'}
+                        data-testid="reg-history-missing"
+                      >
+                        {row.historyReason ? '缺日K' : '—'}
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          className={`font-semibold ${getSignedColorClass(
+                            row.stockCumReturn2DayPercent
+                          )}`}
+                        >
+                          {formatSignedPercent(row.stockCumReturn2DayPercent)}
+                        </span>
+                        <span className="text-[#787b86] mx-1">/</span>
+                        <span className="text-white">
+                          偏{formatSignedPercent(row.dev2DayCurrentPercent)}
+                        </span>
+                      </>
+                    )}
                   </td>
 
                   {/* 6. 3日累涨 / k=3偏离 */}
                   <td className="py-2 px-2 text-right font-mono tabular-nums whitespace-nowrap">
-                    <span
-                      className={`font-semibold ${getSignedColorClass(
-                        row.stockCumReturn3DayPercent
-                      )}`}
-                    >
-                      {formatSignedPercent(row.stockCumReturn3DayPercent)}
-                    </span>
-                    <span className="text-[#787b86] mx-1">/</span>
-                    <span className="text-white">
-                      偏{formatSignedPercent(row.dev3DayCurrentPercent)}
-                    </span>
+                    {row.historySource === 'estimated' ? (
+                      <span
+                        className="text-[#787b86]"
+                        title={row.historyReason || '该标的无真实日K，T-1/T-2 不可用'}
+                        data-testid="reg-history-missing"
+                      >
+                        {row.historyReason ? '缺日K' : '—'}
+                      </span>
+                    ) : (
+                      <>
+                        <span
+                          className={`font-semibold ${getSignedColorClass(
+                            row.stockCumReturn3DayPercent
+                          )}`}
+                        >
+                          {formatSignedPercent(row.stockCumReturn3DayPercent)}
+                        </span>
+                        <span className="text-[#787b86] mx-1">/</span>
+                        <span className="text-white">
+                          偏{formatSignedPercent(row.dev3DayCurrentPercent)}
+                        </span>
+                      </>
+                    )}
                   </td>
 
                   {/* 7. 主约束 & 今日压线安全价 */}

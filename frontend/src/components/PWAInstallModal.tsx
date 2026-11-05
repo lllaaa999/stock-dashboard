@@ -3,28 +3,15 @@ import { X, Download, Smartphone, Sliders } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import { marketWsClient } from '../services/wsClient';
 import { useMarketStore } from '../store/useMarketStore';
-import type { MarketScenario } from '../types/market';
 
 export const PWAInstallModal: React.FC = () => {
   const isOpen = useMarketStore((s) => s.isArchModalOpen);
   const setOpen = useMarketStore((s) => s.setArchModalOpen);
   const batchWindowMs = useMarketStore((s) => s.batchWindowMs);
-  const selectedSymbol = useMarketStore((s) => s.selectedSymbol);
-  const quote = useMarketStore((s) => s.quotes[s.selectedSymbol]);
-  const triggerScenario = useMarketStore((s) => s.triggerScenario);
 
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
 
   if (!isOpen) return null;
-
-  const currentScenario: MarketScenario =
-    quote?.phase === 'LIMIT_UP'
-      ? 'limit_up'
-      : quote?.phase === 'LIMIT_DOWN'
-      ? 'limit_down'
-      : quote?.phase === 'CALL_AUCTION'
-      ? 'call_auction'
-      : 'normal';
 
   return (
     <div
@@ -134,44 +121,7 @@ export const PWAInstallModal: React.FC = () => {
             </div>
           </div>
 
-          {/* 3. Level-1 极端盘口空档保护验证 */}
-          {quote && (
-            <div className="p-3 rounded bg-[#131722] border border-[#2a2e39]">
-              <div className="font-semibold text-white">
-                当前标的 ({quote.name} {selectedSymbol}) 五档空档保护测试
-              </div>
-              <p className="mt-1 text-[11px] text-[#787b86]">
-                一键切换当前股票至涨停、跌停或集合竞价阶段，验证五档盘口空档自动降级为 <code className="font-mono text-[#d1d4dc]">--</code> 与委比极值计算。
-              </p>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2.5">
-                {(
-                  [
-                    { id: 'normal', label: '正常连续竞价' },
-                    { id: 'limit_up', label: '涨停(卖盘全空)' },
-                    { id: 'limit_down', label: '跌停(买盘全空)' },
-                    { id: 'call_auction', label: '集合竞价(3-5空)' },
-                  ] as { id: MarketScenario; label: string }[]
-                ).map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() => {
-                      void triggerScenario(selectedSymbol, item.id);
-                    }}
-                    className={`py-1.5 px-2 rounded text-[11px] font-medium border transition-colors cursor-pointer ${
-                      currentScenario === item.id
-                        ? 'bg-[#2962ff] border-[#2962ff] text-white'
-                        : 'bg-[#1e222d] border-[#2a2e39] text-[#9ca3af] hover:text-white'
-                    }`}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* 4. 云端生产环境 Nginx WSS 反向代理规范配置 */}
+          {/* 3. 云端生产环境 Nginx WSS 反向代理规范配置 */}
           <div className="p-3 rounded bg-[#131722] border border-[#2a2e39]">
             <div className="font-semibold text-white mb-1">
               云服务器 Nginx SSL 卸载与 WSS 长连接保活配置

@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo } from 'react';
 import { Activity, Flame, Layers, Radar, Zap } from 'lucide-react';
 import { useMarketStore } from '../store/useMarketStore';
-import { useRealLadder, useRealRegulatory } from '../hooks/useRealQuantData';
+import { useRealAuctionRadar, useRealLadder, useRealRegulatory } from '../hooks/useRealQuantData';
 import { formatNullable, formatPrice, formatSignedPercent } from '../utils/marketCalc';
 import {
   calculateAuctionRadar,
@@ -33,18 +33,25 @@ export const UltraShortStockDiagnosticStrip: React.FC = () => {
 
   const activeQuote = quotes[selectedSymbol];
 
-  // 全市场真实梯队 + 该标的真实监管口径（模块级缓存，和作战室共用同一份请求）
+  // 全市场真实竞价雷达 + 真实梯队 + 该标的真实监管口径（模块级缓存，和作战室共用同一份请求）
+  const realAuctionList = useRealAuctionRadar();
   const realLadder = useRealLadder();
   const realReg = useRealRegulatory(selectedSymbol);
 
   const diagnostic = useMemo(() => {
     if (!activeQuote) return null;
     const allQuotes = Object.values(quotes);
-    const auction = calculateAuctionRadar(activeQuote);
+    const matchedAuction = realAuctionList?.find(
+      (item) => item.symbol === activeQuote.symbol || item.code === activeQuote.code
+    );
+    const auction = matchedAuction
+      ? { ...matchedAuction, estimated: false }
+      : calculateAuctionRadar(activeQuote);
     // 只扫自选股会得到 0 板（自选里通常没有涨停股），必须优先用全市场真实梯队
     const ladder = realLadder ?? calculateBoardLadderSummary(allQuotes);
     const themes = realThemeData?.themes ?? calculateThemeResonance(allQuotes);
-    const currentTheme = themes.find((t: any) => t.sectorName === activeQuote.sector) ?? themes[0];
+    const sectorName = activeQuote.ultraShort?.sector || activeQuote.sector;
+    const currentTheme = themes.find((t: any) => t.sectorName === sectorName) ?? null;
     const reg = calculateRegulatoryDeviation(activeQuote, undefined, realReg.history ?? undefined);
     const intraday = intradayPointsMap[activeQuote.symbol];
     const dvr = calculateVWDVR(activeQuote, intraday);
@@ -56,7 +63,7 @@ export const UltraShortStockDiagnosticStrip: React.FC = () => {
       reg,
       dvr,
     };
-  }, [activeQuote, quotes, intradayPointsMap, realThemeData, realLadder, realReg.history]);
+  }, [activeQuote, quotes, intradayPointsMap, realThemeData, realAuctionList, realLadder, realReg.history]);
 
   if (!activeQuote || !diagnostic) return null;
 
@@ -88,7 +95,7 @@ export const UltraShortStockDiagnosticStrip: React.FC = () => {
               {auction.signalLabel}
             </span>
             <span className="font-mono tabular-nums text-[#d1d4dc]">
-              占昨 <strong className="text-white">{auction.amountToYesterdayRatio.toFixed(1)}%</strong>
+              占昨 <strong className="text-white">{auction.estimated ? '—' : `${auction.amountToYesterdayRatio.toFixed(1)}%`}</strong>
             </span>
           </button>
 
@@ -183,6 +190,11 @@ export const UltraShortStockDiagnosticStrip: React.FC = () => {
             >
               {dvr.vwDvrScore}分
             </span>
+            {typeof dvr.dvrRatio === 'number' && (
+              <span className="font-mono tabular-nums text-[10px] text-[#787b86]">
+                DVR:{dvr.dvrRatio.toFixed(2)}
+              </span>
+            )}
             <span className="text-[10px] text-[#9ca3af]">({dvr.signalLabel})</span>
           </button>
         </div>

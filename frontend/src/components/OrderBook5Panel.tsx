@@ -103,7 +103,7 @@ export const OrderBook5Panel: React.FC = () => {
   return (
     <section
       aria-label="五档盘口与委比委差监控"
-      className="flex flex-col bg-[#1e222d] border-b border-[#2a2e39]"
+      className="flex flex-col bg-[#1e222d] border-b border-[#2a2e39] neon-panel neon-border-teal"
     >
       {/* 顶部标题与当前盘口状态说明 */}
       <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2e39]">

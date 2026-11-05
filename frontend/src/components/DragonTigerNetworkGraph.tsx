@@ -330,18 +330,20 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
           >
             仅游资大佬席位
           </button>
-          <button
-            type="button"
-            data-testid="d3-toggle-ally-stocks"
-            onClick={() => setIncludeAllyStocks((prev) => !prev)}
-            className={`px-2 py-0.5 rounded border transition-colors cursor-pointer ${
-              includeAllyStocks
-                ? 'bg-[#1e222d] border-[#38bdf8]/60 text-[#38bdf8] font-medium'
-                : 'bg-[#0d0e12] border-[#2a2e39] text-[#787b86] hover:text-white'
-            }`}
-          >
-            {includeAllyStocks ? '已展开: 游资跨股协同标的' : '展开游资协同标的'}
-          </button>
+          {analysis.isSimulated && (
+            <button
+              type="button"
+              data-testid="d3-toggle-ally-stocks"
+              onClick={() => setIncludeAllyStocks((prev) => !prev)}
+              className={`px-2 py-0.5 rounded border transition-colors cursor-pointer ${
+                includeAllyStocks
+                  ? 'bg-[#1e222d] border-[#38bdf8]/60 text-[#38bdf8] font-medium'
+                  : 'bg-[#0d0e12] border-[#2a2e39] text-[#787b86] hover:text-white'
+              }`}
+            >
+              {includeAllyStocks ? '已展开: 游资跨股协同标的' : '展开游资协同标的'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -789,6 +791,11 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
                       <span className="px-1.5 py-0.5 rounded bg-[#F59E0B]/15 text-[#F59E0B] border border-[#F59E0B]/30 text-[10px] font-semibold">
                         {activeProfile.activityLevelLabel}
                       </span>
+                      {activeProfile.isDemo && (
+                        <span className="px-1.5 py-0.5 rounded bg-[#787b86]/20 text-[#d1d4dc] border border-[#787b86]/40 text-[10px] font-semibold">
+                          演示数据
+                        </span>
+                      )}
                     </div>
 
                     <h4
@@ -855,12 +862,12 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
                   </div>
                 </div>
 
-                {/* 2. 近 30 日席位活跃度核心量化指标 4 宫格 */}
+                {/* 2. 席位活跃度与 SeatReputationLedger 账本核心量化指标 4 宫格 */}
                 <div className="grid grid-cols-2 gap-2">
                   <div className="p-2 rounded bg-[#1e222d] border border-[#2a2e39]">
                     <div className="text-[10px] text-[#787b86] flex items-center gap-1">
                       <Activity className="w-3 h-3 text-[#38bdf8]" />
-                      近30日上榜次数
+                      {activeProfile.isDemo ? '近30日上榜次数' : '账本记录上榜次数'}
                     </div>
                     <div
                       data-testid="inspector-appearances-30d"
@@ -869,22 +876,38 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
                       {activeProfile.appearances30d} 次
                     </div>
                     <div className="text-[10px] text-[#9ca3af] font-mono tabular-nums">
-                      场均买 {formatAmountCN(activeProfile.avgSingleBuyAmount)}
+                      本榜买 {formatAmountCN(activeSeatNode.buyAmount)}
                     </div>
                   </div>
 
                   <div className="p-2 rounded bg-[#1e222d] border border-[#2a2e39]">
                     <div className="text-[10px] text-[#787b86] flex items-center gap-1">
                       <Zap className="w-3 h-3 text-[#F59E0B]" />
-                      近30日总动用资金
+                      {activeProfile.isDemo ? '近30日总动用资金' : '后验信誉系数 γ (Ledger)'}
                     </div>
                     <div
                       data-testid="inspector-capital-30d"
-                      className="font-mono tabular-nums text-sm font-bold text-[#F59E0B] mt-0.5"
+                      className={`font-mono tabular-nums text-sm font-bold mt-0.5 ${
+                        !activeProfile.isDemo && typeof activeProfile.reputationGamma === 'number'
+                          ? activeProfile.reputationGamma >= 0
+                            ? 'text-[#F6465D]'
+                            : 'text-[#0ECB81]'
+                          : 'text-[#F59E0B]'
+                      }`}
                     >
-                      {formatAmountCN(activeProfile.totalCapital30d)}
+                      {activeProfile.isDemo
+                        ? formatAmountCN(activeProfile.totalCapital30d)
+                        : typeof activeProfile.reputationGamma === 'number'
+                        ? `${activeProfile.reputationGamma >= 0 ? '+' : ''}${activeProfile.reputationGamma.toFixed(3)}`
+                        : '—'}
                     </div>
-                    <div className="text-[10px] text-[#9ca3af]">单席位核心体量</div>
+                    <div className="text-[10px] text-[#9ca3af]">
+                      {activeProfile.isDemo
+                        ? '单席位核心体量'
+                        : activeProfile.isNuclearHarvester
+                        ? '触发核按钮黑名单熔断'
+                        : '经验贝叶斯动态信誉'}
+                    </div>
                   </div>
 
                   <div className="p-2 rounded bg-[#1e222d] border border-[#2a2e39]">
@@ -895,14 +918,24 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
                     <div
                       data-testid="inspector-nextday-premium"
                       className={`font-mono tabular-nums text-sm font-bold mt-0.5 ${
-                        activeProfile.nextDayAvgPremiumPercent >= 0
+                        !activeProfile.isDemo && activeProfile.ledgerAvgPremiumPercent === null
+                          ? 'text-[#9ca3af]'
+                          : activeProfile.nextDayAvgPremiumPercent >= 0
                           ? 'text-[#F6465D]'
                           : 'text-[#0ECB81]'
                       }`}
                     >
-                      {formatSignedPercent(activeProfile.nextDayAvgPremiumPercent)}
+                      {!activeProfile.isDemo
+                        ? typeof activeProfile.ledgerAvgPremiumPercent === 'number'
+                          ? formatSignedPercent(activeProfile.ledgerAvgPremiumPercent)
+                          : '待对账 (—)'
+                        : formatSignedPercent(activeProfile.nextDayAvgPremiumPercent)}
                     </div>
-                    <div className="text-[10px] text-[#9ca3af]">T+1 接力溢价效应</div>
+                    <div className="text-[10px] text-[#9ca3af]">
+                      {!activeProfile.isDemo && activeProfile.ledgerAvgPremiumPercent === null
+                        ? '跨日复见后自动结算'
+                        : 'T+1 接力溢价效应'}
+                    </div>
                   </div>
 
                   <div className="p-2 rounded bg-[#1e222d] border border-[#2a2e39]">
@@ -914,7 +947,11 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
                       data-testid="inspector-win-rate"
                       className="font-mono tabular-nums text-sm font-bold text-white mt-0.5"
                     >
-                      {activeProfile.sealWinRatePercent}%
+                      {!activeProfile.isDemo
+                        ? typeof activeProfile.ledgerWinRatePercent === 'number'
+                          ? `${activeProfile.ledgerWinRatePercent}%`
+                          : '待对账 (—)'
+                        : `${activeProfile.sealWinRatePercent}%`}
                     </div>
                     <div className="text-[10px] text-[#9ca3af] truncate">
                       {activeProfile.holdingHorizon.split('/')[0]}
@@ -922,69 +959,98 @@ export const DragonTigerNetworkGraph: React.FC<DragonTigerNetworkGraphProps> = (
                   </div>
                 </div>
 
-                {/* 3. 近 4 周上榜活跃度柱状趋势 & 主攻题材偏好 + 协同游资盟友 */}
-                <div className="p-2.5 rounded bg-[#161a24] border border-[#2a2e39] space-y-2">
-                  <div className="flex items-center justify-between text-[11px]">
-                    <span className="text-[#9ca3af] font-semibold flex items-center gap-1">
-                      <Layers className="w-3 h-3 text-[#38bdf8]" />
-                      近 4 周上榜出击频次与资金活跃度趋势
-                    </span>
-                    <span className="font-mono tabular-nums text-[10px] text-[#787b86]">
-                      {activeProfile.holdingHorizon.split('/')[0]}
-                    </span>
-                  </div>
-
-                  <div className="grid grid-cols-4 gap-2 pt-0.5">
-                    {activeProfile.monthlyTrend.map((w) => {
-                      const maxCount = Math.max(
-                        ...activeProfile.monthlyTrend.map((m) => m.count),
-                        1
-                      );
-                      const heightPct = Math.max(25, Math.round((w.count / maxCount) * 100));
-                      return (
-                        <div
-                          key={w.weekLabel}
-                          className="bg-[#0d0e12] p-1.5 rounded border border-[#2a2e39]/70 flex flex-col justify-between"
-                        >
-                          <div className="flex items-center justify-between text-[10px] font-mono tabular-nums">
-                            <span className="text-[#787b86]">{w.weekLabel}</span>
-                            <span className="text-white font-bold">{w.count}次</span>
-                          </div>
-                          <div className="w-full h-1.5 bg-[#1e222d] rounded overflow-hidden my-1">
-                            <div
-                              className="h-full bg-[#F6465D] rounded"
-                              style={{ width: `${heightPct}%` }}
-                            />
-                          </div>
-                          <div className="text-[10px] font-mono tabular-nums text-[#9ca3af] text-right">
-                            {formatAmountCN(w.capital)}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-[#2a2e39]/60 text-[11px]">
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span className="text-[#787b86]">主攻题材:</span>
-                      {activeProfile.favoriteSectors.map((sec) => (
-                        <span
-                          key={sec}
-                          className="px-1.5 py-0.5 rounded bg-[#1e222d] text-[#d1d4dc] border border-[#2a2e39] text-[10px]"
-                        >
-                          {sec}
-                        </span>
-                      ))}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-1">
-                      <Users className="w-3 h-3 text-[#F59E0B]" />
-                      <span className="text-[#787b86]">高频协同:</span>
-                      <span className="text-[#F59E0B] text-[10px] font-medium">
-                        {activeProfile.coAppearingAllies.slice(0, 2).join(' · ')}
+                {/* 3. 实盘模式展示 SeatReputationLedger 账本验身状态；沙盘模式展示 4 周趋势 */}
+                {activeProfile.monthlyTrend.length > 0 ? (
+                  <div className="p-2.5 rounded bg-[#161a24] border border-[#2a2e39] space-y-2">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-[#9ca3af] font-semibold flex items-center gap-1">
+                        <Layers className="w-3 h-3 text-[#38bdf8]" />
+                        近 4 周上榜出击频次与资金活跃度趋势
+                      </span>
+                      <span className="font-mono tabular-nums text-[10px] text-[#787b86]">
+                        {activeProfile.holdingHorizon.split('/')[0]}
                       </span>
                     </div>
+
+                    <div className="grid grid-cols-4 gap-2 pt-0.5">
+                      {activeProfile.monthlyTrend.map((w) => {
+                        const maxCount = Math.max(
+                          ...activeProfile.monthlyTrend.map((m) => m.count),
+                          1
+                        );
+                        const heightPct = Math.max(25, Math.round((w.count / maxCount) * 100));
+                        return (
+                          <div
+                            key={w.weekLabel}
+                            className="bg-[#0d0e12] p-1.5 rounded border border-[#2a2e39]/70 flex flex-col justify-between"
+                          >
+                            <div className="flex items-center justify-between text-[10px] font-mono tabular-nums">
+                              <span className="text-[#787b86]">{w.weekLabel}</span>
+                              <span className="text-white font-bold">{w.count}次</span>
+                            </div>
+                            <div className="w-full h-1.5 bg-[#1e222d] rounded overflow-hidden my-1">
+                              <div
+                                className="h-full bg-[#F6465D] rounded"
+                                style={{ width: `${heightPct}%` }}
+                              />
+                            </div>
+                            <div className="text-[10px] font-mono tabular-nums text-[#9ca3af] text-right">
+                              {formatAmountCN(w.capital)}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-[#2a2e39]/60 text-[11px]">
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className="text-[#787b86]">主攻题材:</span>
+                        {activeProfile.favoriteSectors.map((sec) => (
+                          <span
+                            key={sec}
+                            className="px-1.5 py-0.5 rounded bg-[#1e222d] text-[#d1d4dc] border border-[#2a2e39] text-[10px]"
+                          >
+                            {sec}
+                          </span>
+                        ))}
+                      </div>
+                      {activeProfile.coAppearingAllies.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Users className="w-3 h-3 text-[#F59E0B]" />
+                          <span className="text-[#787b86]">高频协同:</span>
+                          <span className="text-[#F59E0B] text-[10px] font-medium">
+                            {activeProfile.coAppearingAllies.slice(0, 2).join(' · ')}
+                          </span>
+                        </div>
+                      )}
+                    </div>
                   </div>
-                </div>
+                ) : (
+                  <div className="p-2.5 rounded bg-[#161a24] border border-[#2a2e39] space-y-1.5 text-[11px]">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[#9ca3af] font-semibold flex items-center gap-1">
+                        <Layers className="w-3 h-3 text-[#38bdf8]" />
+                        SeatReputationLedger 实盘正交账本验身
+                      </span>
+                      <span
+                        className={`px-1.5 py-0.2 rounded text-[10px] font-mono font-semibold ${
+                          activeProfile.isNuclearHarvester
+                            ? 'bg-[#F6465D]/20 text-[#F6465D]'
+                            : 'bg-[#0ECB81]/15 text-[#0ECB81]'
+                        }`}
+                      >
+                        {activeProfile.isNuclearHarvester ? '核按钮黑名单预警' : '账本信誉正常'}
+                      </span>
+                    </div>
+                    <div className="text-[#787b86] leading-relaxed">
+                      操盘特征：<span className="text-[#d1d4dc]">{activeProfile.operatingStyle}</span>
+                    </div>
+                    <div className="flex items-center justify-between pt-1 border-t border-[#2a2e39]/60 font-mono text-[10px] text-[#9ca3af]">
+                      <span>本榜成交占比: {activeSeatNode.turnoverSharePercent}%</span>
+                      <span>所属题材: {analysis.sector || 'A股主线'}</span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* 4. 该席位近期上榜代表战役列表 */}

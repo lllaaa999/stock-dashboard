@@ -4,6 +4,7 @@ import {
   createInitialIndices,
   createInitialQuotes,
 } from '../data/seedMarket';
+import { marketWsClient } from '../services/wsClient';
 import type {
   AlertConditionType,
   ChartPeriod,
@@ -200,7 +201,7 @@ export interface MarketStoreState {
   setMobileWatchlistOpen: (open: boolean) => void;
   setArchModalOpen: (open: boolean) => void;
   setAlertModalOpen: (open: boolean) => void;
-  setWorkspaceMode: (mode: 'chart' | 'auction' | 'quant') => void;
+  setWorkspaceMode: (mode: 'chart' | 'auction' | 'quant' | 'screener') => void;
   setCommandPaletteOpen: (open: boolean, initialQuery?: string) => void;
   stepSelectedSymbol: (delta: 1 | -1) => void;
   togglePeriodIntradayDaily: () => void;
@@ -297,6 +298,24 @@ let errorToastSeq = 0;
 /** 在 React 组件外推送错误 toast 的便捷函数 */
 export function pushErrorToast(message: string, opts?: { severity?: 'error' | 'warning'; durationMs?: number }) {
   useMarketStore.getState().pushErrorToast(message, opts);
+}
+
+/** 6 位代码补交易所后缀。920/4/8 为北交所，且必须先于「9=沪市」。裸 000001 仍是平安（.SZ）。 */
+export function normalizeExchangeSymbol(raw: string): string {
+  const s = String(raw || '').trim().toUpperCase();
+  if (!s) return s;
+  if (s.endsWith('.SS')) return s.slice(0, -3) + '.SH';
+  if (/\.(SH|SZ|BJ)$/.test(s)) return s;
+  const m = s.match(/^(?:SH|SZ|BJ)?(\d{6})$/);
+  if (!m) return s;
+  const code = m[1];
+  const head = s.replace(code, '');
+  if (head === 'SH') return `${code}.SH`;
+  if (head === 'SZ') return `${code}.SZ`;
+  if (head === 'BJ') return `${code}.BJ`;
+  if (code.startsWith('920') || code.startsWith('4') || code.startsWith('8')) return `${code}.BJ`;
+  if (code.startsWith('6') || code.startsWith('5') || code.startsWith('9')) return `${code}.SH`;
+  return `${code}.SZ`;
 }
 
 function createPlaceholderQuote(stock: Partial<TickData> & { symbol: string }): TickData {
@@ -434,19 +453,20 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
     set((state) => ({ errorToasts: state.errorToasts.filter((t) => t.id !== id) })),
 
   setSelectedSymbol: (symbol) => {
+    const normalized = normalizeExchangeSymbol(symbol);
     set({
-      selectedSymbol: symbol,
+      selectedSymbol: normalized,
       isMobileWatchlistOpen: false,
     });
     if (onSymbolSubscribed) {
-      onSymbolSubscribed(symbol);
+      onSymbolSubscribed(normalized);
     }
-    get().fetchIntraday(symbol);
-    const current = get().quotes[symbol];
+    get().fetchIntraday(normalized);
+    const current = get().quotes[normalized];
     if (!current) {
-      const placeholder = createPlaceholderQuote({ symbol });
+      const placeholder = createPlaceholderQuote({ symbol: normalized });
       get().injectQuote(placeholder);
-      fetch(`/api/market/quote/${encodeURIComponent(symbol)}`)
+      fetch(`/api/market/quote/${encodeURIComponent(normalized)}`)
         .then((res) => res.json())
         .then((data) => {
           if (data && data.status === 'ok' && data.quote) {
@@ -455,7 +475,7 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
         })
         .catch((e) => {
           console.error('[setSelectedSymbol] 获取个股行情失败:', e);
-          pushErrorToast(`获取 ${symbol} 行情数据失败，请检查网络连接`);
+          pushErrorToast(`获取 ${normalized} 行情数据失败，请检查网络连接`);
         });
     }
   },
@@ -583,6 +603,14 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
         localStorage.setItem('alphapulse_watchlist_v1', JSON.stringify(next));
       } catch (e) {
         console.error('[toggleWatchlist] localStorage 写入失败:', e);
+      }
+      if (!exists) {
+        // 新加自选时触发 WS 增量订阅，避免连接期间手动添加的标的无行情推送（F-16 修复补项）
+        try {
+          marketWsClient.subscribe(symbol);
+        } catch (e) {
+          console.warn('[toggleWatchlist] WS subscribe 失败:', symbol, e);
+        }
       }
       return { watchlist: next };
     }),
@@ -740,20 +768,31 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
   clearAllTriggeredAlerts: () => set({ triggeredAlerts: [] }),
 
   applyInitSnapshot: (quotesList, indicesList, batchWindowMs, serverTime) => {
-    // 统一契约：INIT 与 BATCH 均接收数组，内部转为 Record 供 store 使用
-    const quotes: Record<string, TickData> = {};
-    for (const q of quotesList) quotes[q.symbol] = q;
-    const indices: Record<string, MarketIndexQuote> = {};
-    for (const idx of indicesList) indices[idx.symbol] = idx;
-    set({
-      quotes,
-      indices,
-      symbolOrder: Object.keys(quotes),
-      batchWindowMs,
-      lastServerTime: serverTime,
-      isDemoData: false,
+    // INIT 只覆盖服务端带回的标的，保留自选里尚未推送的行情，避免列表被快照清空。
+    set((state) => {
+      const quotes = { ...state.quotes };
+      for (const q of quotesList) {
+        const prev = quotes[q.symbol];
+        quotes[q.symbol] = prev ? { ...prev, ...q } : q;
+      }
+      const indices = { ...state.indices };
+      for (const idx of indicesList) indices[idx.symbol] = idx;
+      const incoming = quotesList.map((q) => q.symbol);
+      // INIT 时丢弃服务端未推送的种子 symbolOrder 条目：种子 12 只与后端 INIT 8 只仅 4 只重叠，
+      // 并集会让 8 只假股永驻 symbolOrder；改由 watchlist + incoming 重建即可覆盖用户自选与服务端实推。
+      const symbolOrder = Array.from(
+        new Set([...state.watchlist, ...incoming])
+      );
+      return {
+        quotes,
+        indices,
+        symbolOrder,
+        batchWindowMs,
+        lastServerTime: serverTime,
+        isDemoData: false,
+      };
     });
-    const active = quotes[get().selectedSymbol];
+    const active = get().quotes[get().selectedSymbol];
     if (active) {
       emitImperativeTick(active);
     }

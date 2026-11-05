@@ -9,7 +9,7 @@
     <meta property="og:description" content="面向 A 股市场的专业级 Level-1 实时五档看盘与技术分析终端，支持 PC 多维工作台与移动端 PWA 极速盯盘。" />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="theme-color" content="#0d0e12" />
+    <meta name="theme-color" content="#05060a" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -20,8 +20,40 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   </head>
-  <body class="bg-[#0d0e12] text-[#d1d4dc] antialiased selection:bg-[#2962ff]/30 selection:text-white overflow-x-hidden">
+  <body class="bg-[#05060a] text-[#f0f1f3] antialiased selection:bg-[#F6465D]/35 selection:text-white overflow-x-hidden">
+    <div class="neon-scanline" aria-hidden="true"></div>
+    <div id="neon-particles" aria-hidden="true"></div>
     <div id="root"></div>
+    <script>
+      /* ── 霓虹粒子层：稀疏漂浮粒子做深空前缀 ── */
+      (function() {
+        const host = document.getElementById('neon-particles');
+        if (!host) return;
+        Object.assign(host.style, {
+          position: 'fixed', inset: '0', zIndex: '0',
+          pointerEvents: 'none', overflow: 'hidden'
+        });
+        const W = window.innerWidth, H = window.innerHeight;
+        const PALETTE = ['#F6465D','#9333EA','#00F5D4','#FBBF24','#3B82F6'];
+        const N = Math.max(12, Math.floor((W * H) / 22000));
+        for (let i = 0; i < N; i++) {
+          const d = document.createElement('span');
+          const color = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+          const size = 1 + Math.random() * 2.5;
+          d.style.cssText = `
+            position:absolute; left:${Math.random()*100}%; top:${Math.random()*100}%;
+            width:${size}px; height:${size}px; border-radius:50%;
+            background:${color}; opacity:${(0.25+Math.random()*0.45).toFixed(2)};
+            box-shadow: 0 0 ${(6+size*3).toFixed(0)}px ${color};
+            animation: neon-float ${(14+Math.random()*26).toFixed(1)}s linear ${(Math.random()*10).toFixed(1)}s infinite;
+          `;
+          host.appendChild(d);
+        }
+        const st = document.createElement('style');
+        st.textContent = `@keyframes neon-float{0%,100%{transform:translate(0,0);opacity:0.35}50%{transform:translate(20px,-40px);opacity:0.15}}`;
+        document.head.appendChild(st);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

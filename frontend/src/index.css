@@ -1,23 +1,106 @@
 @import "tailwindcss";
 
+/* ────────────────────────────────────────────────────────────────
+   AlphaPulse Neon Terminal — 霓虹赛博交易终端设计系统
+   灵感：东方金融终端 × 赛博朋克 × 航天飞船仪表盘
+   核心色：交易所红 #F6465D + 毒紫 #9333EA + 青绿 #00F5D4
+   ──────────────────────────────────────────────────────────────── */
+
 @layer base {
   :root {
-    --bg-primary: #0d0e12;
+    /* 背景层 — 从黑到深空蓝紫的层次 */
+    --bg-void:    #05060a;           /* 最底层宇宙真空 */
+    --bg-deep:    #0a0b14;           /* 深空 */
+    --bg-primary: #0d0e12;           /* 主面板底（兼容既有 bg-[#0d0e12]） */
     --bg-secondary: #131722;
-    --bg-panel: #1e222d;
-    --border-hairline: #2a2e39;
-    --color-up: #F6465D;
+    --bg-panel:   #15161f;           /* 玻璃面板底 */
+
+    /* 边框 — 从 hairline 到霓虹 */
+    --border-hairline:   rgba(255, 255, 255, 0.06);
+    --border-subtle:     rgba(255, 255, 255, 0.10);
+    --border-neon-red:   rgba(246, 70, 93, 0.35);
+    --border-neon-violet: rgba(147, 51, 234, 0.35);
+    --border-neon-teal:  rgba(0, 245, 212, 0.35);
+
+    /* 霓虹发光色 */
+    --glow-red:    #F6465D;
+    --glow-violet: #9333EA;
+    --glow-teal:   #00F5D4;
+    --glow-gold:   #FBBF24;
+    --glow-blue:   #3B82F6;
+
+    /* 行情语义色（交易所习俗：红涨绿跌） */
+    --color-up:   #F6465D;
     --color-down: #0ECB81;
     --color-flat: #787b86;
-    --font-sans: 'Plus Jakarta Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
-    --font-mono: 'JetBrains Mono', 'Noto Sans SC', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+    /* 文字 */
+    --text-primary:   #f0f1f3;
+    --text-secondary: #a0a3ad;
+    --text-dim:       #5a5d6a;
+
+    /* 玻璃面板 */
+    --glass-bg:     rgba(21, 22, 31, 0.72);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-blur:   16px;
+
+    /* 字体 */
+    --font-display: 'Plus Jakarta Sans', 'Noto Sans SC', -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-sans:    'Noto Sans SC', 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono:    'JetBrains Mono', 'Noto Sans SC', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+
+  html {
+    background: var(--bg-void);
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #0d0e12;
-    color: #d1d4dc;
+    background-color: var(--bg-void);
+    color: var(--text-primary);
     -webkit-tap-highlight-color: transparent;
+    position: relative;
+    overflow-x: hidden;
+  }
+
+  /* ── 背景纹理层 ── */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+
+    /* 径向渐变：中心深空蓝 → 边缘宇宙黑 */
+    background:
+      radial-gradient(ellipse at 20% 10%, rgba(147, 51, 234, 0.12) 0%, transparent 45%),
+      radial-gradient(ellipse at 80% 85%, rgba(246, 70, 93, 0.08) 0%, transparent 40%),
+      radial-gradient(ellipse at 50% 50%, rgba(0, 245, 212, 0.03) 0%, transparent 60%),
+      linear-gradient(180deg, var(--bg-void) 0%, var(--bg-deep) 100%);
+  }
+
+  /* 网格底纹（等轴测，营造 CAD 终端感） */
+  body::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    background-image:
+      linear-gradient(rgba(147, 51, 234, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(147, 51, 234, 0.05) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: radial-gradient(ellipse at center, black 40%, transparent 85%);
+    -webkit-mask-image: radial-gradient(ellipse at center, black 40%, transparent 85%);
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
   }
 
   .font-mono {
@@ -25,38 +108,206 @@
     font-variant-numeric: tabular-nums;
     font-feature-settings: "tnum" on, "zero" on;
   }
+
+  ::selection {
+    background: rgba(246, 70, 93, 0.35);
+    color: #fff;
+  }
 }
 
-.tabular-nums {
-  font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum" on;
+@layer utilities {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "tnum" on;
+  }
+
+  /* ── 玻璃面板 ── */
+  .neon-panel {
+    background: var(--glass-bg);
+    backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .neon-panel::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 12px;
+    pointer-events: none;
+    background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, transparent 40%, transparent 60%, rgba(147,51,234,0.06) 100%);
+  }
+
+  .neon-panel::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: 13px;
+    pointer-events: none;
+    background: linear-gradient(135deg, transparent 20%, rgba(246,70,93,0.15) 50%, transparent 80%);
+    opacity: 0;
+    transition: opacity 400ms ease;
+    mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    mask-composite: exclude;
+    -webkit-mask-composite: xor;
+    padding: 1px;
+  }
+
+  .neon-panel:hover::after {
+    opacity: 1;
+  }
+
+  /* ── 霓虹边框（红光 / 紫光 / 青光） ── */
+  .neon-border-red {
+    border: 1px solid var(--border-neon-red);
+    box-shadow: 0 0 12px rgba(246, 70, 93, 0.20), inset 0 0 12px rgba(246, 70, 93, 0.06);
+  }
+  .neon-border-violet {
+    border: 1px solid var(--border-neon-violet);
+    box-shadow: 0 0 12px rgba(147, 51, 234, 0.22), inset 0 0 12px rgba(147, 51, 234, 0.06);
+  }
+  .neon-border-teal {
+    border: 1px solid var(--border-neon-teal);
+    box-shadow: 0 0 12px rgba(0, 245, 212, 0.22), inset 0 0 12px rgba(0, 245, 212, 0.06);
+  }
+
+  /* ── 发光文字（涨跌专用） ── */
+  .glow-up {
+    color: var(--glow-red);
+    text-shadow: 0 0 8px rgba(246, 70, 93, 0.55), 0 0 20px rgba(246, 70, 93, 0.25);
+  }
+  .glow-down {
+    color: var(--color-down);
+    text-shadow: 0 0 8px rgba(14, 203, 129, 0.45), 0 0 16px rgba(14, 203, 129, 0.20);
+  }
+  .glow-violet {
+    color: var(--glow-violet);
+    text-shadow: 0 0 6px rgba(147, 51, 234, 0.50);
+  }
+  .glow-teal {
+    color: var(--glow-teal);
+    text-shadow: 0 0 6px rgba(0, 245, 212, 0.45);
+  }
+
+  /* ── 顶部发光扫描线 ── */
+  .neon-scanline {
+    position: fixed;
+    top: 0; left: 0; right: 0;
+    height: 2px;
+    z-index: 9999;
+    pointer-events: none;
+    background: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(246, 70, 93, 0.8) 25%,
+      rgba(147, 51, 234, 0.9) 50%,
+      rgba(0, 245, 212, 0.8) 75%,
+      transparent 100%
+    );
+    box-shadow: 0 0 16px rgba(246, 70, 93, 0.5), 0 0 32px rgba(147, 51, 234, 0.35);
+    animation: scanline-flow 8s linear infinite;
+  }
+
+  @keyframes scanline-flow {
+    0%   { transform: translateX(-60%); }
+    100% { transform: translateX(60%);  }
+  }
+
+  /* ── 脉冲光点（竞价雷达顶部装饰） ── */
+  .neon-pulse {
+    position: relative;
+  }
+  .neon-pulse::before {
+    content: '';
+    position: absolute;
+    left: -2px; top: 50%;
+    transform: translateY(-50%);
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--glow-teal);
+    box-shadow: 0 0 8px var(--glow-teal), 0 0 16px var(--glow-teal);
+    animation: neon-pulse 1.6s ease-in-out infinite;
+  }
+
+  @keyframes neon-pulse {
+    0%, 100% { opacity: 0.4; transform: translateY(-50%) scale(0.9); }
+    50%      { opacity: 1;   transform: translateY(-50%) scale(1.2); }
+  }
+
+  /* ── 霓虹按钮 ── */
+  .btn-neon {
+    position: relative;
+    padding: 6px 14px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    background: rgba(147, 51, 234, 0.08);
+    border: 1px solid rgba(147, 51, 234, 0.4);
+    color: var(--glow-violet);
+    transition: all 200ms ease;
+    overflow: hidden;
+  }
+  .btn-neon:hover {
+    background: rgba(147, 51, 234, 0.18);
+    border-color: var(--glow-violet);
+    box-shadow: 0 0 16px rgba(147, 51, 234, 0.4), inset 0 0 8px rgba(147, 51, 234, 0.15);
+  }
+  .btn-neon:active { transform: translateY(1px); }
+
+  /* ── Tab 激活态发光底 ── */
+  .tab-neon-active {
+    background: linear-gradient(180deg, rgba(246, 70, 93, 0.18) 0%, rgba(246, 70, 93, 0.04) 100%);
+    border-bottom: 2px solid var(--glow-red);
+    box-shadow: 0 -4px 12px rgba(246, 70, 93, 0.25);
+  }
+
+  /* ── 数据格装饰（五档盘口、资金流） ── */
+  .data-cell {
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-feature-settings: "tnum" on;
+  }
+  .data-cell-up   { background: rgba(246, 70, 93, 0.12); color: var(--glow-red); }
+  .data-cell-down { background: rgba(14, 203, 129, 0.12); color: var(--color-down); }
+
+  /* ── 发光分隔线（面板标题下方） ── */
+  .neon-divider {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(147, 51, 234, 0.5), rgba(246, 70, 93, 0.4), transparent);
+    margin: 12px 0;
+  }
 }
 
-/* Custom ultra-thin dark scrollbar for high-density data panels */
+/* ── 自定义霓虹滚动条 ── */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: #0d0e12;
+  background: transparent;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: #2a2e39;
-  border-radius: 2px;
+  background: linear-gradient(180deg, rgba(147, 51, 234, 0.4), rgba(246, 70, 93, 0.35));
+  border-radius: 3px;
 }
-
 ::-webkit-scrollbar-thumb:hover {
-  background: #363c4e;
+  background: linear-gradient(180deg, var(--glow-violet), var(--glow-red));
+  box-shadow: 0 0 8px rgba(147, 51, 234, 0.5);
 }
 
-/* Safe area support for iPhone notch and home indicator */
-.pb-safe {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-}
+/* Safe area */
+.pb-safe { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.pt-safe { padding-top:    env(safe-area-inset-top,    0px); }
 
-.pt-safe {
-  padding-top: env(safe-area-inset-top, 0px);
+/* K线 chart 容器加轻微紫红光晕 */
+.chart-glow {
+  box-shadow:
+    0 0 0 1px rgba(147, 51, 234, 0.12),
+    0 0 40px rgba(147, 51, 234, 0.08),
+    inset 0 0 60px rgba(246, 70, 93, 0.04);
 }
-

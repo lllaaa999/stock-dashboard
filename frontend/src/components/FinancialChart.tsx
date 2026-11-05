@@ -1,8 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
-  generateKLinesForSymbol,
-} from '../data/seedMarket';
-import {
   subscribeSymbolImperativeTick,
   useMarketStore,
 } from '../store/useMarketStore';
@@ -160,13 +157,13 @@ class NativeFinancialChartInstance {
         const lastIdx = this.intraday.length - 1;
         const lastPt = this.intraday[lastIdx];
         const nextPrice = tick.price;
-        const nextAvg = Number(((lastPt.avgPrice * 0.92 + nextPrice * 0.08)).toFixed(2));
-        const nextChg = Number((((nextPrice - tick.prevClose) / tick.prevClose) * 100).toFixed(2));
+        const nextChg = tick.prevClose
+          ? Number((((nextPrice - tick.prevClose) / tick.prevClose) * 100).toFixed(2))
+          : lastPt.changePercent;
+        // 后端目前 recentTrades 恒空，等真实分笔流接入时再按 tick 全量重算末点成交量
         this.intraday[lastIdx] = {
           ...lastPt,
           price: nextPrice,
-          avgPrice: nextAvg,
-          volume: lastPt.volume + Math.max(1, Math.round((tick.recentTrades[0]?.volume ?? 10) * 0.2)),
           changePercent: nextChg,
         };
       }
@@ -1278,6 +1275,8 @@ export const FinancialChart: React.FC = () => {
   // 缠论图层：笔/中枢/买卖点（数据来自 /api/quant/chan，与图表同周期K线）
   const [chanData, setChanData] = useState<ChanAnalysis | null>(null);
   const [showChan, setShowChan] = useState(true);
+  const [klineStatus, setKlineStatus] = useState<'loading' | 'ready' | 'empty' | 'error'>('ready');
+  const klineRetryRef = useRef<(() => void) | null>(null);
   const setMainIndicator = useMarketStore((s) => s.setMainIndicator);
   const setSubIndicator = useMarketStore((s) => s.setSubIndicator);
 
@@ -1323,30 +1322,43 @@ export const FinancialChart: React.FC = () => {
         instance.setIntradayData(cachedIntraday, currentQuote.prevClose || 10);
       }
     } else {
-      if (currentQuote.price && currentQuote.prevClose) {
-        instance.setKLineData(generateKLinesForSymbol(currentQuote, period, 120), currentQuote.prevClose);
-      }
+      instance.setKLineData([], currentQuote.prevClose || 0);
     }
 
     let cancelled = false;
-    fetch(`/api/market/klines/${encodeURIComponent(selectedSymbol)}?period=${encodeURIComponent(period)}`)
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (cancelled || !data || !chartInstanceRef.current) return;
-        const safePrev = data.prevClose || currentQuote.prevClose || 10;
-        if (period === 'intraday' && Array.isArray(data.intraday)) {
-          useMarketStore.getState().setIntradayPoints(selectedSymbol, data.intraday);
-          chartInstanceRef.current.setIntradayData(data.intraday, safePrev);
-        } else if (Array.isArray(data.klines)) {
-          chartInstanceRef.current.setKLineData(data.klines, safePrev);
-        }
-      })
-      .catch((e) => {
-        console.error('[FinancialChart] 获取K线/分时数据失败:', selectedSymbol, e);
-      });
+    const doFetch = () => {
+      if (cancelled) return;
+      setKlineStatus('loading');
+      fetch(`/api/market/klines/${encodeURIComponent(selectedSymbol)}?period=${encodeURIComponent(period)}`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (cancelled || !data || !chartInstanceRef.current) return;
+          const safePrev = data.prevClose || currentQuote.prevClose || 10;
+          const hasData =
+            (period === 'intraday' && Array.isArray(data.intraday) && data.intraday.length > 0) ||
+            (period !== 'intraday' && Array.isArray(data.klines) && data.klines.length > 0);
+          if (period === 'intraday' && Array.isArray(data.intraday)) {
+            useMarketStore.getState().setIntradayPoints(selectedSymbol, data.intraday);
+            chartInstanceRef.current.setIntradayData(data.intraday, safePrev);
+          } else if (Array.isArray(data.klines)) {
+            chartInstanceRef.current.setKLineData(data.klines, safePrev);
+          }
+          setKlineStatus(hasData ? 'ready' : 'empty');
+        })
+        .catch((e) => {
+          console.error('[FinancialChart] 获取K线/分时数据失败:', selectedSymbol, e);
+          if (!cancelled && chartInstanceRef.current && period !== 'intraday') {
+            chartInstanceRef.current.setKLineData([], currentQuote.prevClose || 0);
+          }
+          if (!cancelled) setKlineStatus('error');
+        });
+    };
+    klineRetryRef.current = doFetch;
+    doFetch();
 
     return () => {
       cancelled = true;
+      klineRetryRef.current = null;
     };
   }, [selectedSymbol, period, mainIndicator, subIndicator]);
 
@@ -1392,7 +1404,7 @@ export const FinancialChart: React.FC = () => {
   }, [selectedSymbol]);
 
   return (
-    <div className="flex flex-col flex-1 min-h-0 bg-[#131722] select-none">
+    <div className="flex flex-col flex-1 min-h-0 bg-[#131722] select-none neon-panel neon-border-red chart-glow">
       {/* 图表周期与技术指标工具栏 */}
       <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-[#1e222d] border-b border-[#2a2e39] overflow-x-auto">
         {/* 周期切换组 */}
@@ -1530,6 +1542,35 @@ export const FinancialChart: React.FC = () => {
           data-testid="financial-kline-canvas"
           className="block w-full h-full cursor-crosshair"
         />
+        {period !== 'intraday' && klineStatus !== 'ready' && (
+          <div
+            style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(19,23,34,0.85)', zIndex: 10 }}
+          >
+            {klineStatus === 'loading' && (
+              <div style={{ textAlign: 'center', color: '#787b86', fontSize: 13 }}>
+                <div style={{ fontSize: 28, marginBottom: 8 }}>⏳</div>
+                加载中…
+              </div>
+            )}
+            {klineStatus === 'empty' && (
+              <div style={{ textAlign: 'center', color: '#787b86', fontSize: 13 }}>
+                暂无 K 线数据
+              </div>
+            )}
+            {klineStatus === 'error' && (
+              <div style={{ textAlign: 'center', color: '#d1d4dc', fontSize: 13 }}>
+                <div style={{ marginBottom: 8, color: '#ef4444' }}>加载失败</div>
+                <button
+                  type="button"
+                  onClick={() => klineRetryRef.current?.()}
+                  style={{ padding: '4px 14px', background: '#2962ff', color: '#fff', border: 'none', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
+                >
+                  点击重试
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

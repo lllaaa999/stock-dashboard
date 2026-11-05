@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type {
+  AuctionRadarMetrics,
   BoardLadderSummary,
   RegulatoryEngineResult,
   RegulatoryHistory,
@@ -8,7 +9,7 @@ import type {
 /**
  * 真实量化数据的共享取数钩子。
  *
- * 为什么要有这个：页面里有两处独立计算「连板梯队」和「监管异动」——
+ * 为什么要有这个：页面里有两处独立计算「连板梯队」、「竞价雷达」和「监管异动」——
  * ① 主图页顶部六维条（UltraShortStockDiagnosticStrip）
  * ② 超短作战室（UltraShortQuantWorkbench）
  * 以前两边各自 `calculateBoardLadderSummary(allQuotes)`（只扫自选股 → 自选没涨停就恒 0 板）
@@ -18,6 +19,39 @@ import type {
 
 const LADDER_TTL_MS = 60_000;
 const REG_TTL_MS = 60_000;
+const AUCTION_RADAR_TTL_MS = 15_000;
+
+let auctionRadarCache: { data: AuctionRadarMetrics[] | null; ts: number } = { data: null, ts: 0 };
+
+export function useRealAuctionRadar(): AuctionRadarMetrics[] | null {
+  const [data, setData] = useState<AuctionRadarMetrics[] | null>(auctionRadarCache.data);
+
+  useEffect(() => {
+    let alive = true;
+    if (auctionRadarCache.data && Date.now() - auctionRadarCache.ts < AUCTION_RADAR_TTL_MS) {
+      setData(auctionRadarCache.data);
+      return () => {
+        alive = false;
+      };
+    }
+    fetch('/api/quant/auction_radar')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!alive || !json || json.status !== 'ok' || !Array.isArray(json.radar_items)) return;
+        const items = json.radar_items as AuctionRadarMetrics[];
+        auctionRadarCache = { data: items, ts: Date.now() };
+        setData(items);
+      })
+      .catch((e) => {
+        console.error('[useRealAuctionRadar] 获取竞价雷达数据失败:', e);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  return data;
+}
 
 let ladderCache: { data: BoardLadderSummary | null; ts: number } = { data: null, ts: 0 };
 
@@ -106,7 +140,22 @@ export function useRealRegulatory(symbol?: string | null): RealRegulatoryState {
         }
         const next: RealRegulatoryState = {
           regulatory: (json.regulatory as RegulatoryEngineResult) ?? null,
-          history: (json.history as RegulatoryHistory) ?? null,
+          history: (() => {
+            const hist = (json.history ?? null) as RegulatoryHistory | null;
+            const reg = json.regulatory as Record<string, unknown> | null;
+            if (!hist || !reg) return hist;
+            return {
+              ...hist,
+              normal_triggers_in_prev_9d:
+                typeof reg.normal_triggers_in_prev_9d === 'number'
+                  ? reg.normal_triggers_in_prev_9d
+                  : hist.normal_triggers_in_prev_9d,
+              severe_10d_current_dev:
+                typeof reg.severe_10d_current_dev === 'number'
+                  ? (reg.severe_10d_current_dev as number) * 100
+                  : hist.severe_10d_current_dev,
+            };
+          })(),
           loading: false,
         };
         regCacheSet(symbol, { state: next, ts: Date.now() });
@@ -120,6 +169,100 @@ export function useRealRegulatory(symbol?: string | null): RealRegulatoryState {
       alive = false;
     };
   }, [symbol]);
+
+  return state;
+}
+
+/**
+ * 批量监管历史（F-13 修复的配套取数）：
+ * `/api/quant/regulatory?symbols=A.B,C.D` 一次拿回池内多只票的真实日K口径 T-1/T-2/指数涨幅。
+ * 以前只有 selectedSymbol 有真值，池内其它票全部恒 +0.00%，异动判定形同虚设。
+ * 后端做了基准指数复用 + 个股并发受限 + 单只失败显式 unknown，这里只负责聚合与缓存。
+ */
+export interface RealRegulatoryHistoriesState {
+  histories: Record<string, RegulatoryHistory>;
+  loading: boolean;
+}
+
+const histBatchCache = new Map<string, { data: Record<string, RegulatoryHistory>; ts: number }>();
+const MAX_HIST_BATCH_CACHE = 12;
+const MAX_HIST_BATCH_SYMBOLS = 40;
+
+/** 归一化成后端约定的 key：大写、去重、排序、上限 40 只 */
+function normalizeBatchKey(symbols: string[]): string {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const raw of symbols) {
+    const s = String(raw || '').trim().toUpperCase();
+    if (!s || seen.has(s)) continue;
+    seen.add(s);
+    out.push(s);
+  }
+  out.sort();
+  return out.slice(0, MAX_HIST_BATCH_SYMBOLS).join(',');
+}
+
+export function useRegulatoryHistories(symbols: string[]): RealRegulatoryHistoriesState {
+  const rawKey = symbols.join(',');
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const key = useMemo(() => normalizeBatchKey(symbols), [rawKey]);
+
+  const [state, setState] = useState<RealRegulatoryHistoriesState>(() => {
+    if (!key) return { histories: {}, loading: false };
+    const hit = histBatchCache.get(key);
+    return hit ? { histories: hit.data, loading: false } : { histories: {}, loading: true };
+  });
+
+  useEffect(() => {
+    if (!key) {
+      setState({ histories: {}, loading: false });
+      return;
+    }
+    let alive = true;
+    const hit = histBatchCache.get(key);
+    if (hit && Date.now() - hit.ts < REG_TTL_MS) {
+      setState({ histories: hit.data, loading: false });
+      return () => {
+        alive = false;
+      };
+    }
+    setState((prev) => ({ histories: prev.histories, loading: true }));
+    fetch(`/api/quant/regulatory?symbols=${encodeURIComponent(key)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => {
+        if (!alive) return;
+        const raw = (json && json.status === 'ok' ? json.histories : null) as
+          | Record<string, RegulatoryHistory>
+          | null;
+        if (!raw) {
+          setState({ histories: {}, loading: false });
+          return;
+        }
+        // 统一大写，避免后端 key 与 quote.symbol 大小写不一致导致整池退回估算
+        const next: Record<string, RegulatoryHistory> = {};
+        for (const [k, v] of Object.entries(raw)) next[String(k).toUpperCase()] = v;
+        histBatchCache.set(key, { data: next, ts: Date.now() });
+        if (histBatchCache.size > MAX_HIST_BATCH_CACHE) {
+          let oldestKey = '';
+          let oldestTs = Infinity;
+          for (const [k, v] of histBatchCache) {
+            if (v.ts < oldestTs) {
+              oldestTs = v.ts;
+              oldestKey = k;
+            }
+          }
+          if (oldestKey) histBatchCache.delete(oldestKey);
+        }
+        setState({ histories: next, loading: false });
+      })
+      .catch((e) => {
+        console.error('[useRegulatoryHistories] 获取池内监管历史失败:', e);
+        if (alive) setState({ histories: {}, loading: false });
+      });
+    return () => {
+      alive = false;
+    };
+  }, [key]);
 
   return state;
 }

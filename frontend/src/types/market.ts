@@ -480,6 +480,10 @@ export interface RegulatoryDeviationResult {
    *  'estimated' = 后端没给（该股不在当前请求里），前端用的是占位默认值，必须打「估算」标
    */
   historySource: 'kline' | 'estimated';
+  /** 后端是否真的拿到了该股日K；false 时数值列必须显示 '—'，不能当成 0 参与展示 */
+  historyAvailable: boolean;
+  /** 日K不可用的原因（后端 unknown 透传，例如无重叠交易日/上游失败） */
+  historyReason?: string;
 }
 
 /**
@@ -530,6 +534,11 @@ export interface RegulatoryHistory {
   index_return_t1?: number | null;
   index_return_t2?: number | null;
   index_return_today?: number | null;
+  normal_triggers_in_prev_9d?: number | null;
+  severe_10d_current_dev?: number | null;
+  /** false = 后端明确拿不到该股日K（source=unknown），数值字段全为 null */
+  available?: boolean;
+  reason?: string;
 }
 
 /** 缠论分型/笔端点：[日期, 价格, '顶'|'底', K线索引] */
@@ -592,6 +601,8 @@ export interface VWDVRResult {
   dipBuyAbsorptionRatio: number; // 分时回踩切片外盘主动承接吸收率 (%)
   lowerShadowResilience: number; // 日内下影线探底回升韧性系数 (0 ~ 100)
   vwDvrScore: number; // 综合真实成交量加权承接算子得分 (0 ~ 100)
+  dvrRatio?: number | null; // 下行波动占比 DVR ∈ [0, 1]（与后端 calc_intraday_dvr 一致，越低承接越强）
+  hasIntradayData?: boolean; // 是否具有真实分钟分时数据
   signal: 'STRONG_ABSORPTION' | 'HEALTHY_TURNOVER' | 'WEAK_DISTRIBUTION';
   signalLabel: string;
   actionAdvice: string;
@@ -618,6 +629,11 @@ export interface DragonTigerSeatItem {
   sellAmount: number; // 卖出金额 (元)
   netAmount: number; // 净买额 = buyAmount - sellAmount (元)
   turnoverSharePercent: number; // 占当日总成交额比例 (%)
+  ledgerAppearances?: number; // 席位信誉账本记录上榜次数
+  ledgerWinRatePercent?: number | null; // 账本真实历史次日溢价胜率 (%)
+  ledgerAvgPremiumPercent?: number | null; // 账本真实历史次日平均溢价率 (%)
+  reputationGamma?: number; // 后验信誉系数 γ ∈ [-1, 1]
+  isNuclearHarvester?: boolean; // 是否触发核按钮黑名单熔断
 }
 
 export interface DragonTigerCampSummary {
@@ -667,6 +683,21 @@ export interface DragonTigerAnalysis {
   nextDayPremiumScore: number; // 次日溢价预期评分 (0 ~ 100)
   actionablePlaybook: string; // 次日集合竞价与分时应对策略
   isSimulated: boolean; // 龙虎榜席位数据是否为前端模拟（true=非真实接口数据）
+  tradeDate?: string; // 龙虎榜披露交易日
+  totalLhbScore?: number; // 后端正交算子综合验身得分
+  lhbNetImbalance?: number; // 全榜去重净失衡度 [-1, 1]
+  gatePassed?: boolean; // 是否通过正交风控闸门（未触发核按钮/垄断一票否决）
+  vetoTags?: string[]; // 触发的一票否决原因标签
+  microDimensions?: {
+    vwDvr?: number;
+    vwDvrSource?: string;
+    limitStrength?: number;
+    limitStrengthSource?: string;
+    floatCap?: number;
+    floatCapSource?: string;
+    isCurrentDayBoard?: boolean;
+    microDimensionsActive?: boolean;
+  };
 }
 
 /**
@@ -705,6 +736,12 @@ export interface DragonTigerSeatActivityProfile {
   coAppearingAllies: string[]; // 高频同榜协同席位名号
   recentBattles: DragonTigerSeatBattleRecord[]; // 近期代表性上榜战役
   monthlyTrend: { weekLabel: string; count: number; capital: number }[]; // 近4周上榜频次与资金趋势
+  isDemo?: boolean;
+  reputationGamma?: number | null; // 后端 SeatReputationLedger 后验信誉系数 γ ∈ [-1, 1]
+  isNuclearHarvester?: boolean; // 是否触发核按钮黑名单熔断
+  ledgerWinRatePercent?: number | null; // 账本真实历史次日溢价胜率 (%)，无历史记录为 null
+  ledgerAvgPremiumPercent?: number | null; // 账本真实历史次日平均溢价率 (%)，无历史记录为 null
+  hasLedgerHistory?: boolean; // 账本中是否已有已结算的事后表现样本
 }
 
 /**

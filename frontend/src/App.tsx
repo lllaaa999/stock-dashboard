@@ -17,6 +17,8 @@ import { TopNavBar } from './components/TopNavBar';
 import { TradeTicksAndMetricsPanel } from './components/TradeTicksAndMetricsPanel';
 import { UltraShortStockDiagnosticStrip } from './components/UltraShortStockDiagnosticStrip';
 import { WatchlistPanel } from './components/WatchlistPanel';
+import { MarketPulseStrip } from './components/MarketPulseStrip';
+import { StockHologramBar } from './components/StockHologramBar';
 
 // 大体积工作台按需加载：首屏只加载 chart 模式必需代码，切到 auction/quant 时再拉对应 chunk
 const CallAuctionRadarPlugin = React.lazy(() =>
@@ -110,6 +112,7 @@ class LazyBoundary extends React.Component<
 
 export default function App() {
   const workspaceMode = useMarketStore((s) => s.workspaceMode);
+  const selectedSymbol = useMarketStore((s) => s.selectedSymbol);
   const isDemoData = useMarketStore((s) => s.isDemoData);
   const mobileBottomTab = useMarketStore((s) => s.mobileBottomTab);
   const setMobileBottomTab = useMarketStore((s) => s.setMobileBottomTab);
@@ -357,8 +360,16 @@ export default function App() {
         </div>
       )}
 
-      {/* 3. 主工作台：PC 端三栏满视口网格 (>=768px) / 移动端单列自适应流 (<768px) */}
-      <main className="flex-1 min-h-0 flex flex-col md:grid md:grid-cols-[276px_minmax(0,1fr)_308px] overflow-hidden">
+      <MarketPulseStrip />
+
+      {/* 3. 主工作台：主图模式保留右侧盘口；全市场表模式收起右栏 */}
+      <main
+        className={`flex-1 min-h-0 flex flex-col md:grid overflow-hidden ${
+          workspaceMode === 'chart'
+            ? 'md:grid-cols-[276px_minmax(0,1fr)_308px]'
+            : 'md:grid-cols-[276px_minmax(0,1fr)]'
+        }`}
+      >
         {/* 左侧栏 (PC 常驻)：自选股高密度列表 (支持代码/拼音首字母过滤) */}
         <div className="hidden md:flex md:flex-col h-full min-h-0 overflow-hidden">
           <WatchlistPanel />
@@ -379,6 +390,7 @@ export default function App() {
                 <>
                   <UltraShortStockDiagnosticStrip />
                   <FinancialChart />
+                  <StockHologramBar symbol={selectedSymbol} />
                 </>
               )}
               {workspaceMode === 'auction' && <CallAuctionRadarPlugin />}
@@ -469,11 +481,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* 右侧栏 (PC 常驻)：上半部 Level-1 五档盘口 + 委比条，下半部实时成交明细与换手指标 */}
-        <div className="hidden md:flex md:flex-col h-full min-h-0 overflow-hidden bg-[#1e222d]">
-          <OrderBook5Panel />
-          <TradeTicksAndMetricsPanel />
-        </div>
+        {workspaceMode === 'chart' && (
+          <div className="hidden md:flex md:flex-col h-full min-h-0 overflow-hidden bg-[#1e222d]">
+            <OrderBook5Panel />
+            <TradeTicksAndMetricsPanel />
+          </div>
+        )}
       </main>
 
       {/* 移动端自选股快速切换抽屉 (<768px) */}

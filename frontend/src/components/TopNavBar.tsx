@@ -13,7 +13,7 @@ export const TopNavBar: React.FC = () => {
   const setCommandPaletteOpen = useMarketStore((s) => s.setCommandPaletteOpen);
 
   return (
-    <header className="flex items-center justify-between gap-4 px-4 h-11 bg-[#0d0e12] border-b border-[#2a2e39] select-none shrink-0">
+    <header className="flex items-center justify-between gap-4 px-4 h-11 bg-[#0d0e12] border-b border-[#2a2e39] select-none shrink-0 neon-panel neon-border-violet">
       {/* Zone 1: 品牌标识与全屏工作区状态指示 */}
       <div className="flex items-center gap-3 shrink-0">
         <a
@@ -25,7 +25,7 @@ export const TopNavBar: React.FC = () => {
           }}
           className="flex items-center gap-2 text-sm sm:text-base font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
-          <span className="w-2 h-2 rounded-full bg-[#2962ff] shadow-[0_0_8px_#2962ff]" />
+          <span className="w-2 h-2 rounded-full bg-[#9333EA] shadow-[0_0_12px_#9333EA]" />
           <span>AlphaPulse L1</span>
         </a>
         <span className="hidden lg:inline-block px-1.5 py-0.5 rounded bg-[#131722] border border-[#2a2e39] text-[10px] font-mono text-[#787b86]">
@@ -36,7 +36,7 @@ export const TopNavBar: React.FC = () => {
       {/* Zone 2: 100% 满屏一级视图独占切换器 (彻底告别上下硬拼割裂) */}
       <nav
         aria-label="主工作台视图导航"
-        className="hidden md:flex items-center gap-1.5 bg-[#131722] p-1 rounded-md border border-[#2a2e39]"
+        className="flex overflow-x-auto items-center gap-1.5 bg-[#131722] p-1 rounded-md border border-[#2a2e39] max-w-full"
       >
         <button
           type="button"
@@ -44,7 +44,7 @@ export const TopNavBar: React.FC = () => {
           onClick={() => setWorkspaceMode('chart')}
           className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
             workspaceMode === 'chart'
-              ? 'bg-[#2962ff] text-white font-semibold shadow-sm'
+              ? 'bg-[#2962ff] text-white font-semibold shadow-sm glow-up'
               : 'text-[#9ca3af] hover:text-white hover:bg-[#1e222d]'
           }`}
         >
@@ -61,7 +61,7 @@ export const TopNavBar: React.FC = () => {
           onClick={() => setWorkspaceMode('auction')}
           className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
             workspaceMode === 'auction'
-              ? 'bg-[#F59E0B] text-[#0d0e12] font-bold shadow-sm'
+              ? 'bg-[#F59E0B] text-[#0d0e12] font-bold shadow-sm glow-up'
               : 'text-[#9ca3af] hover:text-[#F59E0B] hover:bg-[#1e222d]'
           }`}
         >
@@ -75,7 +75,7 @@ export const TopNavBar: React.FC = () => {
           onClick={() => openQuantModule('overview')}
           className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
             workspaceMode === 'quant' && quantModuleTab !== 'regulatory'
-              ? 'bg-[#F6465D] text-white font-semibold shadow-sm'
+              ? 'bg-[#F6465D] text-white font-semibold shadow-sm glow-up'
               : 'text-[#9ca3af] hover:text-[#F6465D] hover:bg-[#1e222d]'
           }`}
         >
@@ -89,12 +89,12 @@ export const TopNavBar: React.FC = () => {
           onClick={() => openQuantModule('regulatory')}
           className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
             workspaceMode === 'quant' && quantModuleTab === 'regulatory'
-              ? 'bg-[#38bdf8] text-[#0d0e12] font-bold shadow-sm'
+              ? 'bg-[#38bdf8] text-[#0d0e12] font-bold shadow-sm glow-up'
               : 'text-[#9ca3af] hover:text-[#38bdf8] hover:bg-[#1e222d]'
           }`}
         >
           <ShieldAlert className="w-3.5 h-3.5" />
-          <span>连板梯队与异动逆推</span>
+          <span>监管异动监控</span>
         </button>
 
         <button
@@ -103,7 +103,7 @@ export const TopNavBar: React.FC = () => {
           onClick={() => setWorkspaceMode('screener')}
           className={`flex items-center gap-1.5 px-3 py-1 rounded text-xs font-medium transition-all whitespace-nowrap shrink-0 cursor-pointer ${
             workspaceMode === 'screener'
-              ? 'bg-[#2EB872] text-white font-semibold shadow-sm'
+              ? 'bg-[#2EB872] text-white font-semibold shadow-sm glow-up'
               : 'text-[#9ca3af] hover:text-[#2EB872] hover:bg-[#1e222d]'
           }`}
         >

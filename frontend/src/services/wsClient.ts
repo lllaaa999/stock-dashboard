@@ -52,9 +52,12 @@ class MarketWebSocketClient {
         this.reconnectAttempts = 0;
         useMarketStore.getState().setConnectionStatus('CONNECTED');
         this.startHeartbeat();
-        const sel = useMarketStore.getState().selectedSymbol;
-        if (sel) {
-          this.subscribe(sel);
+        const st = useMarketStore.getState();
+        const symbols = Array.from(
+          new Set([st.selectedSymbol, ...(st.watchlist || [])].filter(Boolean))
+        );
+        if (symbols.length) {
+          this.send({ type: 'SUBSCRIBE', symbols });
         }
       };
 

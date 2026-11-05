@@ -394,46 +394,8 @@ export function buildOrderBookForPhase(
   };
 }
 
-function buildInitialTrades(price: number, phase: TradingPhase): TradeTick[] {
-  const step = price >= 100 ? 0.1 : 0.01;
-  const baseVol = price > 500 ? 12 : price > 100 ? 68 : 320;
-  const times = [
-    '14:56:42',
-    '14:56:39',
-    '14:56:36',
-    '14:56:33',
-    '14:56:30',
-    '14:56:27',
-    '14:56:24',
-    '14:56:21',
-    '14:56:18',
-    '14:56:15',
-    '14:56:12',
-    '14:56:09',
-    '14:56:06',
-    '14:56:03',
-  ];
-
-  return times.map((time, idx) => {
-    const offset = phase === 'TRADING' ? ((idx % 3) - 1) * step : 0;
-    const side: 'BUY' | 'SELL' | 'NEUTRAL' =
-      phase === 'LIMIT_UP'
-        ? 'BUY'
-        : phase === 'LIMIT_DOWN'
-        ? 'SELL'
-        : idx % 3 === 0
-        ? 'BUY'
-        : idx % 3 === 1
-        ? 'SELL'
-        : 'BUY';
-    return {
-      id: `init-${idx}-${time}`,
-      time,
-      price: Number((price + offset).toFixed(2)),
-      volume: Math.max(1, Math.round(baseVol * (0.6 + ((idx * 37) % 100) / 50))),
-      side,
-    };
-  });
+function buildInitialTrades(_price: number, _phase: TradingPhase): TradeTick[] {
+  return [];
 }
 
 function buildUltraShortProfile(cfg: StockSeedConfig, amount: number): UltraShortProfile {

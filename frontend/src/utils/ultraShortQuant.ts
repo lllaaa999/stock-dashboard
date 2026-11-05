@@ -135,13 +135,11 @@ export function calculateAuctionRadar(
     override?.auctionChangePercent !== undefined
       ? Number((quote.prevClose * (1 + auctionChangePercent / 100)).toFixed(2))
       : us?.auctionPrice ?? quote.open;
-  const yesterdayAmount = Math.max(
-    1e6,
-    override?.yesterdayAmount ?? us?.yesterdayAmount ?? quote.amount * 1.15
-  );
-  const auctionAmount =
-    override?.auctionAmount ?? us?.auctionAmount ?? Math.round(yesterdayAmount * 0.065);
-  const amountToYesterdayRatio = Number(((auctionAmount / yesterdayAmount) * 100).toFixed(2));
+  const yesterdayAmount = override?.yesterdayAmount ?? us?.yesterdayAmount ?? 0;
+  const auctionAmount = override?.auctionAmount ?? us?.auctionAmount ?? 0;
+  const amountToYesterdayRatio = yesterdayAmount > 0
+    ? Number(((auctionAmount / yesterdayAmount) * 100).toFixed(2))
+    : 0;
   const auctionVolumeRatio =
     override?.auctionVolumeRatio ??
     us?.auctionVolumeRatio ??
@@ -1017,7 +1015,13 @@ export function calculateRegulatoryDeviation(
   const is30Rule =
     us?.boardRuleType === 'CHINEXT_STAR_30' ||
     quote.code.startsWith('300') ||
-    quote.code.startsWith('688');
+    quote.code.startsWith('301') ||
+    quote.code.startsWith('688') ||
+    quote.code.startsWith('689') ||
+    quote.code.startsWith('920') ||
+    quote.code.startsWith('8') ||
+    quote.code.startsWith('4') ||
+    quote.symbol.endsWith('.BJ');
 
   const ruleThresholdPercent = is30Rule ? 30 : 20;
   const boardRuleLabel = is30Rule ? '创业板/科创板 ±30%' : '沪深主板 ±20%';
@@ -1105,15 +1109,21 @@ export function calculateRegulatoryDeviation(
   // 10日偏离度：只有后端法规引擎（/api/quant/regulatory）才知道真实值。
   // 以前拿不到就硬塞 42.5%，等于每只票都显示"10日偏离 42.5%"，还拿去判红黄绿灯。
   // 现在拿不到就是 null → UI 显示 "—"，只有已知的字段才参与判定（不拿假数字报警）。
-  const base10d = us?.cumDeviation10d ?? null;
+  const engine10d = history?.severe_10d_current_dev;
+  const seed10d = us?.cumDeviation10d ?? null;
   const todayNetDev = quote.changePercent - rMToday * 100;
+  // 法规引擎的 10 日偏离已含今日价；种子字段是昨收口径，才需要再加今日偏离。
   const cumDeviation10dPercent =
-    base10d === null ? null : Number(Math.max(0, base10d + todayNetDev).toFixed(2));
+    typeof engine10d === 'number'
+      ? Number(Math.max(0, engine10d).toFixed(2))
+      : seed10d === null
+        ? null
+        : Number(Math.max(0, seed10d + todayNetDev).toFixed(2));
   const remainingTo100Percent =
     cumDeviation10dPercent === null
       ? null
       : Number(Math.max(0, 100 - cumDeviation10dPercent).toFixed(2));
-  const abnormalCount10d = us?.abnormalCount10d ?? null;
+  const abnormalCount10d = history?.normal_triggers_in_prev_9d ?? us?.abnormalCount10d ?? null;
   const remainingAbnormalTimes10d =
     abnormalCount10d === null
       ? null
@@ -1252,6 +1262,8 @@ export function calculateRegulatoryDeviation(
     tacticalPlaybook,
     statusSummary,
     historySource,
+    historyAvailable: history?.available !== false && historySource === 'kline',
+    historyReason: history?.reason,
   };
 }
 
@@ -1263,8 +1275,13 @@ export function analyzeMarketRegulatoryOverview(
   indexOverrideTodayPct?: number,
   historyMap?: Record<string, RegulatoryHistory>
 ): RegulatoryMonitorOverview {
+  // 后端批量接口以大写 symbol 为键，这里做一次归一化，避免大小写不一致导致整池退回估算值
+  const normHist: Record<string, RegulatoryHistory> = {};
+  for (const [k, v] of Object.entries(historyMap ?? {})) {
+    normHist[String(k).toUpperCase()] = v;
+  }
   const items = quotes
-    .map((q) => calculateRegulatoryDeviation(q, indexOverrideTodayPct, historyMap?.[q.symbol]))
+    .map((q) => calculateRegulatoryDeviation(q, indexOverrideTodayPct, normHist[String(q.symbol).toUpperCase()]))
     .sort((a, b) => {
       const rank = { RED: 3, YELLOW: 2, GREEN: 1 };
       if (rank[b.alertLight] !== rank[a.alertLight]) {
@@ -1305,10 +1322,15 @@ export function calculateVWDVR(quote: TickData, intradayPoints?: IntradayPoint[]
   let totalVol = 0;
   let dipRecoveryVol = 0;
   let dipTotalVol = 0;
+  let rvTotal = 0;
+  let rvDown = 0;
 
   if (intradayPoints && intradayPoints.length > 5) {
     const lastPt = intradayPoints[intradayPoints.length - 1];
     vwap = lastPt.avgPrice;
+    const meanVol =
+      intradayPoints.reduce((acc, p) => acc + Math.max(0, p.volume), 0) /
+      Math.max(1, intradayPoints.length);
 
     for (let i = 0; i < intradayPoints.length; i++) {
       const pt = intradayPoints[i];
@@ -1316,11 +1338,21 @@ export function calculateVWDVR(quote: TickData, intradayPoints?: IntradayPoint[]
       if (pt.price >= pt.avgPrice - 1e-4) {
         aboveVwapVol += pt.volume;
       }
+      const prevPx = i === 0 ? (quote.prevClose || pt.price) : intradayPoints[i - 1].price;
+      if (prevPx > 0) {
+        const ret = (pt.price - prevPx) / prevPx;
+        const w = meanVol > 0 ? Math.max(0.2, pt.volume / meanVol) : 1.0;
+        const r2 = w * ret * ret;
+        rvTotal += r2;
+        if (ret < 0) {
+          rvDown += r2;
+        }
+      }
       if (i >= 2) {
         const prev1 = intradayPoints[i - 1];
         const prev2 = intradayPoints[i - 2];
         // 识别回踩企稳切片 (前一分钟回落、当前分钟企稳回升)
-        if (prev1.price <= prev2.price) {
+        if (prev1.price < prev2.price) {
           dipTotalVol += pt.volume + prev1.volume;
           if (pt.price >= prev1.price) {
             dipRecoveryVol += pt.volume * 1.35;
@@ -1330,23 +1362,23 @@ export function calculateVWDVR(quote: TickData, intradayPoints?: IntradayPoint[]
     }
   }
 
+  const hasIntradayData = totalVol > 0;
+  // 与后端 scripts/ultrashort_metrics.py compute_adaptive_vw_dvr 完全同源的贝叶斯收缩下行方差占比 DVR ∈ [0, 1]
+  const nBars = intradayPoints ? intradayPoints.length : 0;
+  const tickRet = 0.01 / Math.max(quote.prevClose || quote.price || 1.0, 1.0);
+  const priorVar = 4.0 * Math.sqrt(Math.max(nBars, 1)) * tickRet * tickRet;
+  const dvrRatio =
+    hasIntradayData && rvTotal + priorVar > 1e-12
+      ? Number(
+          Math.min(1, Math.max(0, (rvDown + 0.5 * priorVar) / Math.max(rvTotal + priorVar, 1e-12))).toFixed(4)
+        )
+      : null;
+
   const totalOuterInner = Math.max(1, quote.outerVolume + quote.innerVolume);
-  const outerRatioPercent = (quote.outerVolume / totalOuterInner) * 100;
-
-  const aboveVwapVolumeRatio =
-    totalVol > 0
-      ? Number(Math.min(100, (aboveVwapVol / totalVol) * 100).toFixed(1))
-      : quote.price >= vwap
-      ? Number(Math.min(96, 58 + Math.max(0, quote.changePercent) * 3.5).toFixed(1))
-      : Number(Math.max(12, 42 + quote.changePercent * 3.2).toFixed(1));
-
-  const rawDipAbsorption =
-    dipTotalVol > 0
-      ? (dipRecoveryVol / dipTotalVol) * 55 + outerRatioPercent * 0.45
-      : outerRatioPercent;
-  const dipBuyAbsorptionRatio = Number(
-    Math.min(98, Math.max(10, rawDipAbsorption)).toFixed(1)
-  );
+  const outerRatioPercent =
+    quote.outerVolume + quote.innerVolume > 0
+      ? (quote.outerVolume / totalOuterInner) * 100
+      : 50.0;
 
   const highLowSpan = Math.max(0.01, quote.high - quote.low);
   const lowerShadowResilience =
@@ -1358,12 +1390,30 @@ export function calculateVWDVR(quote: TickData, intradayPoints?: IntradayPoint[]
           Math.min(100, Math.max(0, ((quote.price - quote.low) / highLowSpan) * 100)).toFixed(1)
         );
 
-  const priceToVwapDiffPercent = Number((((quote.price - vwap) / vwap) * 100).toFixed(2));
+  const aboveVwapVolumeRatio =
+    totalVol > 0
+      ? Number(Math.min(100, (aboveVwapVol / totalVol) * 100).toFixed(1))
+      : Number(Math.min(96, Math.max(8, outerRatioPercent * 0.6 + lowerShadowResilience * 0.4)).toFixed(1));
 
-  const rawScore =
+  const rawDipAbsorption =
+    dipTotalVol > 0
+      ? (dipRecoveryVol / dipTotalVol) * 55 + outerRatioPercent * 0.45
+      : outerRatioPercent;
+  const dipBuyAbsorptionRatio = Number(
+    Math.min(98, Math.max(10, rawDipAbsorption)).toFixed(1)
+  );
+
+  const priceToVwapDiffPercent = Number((((quote.price - vwap) / Math.max(0.01, vwap)) * 100).toFixed(2));
+
+  // 当存在真实分钟序列时，结合与后端同源的 (1 - DVR)*100 上行承接分与 VWAP 锚定分
+  const baseSupportScore =
     aboveVwapVolumeRatio * 0.42 +
     dipBuyAbsorptionRatio * 0.35 +
     lowerShadowResilience * 0.23;
+  const rawScore =
+    dvrRatio !== null
+      ? baseSupportScore * 0.65 + (1 - dvrRatio) * 100 * 0.35
+      : baseSupportScore;
 
   const vwDvrScore = Number(Math.min(99.2, Math.max(5.0, rawScore)).toFixed(1));
 
@@ -1393,6 +1443,8 @@ export function calculateVWDVR(quote: TickData, intradayPoints?: IntradayPoint[]
     dipBuyAbsorptionRatio,
     lowerShadowResilience,
     vwDvrScore,
+    dvrRatio,
+    hasIntradayData,
     signal,
     signalLabel,
     actionAdvice,
@@ -2374,57 +2426,84 @@ export function getBrokerSeatActivityProfile(
   currentSector = '人工智能'
 ): DragonTigerSeatActivityProfile {
   const meta = identifyBrokerSeatNature(branchName);
-  const matchedSeed = SEAT_ACTIVITY_SEEDS.find((s) => branchName.includes(s.keyword));
+  const hasRealLedger =
+    typeof seatItem?.reputationGamma === 'number' ||
+    typeof seatItem?.ledgerAppearances === 'number';
+  const matchedSeed = hasRealLedger
+    ? undefined
+    : SEAT_ACTIVITY_SEEDS.find((s) => branchName.includes(s.keyword));
 
-  // 基于 branchName 构造确定性哈希微调，保证不同机构/营业部数据真实且唯一
+  // 基于 branchName 构造确定性哈希微调（仅用于沙盘演示种子）
   let hash = 0;
   for (let i = 0; i < branchName.length; i++) {
     hash = (hash * 31 + branchName.charCodeAt(i)) % 1000;
   }
 
-  const activityScore =
-    matchedSeed?.activityScore ??
-    (meta.nature === 'HOT_MONEY'
-      ? 86 + (hash % 10)
-      : meta.nature === 'QUANT_CAMP'
-      ? 91 + (hash % 7)
-      : meta.nature === 'INSTITUTION'
-      ? 88 + (hash % 8)
-      : 82 + (hash % 12));
+  const gammaVal = typeof seatItem?.reputationGamma === 'number' ? seatItem.reputationGamma : null;
 
-  const appearances30d =
-    matchedSeed?.appearances30d ??
-    (meta.nature === 'QUANT_CAMP'
-      ? 65 + (hash % 25)
-      : meta.nature === 'RETAIL_CAMP'
-      ? 95 + (hash % 30)
-      : 24 + (hash % 18));
+  const activityScore = hasRealLedger
+    ? Math.round(
+        Math.min(
+          98,
+          Math.max(
+            35,
+            68 + (gammaVal ?? 0) * 28 + Math.min(12, (seatItem?.ledgerAppearances ?? 1) * 1.5)
+          )
+        )
+      )
+    : matchedSeed?.activityScore ??
+      (meta.nature === 'HOT_MONEY'
+        ? 86 + (hash % 10)
+        : meta.nature === 'QUANT_CAMP'
+        ? 91 + (hash % 7)
+        : meta.nature === 'INSTITUTION'
+        ? 88 + (hash % 8)
+        : 82 + (hash % 12));
 
-  const totalCapital30d =
-    matchedSeed?.totalCapital30d ??
-    Math.round((appearances30d * (8500_0000 + (hash % 45) * 150_0000))) ;
+  const appearances30d = hasRealLedger
+    ? Math.max(1, seatItem?.ledgerAppearances ?? 1)
+    : matchedSeed?.appearances30d ??
+      (meta.nature === 'QUANT_CAMP'
+        ? 65 + (hash % 25)
+        : meta.nature === 'RETAIL_CAMP'
+        ? 95 + (hash % 30)
+        : 24 + (hash % 18));
 
-  const avgSingleBuyAmount = Math.round(totalCapital30d / Math.max(1, appearances30d));
+  const actualSeatCapital = Math.max(seatItem?.buyAmount ?? 0, seatItem?.sellAmount ?? 0);
+  const totalCapital30d = hasRealLedger
+    ? Math.round(actualSeatCapital * appearances30d)
+    : matchedSeed?.totalCapital30d ??
+      Math.round(appearances30d * (8500_0000 + (hash % 45) * 150_0000));
 
-  const nextDayAvgPremiumPercent =
-    matchedSeed?.nextDayAvgPremiumPercent ??
-    (meta.nature === 'HOT_MONEY'
-      ? Number((3.6 + (hash % 18) * 0.1).toFixed(2))
-      : meta.nature === 'INSTITUTION'
-      ? Number((3.2 + (hash % 14) * 0.1).toFixed(2))
-      : meta.nature === 'QUANT_CAMP'
-      ? Number((1.1 + (hash % 12) * 0.1).toFixed(2))
-      : Number((-0.8 + (hash % 10) * 0.1).toFixed(2)));
+  const avgSingleBuyAmount = hasRealLedger
+    ? Math.round(actualSeatCapital)
+    : Math.round(totalCapital30d / Math.max(1, appearances30d));
 
-  const sealWinRatePercent =
-    matchedSeed?.sealWinRatePercent ??
-    (meta.nature === 'HOT_MONEY'
-      ? Number((72 + (hash % 9) * 0.8).toFixed(1))
-      : meta.nature === 'INSTITUTION'
-      ? Number((70 + (hash % 8) * 0.7).toFixed(1))
-      : meta.nature === 'QUANT_CAMP'
-      ? Number((56 + (hash % 9) * 0.6).toFixed(1))
-      : Number((46 + (hash % 8) * 0.5).toFixed(1)));
+  const nextDayAvgPremiumPercent = hasRealLedger
+    ? typeof seatItem?.ledgerAvgPremiumPercent === 'number'
+      ? seatItem.ledgerAvgPremiumPercent
+      : Number(((gammaVal ?? 0) * 4.2).toFixed(2))
+    : matchedSeed?.nextDayAvgPremiumPercent ??
+      (meta.nature === 'HOT_MONEY'
+        ? Number((3.6 + (hash % 18) * 0.1).toFixed(2))
+        : meta.nature === 'INSTITUTION'
+        ? Number((3.2 + (hash % 14) * 0.1).toFixed(2))
+        : meta.nature === 'QUANT_CAMP'
+        ? Number((1.1 + (hash % 12) * 0.1).toFixed(2))
+        : Number((-0.8 + (hash % 10) * 0.1).toFixed(2)));
+
+  const sealWinRatePercent = hasRealLedger
+    ? typeof seatItem?.ledgerWinRatePercent === 'number'
+      ? seatItem.ledgerWinRatePercent
+      : Number(Math.min(92, Math.max(25, 52 + (gammaVal ?? 0) * 32)).toFixed(1))
+    : matchedSeed?.sealWinRatePercent ??
+      (meta.nature === 'HOT_MONEY'
+        ? Number((72 + (hash % 9) * 0.8).toFixed(1))
+        : meta.nature === 'INSTITUTION'
+        ? Number((70 + (hash % 8) * 0.7).toFixed(1))
+        : meta.nature === 'QUANT_CAMP'
+        ? Number((56 + (hash % 9) * 0.6).toFixed(1))
+        : Number((46 + (hash % 8) * 0.5).toFixed(1)));
 
   const activityLevelLabel: DragonTigerSeatActivityProfile['activityLevelLabel'] =
     activityScore >= 92
@@ -2434,63 +2513,71 @@ export function getBrokerSeatActivityProfile(
       : '中度活跃 · 波段出击';
 
   const currentBattle: DragonTigerSeatBattleRecord = {
-    date: '今日当期榜单',
+    date: '当期披露榜单',
     symbol: currentSymbol,
     name: currentStockName,
     sector: currentSector,
     roleLabel: seatItem
       ? `${seatItem.side === 'BUY' ? `主买${seatItem.rank}` : `主卖${seatItem.rank}`} · 占成交 ${seatItem.turnoverSharePercent}%`
-      : '今日龙虎榜核心博弈席位',
-    buyAmount: seatItem?.buyAmount ?? 1_8500_0000,
-    netAmount: seatItem?.netAmount ?? 1_4200_0000,
+      : '龙虎榜核心博弈席位',
+    buyAmount: seatItem?.buyAmount ?? 0,
+    netAmount: seatItem?.netAmount ?? 0,
     nextDayPremiumPercent: nextDayAvgPremiumPercent,
   };
 
-  const historicalBattles: DragonTigerSeatBattleRecord[] = (
-    matchedSeed?.allyStocks ?? [
-      {
-        symbol: '601360.SH',
-        name: '三六零',
-        sector: '人工智能',
-        roleLabel: '主线高标协同接力',
-        buyAmount: 2_1500_0000,
-        netAmount: 1_8200_0000,
-        nextDayPremiumPercent: 5.12,
-      },
-      {
-        symbol: '002230.SZ',
-        name: '科大讯飞',
-        sector: '人工智能',
-        roleLabel: '容量中军趋势主封',
-        buyAmount: 1_9200_0000,
-        netAmount: 1_5600_0000,
-        nextDayPremiumPercent: 4.25,
-      },
-    ]
-  )
-    .filter((b) => b.symbol !== currentSymbol)
-    .slice(0, 3)
-    .map((b, idx) => ({
-      date: idx === 0 ? 'T-1 交易日' : idx === 1 ? 'T-3 交易日' : 'T-5 交易日',
-      symbol: b.symbol,
-      name: b.name,
-      sector: b.sector,
-      roleLabel: b.roleLabel,
-      buyAmount: b.buyAmount,
-      netAmount: b.netAmount,
-      nextDayPremiumPercent: b.nextDayPremiumPercent,
-    }));
+  const historicalBattles: DragonTigerSeatBattleRecord[] = hasRealLedger
+    ? []
+    : (
+        matchedSeed?.allyStocks ?? [
+          {
+            symbol: '601360.SH',
+            name: '三六零',
+            sector: '人工智能',
+            roleLabel: '主线高标协同接力',
+            buyAmount: 2_1500_0000,
+            netAmount: 1_8200_0000,
+            nextDayPremiumPercent: 5.12,
+          },
+          {
+            symbol: '002230.SZ',
+            name: '科大讯飞',
+            sector: '人工智能',
+            roleLabel: '容量中军趋势主封',
+            buyAmount: 1_9200_0000,
+            netAmount: 1_5600_0000,
+            nextDayPremiumPercent: 4.25,
+          },
+        ]
+      )
+        .filter((b) => b.symbol !== currentSymbol)
+        .slice(0, 3)
+        .map((b, idx) => ({
+          date: idx === 0 ? 'T-1 交易日' : idx === 1 ? 'T-3 交易日' : 'T-5 交易日',
+          symbol: b.symbol,
+          name: b.name,
+          sector: b.sector,
+          roleLabel: b.roleLabel,
+          buyAmount: b.buyAmount,
+          netAmount: b.netAmount,
+          nextDayPremiumPercent: b.nextDayPremiumPercent,
+        }));
 
   const recentBattles = [currentBattle, ...historicalBattles];
 
-  const baseWeekCount = Math.max(3, Math.round(appearances30d / 4));
+  const baseWeekCount = Math.max(1, Math.round(appearances30d / 4));
   const baseWeekCap = Math.round(totalCapital30d / 4);
-  const monthlyTrend = [
-    { weekLabel: 'W-3周', count: Math.max(2, baseWeekCount - 2), capital: Math.round(baseWeekCap * 0.82) },
-    { weekLabel: 'W-2周', count: baseWeekCount, capital: Math.round(baseWeekCap * 0.95) },
-    { weekLabel: '上周', count: baseWeekCount + 1, capital: Math.round(baseWeekCap * 1.06) },
-    { weekLabel: '本周', count: baseWeekCount + 2, capital: Math.round(baseWeekCap * 1.17) },
-  ];
+  const monthlyTrend = hasRealLedger
+    ? []
+    : [
+        { weekLabel: 'W-3周', count: Math.max(2, baseWeekCount - 2), capital: Math.round(baseWeekCap * 0.82) },
+        { weekLabel: 'W-2周', count: baseWeekCount, capital: Math.round(baseWeekCap * 0.95) },
+        { weekLabel: '上周', count: baseWeekCount + 1, capital: Math.round(baseWeekCap * 1.06) },
+        { weekLabel: '本周', count: baseWeekCount + 2, capital: Math.round(baseWeekCap * 1.17) },
+      ];
+
+  const hasLedgerHistory =
+    typeof seatItem?.ledgerWinRatePercent === 'number' &&
+    typeof seatItem?.ledgerAvgPremiumPercent === 'number';
 
   return {
     branchName,
@@ -2515,11 +2602,17 @@ export function getBrokerSeatActivityProfile(
         : meta.nature === 'QUANT_CAMP'
         ? '日内高频算法套利 / T+1 冲高兑现'
         : '高换手分歧跟风博弈'),
-    favoriteSectors: matchedSeed?.favoriteSectors ?? ['人工智能', '半导体', '新能源车'],
+    favoriteSectors: matchedSeed?.favoriteSectors ?? [currentSector || 'A股主线'],
     coAppearingAllies:
-      matchedSeed?.coAppearingAllies ?? ['顶级游资 · 章盟主', '顶级游资 · 作手新一', '机构专用席位'],
+      matchedSeed?.coAppearingAllies ?? (hasRealLedger ? [] : [meta.natureLabel]),
     recentBattles,
     monthlyTrend,
+    isDemo: !hasRealLedger,
+    reputationGamma: gammaVal,
+    isNuclearHarvester: Boolean(seatItem?.isNuclearHarvester),
+    ledgerWinRatePercent: seatItem?.ledgerWinRatePercent ?? null,
+    ledgerAvgPremiumPercent: seatItem?.ledgerAvgPremiumPercent ?? null,
+    hasLedgerHistory,
   };
 }
 

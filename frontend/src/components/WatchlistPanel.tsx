@@ -12,6 +12,7 @@ interface WatchlistRowProps {
   symbol: string;
   isSelected: boolean;
   isStarred: boolean;
+  dropFromHigh?: number | null;
   onSelect: (symbol: string) => void;
   onToggleStar: (symbol: string) => void;
 }
@@ -20,7 +21,7 @@ interface WatchlistRowProps {
  * 单行自选股组件：通过 Zustand 精确 Selector 订阅单只股票，隔离其他股票高频推送
  */
 const WatchlistRow: React.FC<WatchlistRowProps> = React.memo(
-  ({ symbol, isSelected, isStarred, onSelect, onToggleStar }) => {
+  ({ symbol, isSelected, isStarred, dropFromHigh, onSelect, onToggleStar }) => {
     const quote = useMarketStore(useCallback((s) => s.quotes[symbol], [symbol]));
     const prevPriceRef = useRef<number | null>(quote?.price ?? null);
     const [flashBg, setFlashBg] = useState<string>('');
@@ -107,6 +108,9 @@ const WatchlistRow: React.FC<WatchlistRowProps> = React.memo(
               <span>{quote.market}</span>
               <span aria-hidden="true">·</span>
               <span className="font-sans truncate">{quote.sector}</span>
+              {typeof dropFromHigh === 'number' && dropFromHigh <= -4 && (
+                <span className="text-[#0ECB81] font-sans">大面{dropFromHigh.toFixed(1)}%</span>
+              )}
             </div>
           </div>
         </div>
@@ -135,6 +139,7 @@ export const WatchlistPanel: React.FC = () => {
   const symbolOrder = useMarketStore((s) => s.symbolOrder);
   const selectedSymbol = useMarketStore((s) => s.selectedSymbol);
   const watchlist = useMarketStore((s) => s.watchlist);
+  const [dropMap, setDropMap] = useState<Record<string, number>>({});
   const searchQuery = useMarketStore((s) => s.searchQuery);
   const filterCategory = useMarketStore((s) => s.filterCategory);
   const sortBy = useMarketStore((s) => s.sortBy);
@@ -149,6 +154,35 @@ export const WatchlistPanel: React.FC = () => {
 
   const [remoteResults, setRemoteResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
+
+  useEffect(() => {
+    const codes = watchlist
+      .map((s) => s.replace(/\.(SH|SZ|BJ|SS)$/i, ''))
+      .filter((c) => /^\d{6}$/.test(c));
+    if (!codes.length) {
+      setDropMap({});
+      return;
+    }
+    let alive = true;
+    fetch(`/api/watchlist?codes=${codes.join(',')}`)
+      .then((r) => (r.ok ? r.json() : []))
+      .then((rows: { code?: string; drop_from_high?: number }[]) => {
+        if (!alive || !Array.isArray(rows)) return;
+        const next: Record<string, number> = {};
+        for (const row of rows) {
+          if (row.code && typeof row.drop_from_high === 'number') {
+            next[row.code] = row.drop_from_high;
+          }
+        }
+        setDropMap(next);
+      })
+      .catch(() => {
+        if (alive) setDropMap({});
+      });
+    return () => {
+      alive = false;
+    };
+  }, [watchlist]);
 
   // 全市场股票联想检索 (支持 A 股代码、全拼、拼音首字母，如 002724, gzmt, hyw)
   useEffect(() => {
@@ -193,7 +227,7 @@ export const WatchlistPanel: React.FC = () => {
   return (
     <aside
       aria-label="自选股与行情检索列表"
-      className="flex flex-col h-full bg-[#1e222d] border-r border-[#2a2e39] select-none"
+      className="flex flex-col h-full bg-[#1e222d] border-r border-[#2a2e39] select-none neon-panel neon-border-teal"
     >
       {/* 1. 代码 / 拼音首字母快速搜索框 */}
       <div className="p-2.5 border-b border-[#2a2e39] bg-[#131722]/50">
@@ -392,6 +426,7 @@ export const WatchlistPanel: React.FC = () => {
               symbol={sym}
               isSelected={sym === selectedSymbol}
               isStarred={watchlist.includes(sym)}
+              dropFromHigh={dropMap[sym.replace(/\.(SH|SZ|BJ|SS)$/i, '')]}
               onSelect={setSelectedSymbol}
               onToggleStar={toggleWatchlist}
             />

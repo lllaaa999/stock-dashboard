@@ -125,6 +125,7 @@ export const CallAuctionRadarPlugin: React.FC = () => {
   const [signalFilter, setSignalFilter] = useState<'ALL' | AuctionSignalType>('ALL');
   const [overrideMap, setOverrideMap] = useState<Record<string, AuctionRadarOverride>>({});
   const [serverRadarData, setServerRadarData] = useState<any | null>(null);
+  const [auditLedger, setAuditLedger] = useState<any | null>(null);
   const [realLadder, setRealLadder] = useState<BoardLadderSummary | null>(null);
 
   // Tab 切换：接力雷达 vs 全市场竞价扫描
@@ -219,6 +220,21 @@ export const CallAuctionRadarPlugin: React.FC = () => {
       })
       .catch((e) => {
         console.error('[CallAuctionRadarPlugin] 获取竞价雷达数据失败:', e);
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    fetch('/api/auction/audit/ledger?limit=30')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (isMounted) setAuditLedger(data);
+      })
+      .catch(() => {
+        if (isMounted) setAuditLedger(null);
       });
     return () => {
       isMounted = false;
@@ -384,8 +400,43 @@ export const CallAuctionRadarPlugin: React.FC = () => {
     <section
       aria-label="09:25 竞价雷达满屏工作台"
       data-testid="call-auction-radar-plugin"
-      className="flex flex-col flex-1 min-h-0 h-full bg-[#0d0e12] text-[#d1d4dc] select-none overflow-hidden"
+      className="flex flex-col flex-1 min-h-0 h-full bg-[#0d0e12] text-[#d1d4dc] select-none overflow-hidden neon-panel neon-border-red"
     >
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 px-3 py-1.5 bg-[#161a24] border-b border-[#2a2e39] text-[11px] text-[#9ca3af] shrink-0">
+        <span>
+          晋级{' '}
+          <strong className="text-white font-mono">
+            {serverRadarData?.promotion_metrics?.promotion_valid
+              ? `${serverRadarData.promotion_metrics.seal_rate ?? '—'}%封板`
+              : '休市·不适用'}
+          </strong>
+          {serverRadarData?.promotion_metrics?.max_lbc != null && (
+            <span className="ml-1">最高{serverRadarData.promotion_metrics.max_lbc}板</span>
+          )}
+        </span>
+        <span>
+          溢价{' '}
+          <strong className="text-white">
+            {serverRadarData?.premium_summary?.sentiment_tag || '—'}
+          </strong>
+          {serverRadarData?.premium_summary?.avg_open_pct != null && (
+            <span className="ml-1 font-mono">
+              均开{serverRadarData.premium_summary.avg_open_pct}%
+            </span>
+          )}
+        </span>
+        <span>
+          对账胜率{' '}
+          <strong className="text-white font-mono">
+            {auditLedger && typeof auditLedger.cum_win_rate === 'number'
+              ? `${auditLedger.cum_win_rate}%`
+              : '—'}
+          </strong>
+          {auditLedger?.total_days != null && (
+            <span className="ml-1">{auditLedger.total_days}个交易日</span>
+          )}
+        </span>
+      </div>
       {/* 顶部控制条：全市场信号统计 + 异动焦点股胶囊 + 推演沙盘开关 + 返回主图 */}
       <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 bg-[#131722] border-b border-[#2a2e39] shrink-0">
         <div className="flex flex-wrap items-center gap-2 min-w-0">
@@ -1161,7 +1212,12 @@ export const CallAuctionRadarPlugin: React.FC = () => {
                         }
                         const item = row.item;
                         const style = getFullScanSignalStyle(item.signal);
-                        const sym = item.code.startsWith('6') ? `${item.code}.SH` : `${item.code}.SZ`;
+                        const code = String(item.code || '');
+                        const sym = code.startsWith('920') || code.startsWith('4') || code.startsWith('8')
+                          ? `${code}.BJ`
+                          : code.startsWith('6') || code.startsWith('5') || code.startsWith('9')
+                            ? `${code}.SH`
+                            : `${code}.SZ`;
                         return (
                           <div
                             key={`item-${item.code}`}

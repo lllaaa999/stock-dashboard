@@ -1,7 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Star, ListFilter, BellRing } from 'lucide-react';
 import { useMarketStore } from '../store/useMarketStore';
-import type { MarketScenario } from '../types/market';
 import {
   formatAmountCN,
   formatPrice,
@@ -19,7 +18,6 @@ export const StockQuoteHeader: React.FC = () => {
   const watchlist = useMarketStore((s) => s.watchlist);
   const alertRules = useMarketStore((s) => s.alertRules);
   const toggleWatchlist = useMarketStore((s) => s.toggleWatchlist);
-  const triggerScenario = useMarketStore((s) => s.triggerScenario);
   const setMobileWatchlistOpen = useMarketStore((s) => s.setMobileWatchlistOpen);
   const setAlertModalOpen = useMarketStore((s) => s.setAlertModalOpen);
 
@@ -61,17 +59,8 @@ export const StockQuoteHeader: React.FC = () => {
   const highColor = getDirectionColorClass(getPriceDirection(quote.high, quote.prevClose));
   const lowColor = getDirectionColorClass(getPriceDirection(quote.low, quote.prevClose));
 
-  const currentScenario: MarketScenario =
-    quote.phase === 'LIMIT_UP'
-      ? 'limit_up'
-      : quote.phase === 'LIMIT_DOWN'
-      ? 'limit_down'
-      : quote.phase === 'CALL_AUCTION'
-      ? 'call_auction'
-      : 'normal';
-
   return (
-    <div className="bg-[#1e222d] border-b border-[#2a2e39] px-3 py-2 select-none">
+    <div className="bg-[#1e222d] border-b border-[#2a2e39] px-3 py-2 select-none neon-panel neon-border-red">
       <div className="flex flex-wrap items-center justify-between gap-3">
         {/* 左侧：股票名称、代码与实时大字报价 */}
         <div className="flex items-center gap-4 min-w-0">
@@ -87,7 +76,7 @@ export const StockQuoteHeader: React.FC = () => {
 
           <div className="min-w-0">
             <div className="flex items-center gap-1.5">
-              <h1 className="text-base sm:text-lg font-bold text-white tracking-tight truncate">
+              <h1 className="text-base sm:text-lg font-bold text-white tracking-tight truncate glow-violet">
                 {quote.name}
               </h1>
               <button
@@ -123,7 +112,7 @@ export const StockQuoteHeader: React.FC = () => {
                 )}
               </button>
             </div>
-            <div className="flex items-center gap-1.5 text-xs text-[#787b86] font-mono tabular-nums">
+            <div className="flex items-center gap-1.5 text-xs text-[#787b86] font-mono tabular-nums neon-pulse">
               <span>{quote.symbol}</span>
               <span aria-hidden="true">·</span>
               <span className="font-sans">{quote.sector}</span>
@@ -136,7 +125,7 @@ export const StockQuoteHeader: React.FC = () => {
           >
             <span
               data-testid="active-stock-price"
-              className={`text-xl sm:text-2xl font-bold font-mono tabular-nums tracking-tight ${priceColor}`}
+              className={`text-xl sm:text-2xl font-bold font-mono tabular-nums tracking-tight ${priceColor} ${quote.change >= 0 ? 'glow-up' : 'glow-down'}`}
             >
               {formatPrice(quote.price)}
             </span>
@@ -187,40 +176,6 @@ export const StockQuoteHeader: React.FC = () => {
           </div>
         </div>
 
-        {/* 右侧：Level-1 极端盘口空档保护验证切换器 (正常 / 涨停封板 / 跌停封板 / 集合竞价) */}
-        <div className="hidden xl:flex items-center gap-1 bg-[#131722] p-1 rounded border border-[#2a2e39] shrink-0">
-          <span className="text-[11px] text-[#787b86] px-1.5 whitespace-nowrap">
-            盘口仿真:
-          </span>
-          {(
-            [
-              { id: 'normal', label: '连续竞价' },
-              { id: 'limit_up', label: '涨停空卖档' },
-              { id: 'limit_down', label: '跌停空买档' },
-              { id: 'call_auction', label: '集合竞价' },
-            ] as { id: MarketScenario; label: string }[]
-          ).map((item) => {
-            const active = currentScenario === item.id;
-            return (
-              <button
-                key={item.id}
-                type="button"
-                onClick={() => triggerScenario(quote.symbol, item.id)}
-                className={`px-2 py-0.5 text-[11px] font-medium rounded transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                  active
-                    ? item.id === 'limit_up'
-                      ? 'bg-[#F6465D] text-white'
-                      : item.id === 'limit_down'
-                      ? 'bg-[#0ECB81] text-[#0d0e12]'
-                      : 'bg-[#2962ff] text-white'
-                    : 'text-[#9ca3af] hover:text-white hover:bg-[#2a2e39]'
-                }`}
-              >
-                {item.label}
-              </button>
-            );
-          })}
-        </div>
       </div>
     </div>
   );
