@@ -18,6 +18,17 @@ class TestDataLayer(unittest.TestCase):
         self.assertEqual(m, 0)
         self.assertEqual(c, '000001')
 
+        m, c = data_layer._clean_code('000001.SH')
+        self.assertEqual((m, c), (1, '000001'))
+        m, c = data_layer._clean_code('000300.SH')
+        self.assertEqual(m, 1)
+        m, c = data_layer._clean_code('830799.BJ')
+        self.assertEqual((m, c), (2, '830799'))
+        m, c = data_layer._clean_code('920001')
+        self.assertEqual(m, 2)
+        m, c = data_layer._clean_code('000001')
+        self.assertEqual(m, 0)
+
     def test_realtime_quotes(self):
         quotes = data_layer.realtime_quotes(['600519', '000001'])
         self.assertIsInstance(quotes, list)

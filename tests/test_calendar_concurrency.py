@@ -60,58 +60,66 @@ def run_concurrent(n_threads, fetch_delay):
     return calls['n'], results, el
 
 
-print('=== 1. 10 并发首次访问：只允许 1 次上游调用 ===')
-n_calls, results, elapsed = run_concurrent(10, 0.3)
-check('上游仅被调用 1 次', n_calls == 1, f'实际 {n_calls} 次')
-check('所有线程都拿到正确日期', all(r == '20261016' for r in results), set(results))
-check('总耗时接近单次网络耗时(<1s)', elapsed < 1.0, '%.2fs' % elapsed)
+def _run_all() -> bool:
+    print('=== 1. 10 并发首次访问：只允许 1 次上游调用 ===')
+    n_calls, results, elapsed = run_concurrent(10, 0.3)
+    check('上游仅被调用 1 次', n_calls == 1, f'实际 {n_calls} 次')
+    check('所有线程都拿到正确日期', all(r == '20261016' for r in results), set(results))
+    check('总耗时接近单次网络耗时(<1s)', elapsed < 1.0, '%.2fs' % elapsed)
 
-print('\n=== 2. 缓存命中后不再打网络 ===')
-hit_calls = {'n': 0}
-def counting(code, cnt):
-    hit_calls['n'] += 1
-    return [['2026-10-16']]
-sd.kline_tx = counting
-tc._KLINE_CACHE = {'dates': {'20261016'}, 'ts': time.time()}
-for _ in range(5):
-    tc.latest_trading_day('20261016')
-check('TTL 内 5 次调用 0 次打网络', hit_calls['n'] == 0, f'实际 {hit_calls["n"]} 次')
+    print('\n=== 2. 缓存命中后不再打网络 ===')
+    hit_calls = {'n': 0}
+    def counting(code, cnt):
+        hit_calls['n'] += 1
+        return [['2026-10-16']]
+    sd.kline_tx = counting
+    tc._KLINE_CACHE = {'dates': {'20261016'}, 'ts': time.time()}
+    for _ in range(5):
+        tc.latest_trading_day('20261016')
+    check('TTL 内 5 次调用 0 次打网络', hit_calls['n'] == 0, f'实际 {hit_calls["n"]} 次')
 
-print('\n=== 3. 上游失败时降级返回旧缓存 ===')
-def boom(code, cnt):
-    raise RuntimeError('upstream down')
-sd.kline_tx = boom
-tc._KLINE_CACHE = {'dates': {'20261016', '20261015'}, 'ts': 0.0}   # 有过期旧缓存
-try:
-    d = tc.latest_trading_day('20261018')
-    check('旧缓存降级返回 20261016', d == '20261016', d)
-except Exception as e:
-    check('旧缓存降级返回', False, repr(e))
+    print('\n=== 3. 上游失败时降级返回旧缓存 ===')
+    def boom(code, cnt):
+        raise RuntimeError('upstream down')
+    sd.kline_tx = boom
+    tc._KLINE_CACHE = {'dates': {'20261016', '20261015'}, 'ts': 0.0}   # 有过期旧缓存
+    try:
+        d = tc.latest_trading_day('20261018')
+        check('旧缓存降级返回 20261016', d == '20261016', d)
+    except Exception as e:
+        check('旧缓存降级返回', False, repr(e))
 
-print('\n=== 4. 完全无缓存且上游失败：返回 None 而非崩溃 ===')
-tc._KLINE_CACHE = {'dates': None, 'ts': 0.0}
-try:
-    d = tc.latest_trading_day('20261018')
-    ok, val = (d is None), d
-except Exception as e:
-    ok, val = False, repr(e)
-check('返回 None 不崩溃', ok, val)
+    print('\n=== 4. 完全无缓存且上游失败：返回 None 而非崩溃 ===')
+    tc._KLINE_CACHE = {'dates': None, 'ts': 0.0}
+    try:
+        d = tc.latest_trading_day('20261018')
+        ok, val = (d is None), d
+    except Exception as e:
+        ok, val = False, repr(e)
+    check('返回 None 不崩溃', ok, val)
 
-print('\n=== 5. force=True 必须绕过缓存强制刷新 ===')
-force_calls = {'n': 0}
-def fc(code, cnt):
-    force_calls['n'] += 1
-    return [['2026-10-16']]
-sd.kline_tx = fc
-tc._KLINE_CACHE = {'dates': {'20260101'}, 'ts': time.time()}
-tc._load_trading_dates(force=True)
-check('force=True 确实打了上游', force_calls['n'] == 1, f'实际 {force_calls["n"]} 次')
+    print('\n=== 5. force=True 必须绕过缓存强制刷新 ===')
+    force_calls = {'n': 0}
+    def fc(code, cnt):
+        force_calls['n'] += 1
+        return [['2026-10-16']]
+    sd.kline_tx = fc
+    tc._KLINE_CACHE = {'dates': {'20260101'}, 'ts': time.time()}
+    tc._load_trading_dates(force=True)
+    check('force=True 确实打了上游', force_calls['n'] == 1, f'实际 {force_calls["n"]} 次')
 
-# 还原，避免影响其它测试
-sd.kline_tx = _ORIG
-tc._KLINE_CACHE = {'dates': None, 'ts': 0.0}
+    # 还原，避免影响其它测试
+    sd.kline_tx = _ORIG
+    tc._KLINE_CACHE = {'dates': None, 'ts': 0.0}
 
-print()
-if fails:
-    print('FAILED:', fails); sys.exit(1)
-print('=== 并发安全测试全部通过 ===')
+    print()
+    return not fails
+
+
+def test_it_all():
+    """pytest 兼容入口"""
+    assert _run_all(), f'FAILURES: {fails}'
+
+
+if __name__ == '__main__':
+    sys.exit(0 if _run_all() else 1)

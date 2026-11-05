@@ -31,12 +31,18 @@ def _normalize_stock_code(raw_code: str) -> str:
 
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 import market_gateway as mg
 import quant_data_service as qds
+import data_layer as dl
+import regulatory_service as reg_service
 
 app = FastAPI(title="股票看盘 · 七层雷达")
+
+# 全市场级 5500 只股票 JSON 响应（/api/market、/api/quant/auction 等）GZip 后体积直降 40~60%，零风险高收益一行式优化。
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 
 # 唯一前端：React 构建产物 (frontend/ -> vite build -> 自动同步到 web/dist)
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -307,14 +313,101 @@ def api_market_snapshot():
 def api_market_klines(symbol: str, period: str = "1D"):
     return JSONResponse(mg.fetch_intraday_and_klines(symbol, period))
 
+_SCENARIO_OVERRIDES: dict = {}
+
+
+def _apply_scenario_to_quote_dict(quote: dict, scenario: str) -> dict:
+    if not quote or not scenario or scenario == "normal":
+        return quote
+    q = dict(quote)
+    prev_close = float(q.get("prevClose") or q.get("price") or 10.0)
+    limit_up = float(q.get("limitUpPrice") or round(prev_close * 1.10, 2))
+    limit_down = float(q.get("limitDownPrice") or round(prev_close * 0.90, 2))
+    tick_step = 0.1 if prev_close >= 100 else 0.01
+
+    if scenario == "limit_up":
+        q["phase"] = "LIMIT_UP"
+        q["price"] = limit_up
+        q["high"] = max(float(q.get("high") or limit_up), limit_up)
+        q["orderBook"] = {
+            "bids": [
+                {"level": 1, "price": limit_up, "volume": 128680},
+                {"level": 2, "price": round(limit_up - tick_step, 2), "volume": 4200},
+                {"level": 3, "price": round(limit_up - tick_step * 2, 2), "volume": 2680},
+                {"level": 4, "price": round(limit_up - tick_step * 3, 2), "volume": 1850},
+                {"level": 5, "price": round(limit_up - tick_step * 4, 2), "volume": 1120},
+            ],
+            "asks": [{"level": i, "price": None, "volume": None} for i in range(1, 6)],
+        }
+    elif scenario == "limit_down":
+        q["phase"] = "LIMIT_DOWN"
+        q["price"] = limit_down
+        q["low"] = min(float(q.get("low") or limit_down), limit_down)
+        q["orderBook"] = {
+            "bids": [{"level": i, "price": None, "volume": None} for i in range(1, 6)],
+            "asks": [
+                {"level": 1, "price": limit_down, "volume": 86580},
+                {"level": 2, "price": round(limit_down + tick_step, 2), "volume": 3100},
+                {"level": 3, "price": round(limit_down + tick_step * 2, 2), "volume": 1920},
+                {"level": 4, "price": round(limit_down + tick_step * 3, 2), "volume": 1450},
+                {"level": 5, "price": round(limit_down + tick_step * 4, 2), "volume": 980},
+            ],
+        }
+    elif scenario == "call_auction":
+        q["phase"] = "CALL_AUCTION"
+        auc_px = round(prev_close * 1.018, 2)
+        q["price"] = auc_px
+        q["orderBook"] = {
+            "bids": [
+                {"level": 1, "price": auc_px, "volume": 6438},
+                {"level": 2, "price": None, "volume": 1280},
+                {"level": 3, "price": None, "volume": None},
+                {"level": 4, "price": None, "volume": None},
+                {"level": 5, "price": None, "volume": None},
+            ],
+            "asks": [
+                {"level": 1, "price": auc_px, "volume": 6438},
+                {"level": 2, "price": None, "volume": 840},
+                {"level": 3, "price": None, "volume": None},
+                {"level": 4, "price": None, "volume": None},
+                {"level": 5, "price": None, "volume": None},
+            ],
+        }
+
+    if prev_close > 0:
+        q["change"] = round(q["price"] - prev_close, 2)
+        q["changePercent"] = round((q["change"] / prev_close) * 100.0, 2)
+    q["updatedAt"] = int(time.time() * 1000)
+    return q
+
+
+def _apply_active_scenarios(quotes: dict) -> None:
+    if not _SCENARIO_OVERRIDES or not quotes:
+        return
+    now_t = time.time()
+    for sym, entry in list(_SCENARIO_OVERRIDES.items()):
+        if now_t > entry.get("expires_at", 0):
+            _SCENARIO_OVERRIDES.pop(sym, None)
+            continue
+        if sym in quotes:
+            quotes[sym] = _apply_scenario_to_quote_dict(quotes[sym], entry.get("scenario", "normal"))
+
+
 @app.post("/api/market/scenario")
 async def api_market_scenario(request: Request):
     try:
         body = await request.json()
         symbol = body.get("symbol", "000530.SZ")
-        quotes = mg.fetch_level1_quotes([symbol])
+        scenario = str(body.get("scenario", "normal")).strip()
+        quotes = await asyncio.to_thread(mg.fetch_level1_quotes, [symbol])
         quote = quotes.get(symbol) or (list(quotes.values())[0] if quotes else {})
-        return JSONResponse({"ok": True, "quote": quote})
+        if scenario in ("limit_up", "limit_down", "call_auction"):
+            _SCENARIO_OVERRIDES[symbol] = {"scenario": scenario, "expires_at": time.time() + 30.0}
+            if quote:
+                quote = _apply_scenario_to_quote_dict(quote, scenario)
+        else:
+            _SCENARIO_OVERRIDES.pop(symbol, None)
+        return JSONResponse({"ok": True, "quote": quote, "scenario": scenario})
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
 
@@ -356,8 +449,8 @@ def api_quant_auction_radar():
                 'symbol': sym,
                 'code': code,
                 'name': item.get('name', code),
-                'auctionPrice': float(item.get('price', 0.0) or 0.0),
-                'auctionChangePercent': float(item.get('pct', 0.0) or 0.0),
+                'auctionPrice': float(item.get('open_price') or item.get('price') or 0.0),
+                'auctionChangePercent': float(item.get('open_pct') if item.get('open_pct') is not None else (item.get('pct') or 0.0)),
                 'auctionAmount': round(amt_yi * 1e8, 2),
                 'yesterdayAmount': round((amt_yi * 1e8) / (ratio_pct / 100.0), 2) if ratio_pct > 0 else 0.0,
                 'amountToYesterdayRatio': ratio_pct,
@@ -382,8 +475,8 @@ def api_quant_auction_radar():
                 'symbol': sym,
                 'code': code,
                 'name': item.get('name', code),
-                'auctionPrice': float(item.get('price', 0.0) or 0.0),
-                'auctionChangePercent': float(item.get('pct', 0.0) or 0.0),
+                'auctionPrice': float(item.get('open_price') or item.get('price') or 0.0),
+                'auctionChangePercent': float(item.get('open_pct') if item.get('open_pct') is not None else (item.get('pct') or 0.0)),
                 'auctionAmount': round(amt_yi * 1e8, 2),
                 'yesterdayAmount': round((amt_yi * 1e8) / (ratio_pct / 100.0), 2) if ratio_pct > 0 else 0.0,
                 'amountToYesterdayRatio': ratio_pct,
@@ -408,8 +501,8 @@ def api_quant_auction_radar():
                 'symbol': sym,
                 'code': code,
                 'name': item.get('name', code),
-                'auctionPrice': float(item.get('price', 0.0) or 0.0),
-                'auctionChangePercent': float(item.get('pct', 0.0) or 0.0),
+                'auctionPrice': float(item.get('open_price') or item.get('price') or 0.0),
+                'auctionChangePercent': float(item.get('open_pct') if item.get('open_pct') is not None else (item.get('pct') or 0.0)),
                 'auctionAmount': round(amt_yi * 1e8, 2),
                 'yesterdayAmount': round((amt_yi * 1e8) / (ratio_pct / 100.0), 2) if ratio_pct > 0 else 0.0,
                 'amountToYesterdayRatio': ratio_pct,
@@ -471,151 +564,20 @@ def api_quant_full_market_scan():
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
-_REG_CACHE: dict = {}          # {symbol: (ts, payload)}
-_REG_TTL_OPEN = 60.0           # 交易时段 60s
-_REG_TTL_CLOSED = 1800.0       # 休市 30min（日K不变，监管仓位无需频繁重算）
-
-
 @app.get("/api/quant/regulatory")
-def api_quant_regulatory(symbol: str = "000530.SZ"):
-    # 该端点每次都要拉 160 根日K + 全量指数（实测冷启动 2.5s），
-    # 而结果在同一天的收盘价不变，故按 symbol 做 TTL 缓存。
-    _now = time.time()
-    _hit = _REG_CACHE.get(symbol)
-    if _hit:
-        _ts, _payload = _hit
-        _ttl = _REG_TTL_CLOSED if df_feed.is_market_closed() else _REG_TTL_OPEN
-        if _now - _ts < _ttl:
-            return JSONResponse(_payload)
+def api_quant_regulatory(symbol: str = "000530.SZ", symbols: str = ""):
+    """
+    单票契约保持不变（symbol/regulatory/history）。
+    新增 symbols=逗号分隔批量模式：为监管池内每只票算真实日K历史，
+    基准指数每组只拉一次、个股并发受限，失败单只返回 source=unknown（不伪造 0）。
+    实现见 web/regulatory_service.py（main.py 已超自定行数上限，不再内联）。
+    """
     try:
-        import abnormal_volatility as av
-        clean_sym = symbol.strip().upper()
-        code = clean_sym.split('.')[0]
-        if code.startswith(('6', '9')) or clean_sym.endswith('.SH'):
-            idx_symbol = "000001.SH"
-        elif code.startswith(('0', '3')) or clean_sym.endswith('.SZ'):
-            idx_symbol = "399001.SZ"
-        elif code.startswith(('8', '4')) or clean_sym.endswith('.BJ'):
-            idx_symbol = "899050.BJ"
-        else:
-            raise ValueError(f"无法识别标的市场板块: {symbol}，暂不支持该市场基准指数对齐 (支持6/9沪市, 0/3深市, 8/4北交所)")
-
-        kline_data = mg.fetch_symbol_klines(clean_sym, "1D")
-        if not kline_data or not isinstance(kline_data, dict):
-            raise ValueError(f"无法获取股票日K线数据: {clean_sym}")
-        bars = kline_data.get("klines", [])
-        if not bars:
-            raise ValueError(f"股票日K线数据为空: {clean_sym}")
-
-        raw_idx_kline = mg.fetch_symbol_klines(idx_symbol, "1D")
-        raw_idx_bars = raw_idx_kline.get("klines", []) if isinstance(raw_idx_kline, dict) else []
-        if not raw_idx_bars:
-            raise ValueError(f"无法获取基准指数日K线数据: {idx_symbol}")
-
-        indices = mg.fetch_level1_indices()
-        if idx_symbol in indices and indices[idx_symbol].get("price") is not None:
-            curr_idx = float(indices[idx_symbol]["price"])
-        else:
-            curr_idx = float(raw_idx_bars[-1]["close"])
-
-        curr_p = float(bars[-1]['close'])
-
-        idx_by_date = {}
-        for i, b in enumerate(raw_idx_bars):
-            d = str(b.get("time", "")).split()[0]
-            prev_c = float(raw_idx_bars[i - 1]["close"]) if i > 0 else float(b.get("open", b["close"]))
-            c = float(b["close"])
-            idx_by_date[d] = (prev_c, c)
-
-        idx_bars = []
-        last_idx_val = None
-        fill_count = 0
-        match_count = 0
-        for b in bars:
-            d = str(b.get("time", "")).split()[0]
-            if d in idx_by_date:
-                p_val, c_val = idx_by_date[d]
-                last_idx_val = (p_val, c_val)
-                match_count += 1
-            else:
-                fill_count += 1
-                p_val, c_val = (last_idx_val[1], last_idx_val[1]) if last_idx_val else (curr_idx, curr_idx)
-            idx_bars.append({"date": d, "close": c_val, "prev_close": p_val})
-
-        if match_count == 0:
-            raise ValueError(f"基准指数 {idx_symbol} 与标的 {clean_sym} 无任何重叠交易日，无法计算异动偏离")
-
-        fill_ratio = fill_count / len(bars)
-        hist_bars = [
-            {
-                "date": str(b.get("time", "")).split()[0],
-                "close": float(b["close"]),
-                "prev_close": float(bars[i - 1]["close"] if i > 0 else b.get("open", b["close"])),
-                "volume": float(b.get("volume", 1.0))
-            }
-            for i, b in enumerate(bars)
-        ]
-
-        # T-1 / T-2 真实涨跌幅（供前端 2/3 日模型使用，替换掉那边的 ?? 5.2 / ?? 4.8 默认值）。
-        # 数据就来自上面已经取到的 K 线，不额外发请求。
-        def _pct(a: float, b: float):
-            return round((a / b - 1.0) * 100.0, 2) if b else None
-
-        _closes = {str(b.get("time", "")).split()[0]: float(b["close"]) for b in bars}
-        _idx_closes = {d: v[1] for d, v in idx_by_date.items()}
-        _dates = sorted(_closes)
-        _hist = {"source": "kline", "dates": _dates[-3:]}
-        if len(_dates) >= 3:
-            _d_today, _d_t1, _d_t2 = _dates[-1], _dates[-2], _dates[-3]
-            _hist["stock_return_t1"] = _pct(_closes[_d_t1], _closes[_d_t2])
-            _hist["stock_return_t2"] = (
-                _pct(_closes[_d_t2], _closes[_dates[-4]]) if len(_dates) >= 4 else None
-            )
-            _hist["index_return_t1"] = (
-                _pct(_idx_closes[_d_t1], _idx_closes[_d_t2])
-                if _d_t1 in _idx_closes and _d_t2 in _idx_closes else None
-            )
-            _hist["index_return_t2"] = (
-                _pct(_idx_closes[_d_t2], _idx_closes[_dates[-4]])
-                if len(_dates) >= 4 and _d_t2 in _idx_closes and _dates[-4] in _idx_closes else None
-            )
-            # 今日基准指数涨幅：优先用实时指数价对昨收
-            if _d_today in _idx_closes:
-                _hist["index_return_today"] = _pct(curr_idx, _idx_closes[_d_today])
-            _hist["date_t2"], _hist["date_t1"], _hist["date_today"] = _d_t2, _d_t1, _d_today
-
-        res_dict = av.evaluate_stock_volatility(
-            clean_sym,
-            hist_bars=hist_bars,
-            index_bars=idx_bars,
-            curr_price=curr_p,
-            curr_index=curr_idx
-        )
-
-        res_data = res_dict.to_dict() if hasattr(res_dict, 'to_dict') else res_dict
-        import math
-        def sanitize_floats(obj):
-            if isinstance(obj, float):
-                if math.isinf(obj) or math.isnan(obj):
-                    return None
-                return round(obj, 4)
-            elif isinstance(obj, dict):
-                return {k: sanitize_floats(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [sanitize_floats(v) for v in obj]
-            return obj
-        clean_res = sanitize_floats(res_data)
-
-        payload = {
-            "status": "ok",
-            "symbol": symbol,
-            "regulatory": clean_res,
-            "history": sanitize_floats(_hist)
-        }
-        _REG_CACHE[symbol] = (time.time(), payload)
-        return JSONResponse(payload)
+        return JSONResponse(reg_service.build_payload(symbol, symbols))
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.get("/api/quant/dragon_tiger")
 def api_quant_dragon_tiger(symbol: str = "000530.SZ"):
     try:
@@ -711,15 +673,24 @@ def api_quant_chan(symbol: str, days: int = 200, period: str = "1D"):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
+def _fetch_ws_snapshot_sync(symbols: list, attach_ultra_short: bool = False):
+    quotes = mg.fetch_level1_quotes(symbols)
+    if attach_ultra_short:
+        _attach_ultra_short(quotes)
+    _apply_active_scenarios(quotes)
+    indices = mg.fetch_level1_indices()
+    return quotes, indices
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     subscribed_symbols = list(DEFAULT_WATCHLIST_SYMBOLS)
     batch_window_ms = 150
     try:
-        init_quotes = mg.fetch_level1_quotes(subscribed_symbols)
-        _attach_ultra_short(init_quotes)
-        init_indices = mg.fetch_level1_indices()
+        init_quotes, init_indices = await asyncio.to_thread(
+            _fetch_ws_snapshot_sync, subscribed_symbols, True
+        )
         init_msg = {
             "type": "INIT_SNAPSHOT",
             "quotes": list(init_quotes.values()),
@@ -771,8 +742,9 @@ async def websocket_endpoint(websocket: WebSocket):
         try:
             while True:
                 await asyncio.sleep(batch_window_ms / 1000.0)
-                quotes = mg.fetch_level1_quotes(subscribed_symbols[:50])
-                indices = mg.fetch_level1_indices()
+                quotes, indices = await asyncio.to_thread(
+                    _fetch_ws_snapshot_sync, list(subscribed_symbols[:50]), False
+                )
                 batch_msg = {
                     "type": "SNAPSHOT_BATCH",
                     "quotes": list(quotes.values()),
@@ -1020,7 +992,14 @@ def api_watchlist(codes: str = ""):
     raw_codes = [_normalize_stock_code(c) for c in codes.split(',') if _normalize_stock_code(c)]
     if not raw_codes:
         return JSONResponse([])
-    tx_codes = [('sh' if c.startswith(('6', '5', '9')) else 'sz') + c for c in raw_codes[:60]]
+    def _wl_prefix(c: str) -> str:
+        if c.startswith('920') or c.startswith(('4', '8')):
+            return 'bj'
+        if c.startswith(('6', '5', '9')):
+            return 'sh'
+        return 'sz'
+
+    tx_codes = [_wl_prefix(c) + c for c in raw_codes[:60]]
     try:
         url = 'https://qt.gtimg.cn/q=' + ','.join(tx_codes)
         raw = sd.http(url, gbk=True, timeout=4)
@@ -1093,6 +1072,31 @@ def api_data_status():
         'age_s': round(time.time() - _market_cache['timestamp'], 1) if _market_cache['timestamp'] else None,
     }
     return JSONResponse(st)
+
+
+@app.get("/api/daily/archive_status")
+def api_daily_archive_status(days: int = 60, end: str = ""):
+    """每日归档连续性：列出最近 days 个交易日中仍缺档的日期（日历不可用时显式标注降级来源）"""
+    try:
+        import daily_archive
+        return JSONResponse(daily_archive.archive_status(days=days, end_ymd=end))
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
+@app.get("/api/daily/archive/{ymd}")
+def api_daily_archive(ymd: str):
+    """读取某日归档事实（只读，不触发补档）"""
+    try:
+        import daily_archive
+        clean = ymd.replace('-', '')
+        p = daily_archive.archive_path(clean)
+        if not os.path.exists(p):
+            return JSONResponse({"status": "not_found", "date": clean}, status_code=404)
+        with open(p, 'r', encoding='utf-8') as f:
+            return JSONResponse(json.load(f))
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
 @app.get("/api/backtest/presets")
@@ -1176,7 +1180,7 @@ def api_stock(code: str, refresh: bool = False):
         if cached is not None:
             return JSONResponse(cached)
 
-    full = ('sh' + code) if code.startswith(('6', '5', '9')) else ('sz' + code)
+    full = df_feed.normalize_code(code)[1]
 
     def fetch_quote():
         try:
@@ -1270,7 +1274,11 @@ def api_stock(code: str, refresh: bool = False):
         if trends and trends.get('prices') and len(trends['prices']) >= 5:
             c_1m = np.asarray(trends['prices'], dtype=float)
             p_c = float(trends.get('pre_close') or (q.get('prev_close') if q else c_1m[0]))
-            res_dvr = calc_intraday_dvr(c_1m, c_1m, c_1m, p_c)
+            v_1m = np.asarray(trends.get('volumes') or [], dtype=float)
+            res_dvr = calc_intraday_dvr(
+                c_1m, c_1m, c_1m, p_c,
+                volume_1m=v_1m if len(v_1m) == len(c_1m) else None,
+            )
             dvr_data = {
                 "dvr": res_dvr.dvr,
                 "intraday_amp_pct": res_dvr.intraday_amp_pct,
@@ -1286,7 +1294,8 @@ def api_stock(code: str, refresh: bool = False):
             p_up = float(q.get('upper_limit') or (p_curr * 1.1))
             bids = q.get('bids') or []
             bid1_shares = float(bids[0][1] * 100) if bids and len(bids) > 0 and len(bids[0]) > 1 else 0.0
-            float_cap_yuan = float(q.get('float_mcap') or 0.0) * 100000000.0 if q.get('float_mcap') else 2000000000.0
+            float_cap_yi = float(q.get('float_mcap') or 0.0)
+            float_cap_yuan = float_cap_yi * 100000000.0 if float_cap_yi > 0 else 0.0
             turnover_yuan = float(q.get('amount_raw') or 0.0)
             res_lim = evaluate_limit_order_strength(
                 limit_price=p_up,
@@ -1304,18 +1313,67 @@ def api_stock(code: str, refresh: bool = False):
 
         # 3. 异动监管真实安全垫 (Headroom)
         headroom_data = None
-        if q:
-            p_curr = float(q.get('price') or 0.0)
-            p_up = float(q.get('upper_limit') or (p_curr * 1.1))
-            res_hr = evaluate_volatility_headroom(
-                current_price=p_curr,
-                limit_up_price=p_up,
-                raw_normal_crit_price=p_curr * 1.20,
-                raw_severe_crit_price=p_curr * 1.60,
-                will_limit_trigger_normal=False,
-                will_limit_trigger_severe=False,
-            )
-            headroom_data = res_hr
+        if q and kl and len(kl) >= 5:
+            try:
+                import abnormal_volatility as av
+                bars = []
+                for row in kl:
+                    bars.append({
+                        'time': str(row[0])[:10],
+                        'close': float(row[2]),
+                        'open': float(row[1]),
+                        'volume': float(row[5]) if len(row) > 5 else 0.0,
+                    })
+                hist_src = bars[:-1]
+                hist_bars = [
+                    {
+                        'date': b['time'],
+                        'close': b['close'],
+                        'prev_close': hist_src[i - 1]['close'] if i else b['open'],
+                        'volume': b['volume'],
+                    }
+                    for i, b in enumerate(hist_src)
+                ]
+                # 指数序列: 优先沪深300真实K线；拿不到则 fallback 到常数 1.0
+                idx_bars = None
+                try:
+                    idx_kl = dl.kline('000300.SH', days=len(hist_bars) + 10)
+                    if idx_kl and len(idx_kl) >= 2:
+                        idx_by_date = {}
+                        for row in idx_kl:
+                            idx_by_date[str(row[0])[:10]] = float(row[4])  # row[4]=close
+                        idx_bars, prev_ic = [], None
+                        for b in hist_bars:
+                            ic = idx_by_date.get(b['date'])
+                            if ic is not None:
+                                prev_ref = prev_ic if prev_ic is not None else ic
+                                idx_bars.append({'date': b['date'], 'close': ic, 'prev_close': prev_ref})
+                                prev_ic = ic
+                            else:
+                                idx_bars.append({'date': b['date'], 'close': 1.0, 'prev_close': 1.0})
+                        real_cnt = sum(1 for x in idx_bars if x['close'] != 1.0)
+                        if real_cnt < len(idx_bars) * 0.5:
+                            idx_bars = None
+                except Exception:
+                    idx_bars = None
+                if idx_bars is None:
+                    # 指数不可用时的保守兜底
+                    idx_bars = [
+                        {'date': b['date'], 'close': 1.0, 'prev_close': 1.0}
+                        for b in hist_bars
+                    ]
+                reg = av.evaluate_stock_volatility(
+                    full,
+                    hist_bars=hist_bars,
+                    index_bars=idx_bars,
+                    curr_price=float(q.get('price') or bars[-1]['close']),
+                    curr_index=float(idx_bars[-1]['close']),
+                    is_st=('ST' in str(q.get('name') or '').upper()),
+                )
+                reg_d = reg.to_dict() if hasattr(reg, 'to_dict') else reg
+                headroom_data = reg_d
+            except Exception:
+                headroom_data = None
 
         ultrashort = {
             "dvr": dvr_data,

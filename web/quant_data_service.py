@@ -20,6 +20,50 @@ import ultrashort_metrics as usm
 
 _LHB_LIST_CACHE = None
 _LHB_LIST_CACHE_TIME = 0.0
+_SEAT_LEDGER = None
+_SEAT_LEDGER_LAST_SAVE = 0.0  # 节流：账本 60s 才落盘一次，避免并发请求互相覆盖
+_NATURE_PRIOR = {
+    'INSTITUTION': 0.55,
+    'HOT_MONEY': 0.40,
+    'QUANT_CAMP': -0.30,
+    'RETAIL_CAMP': -0.60,
+}
+
+def _shared_ledger():
+    global _SEAT_LEDGER
+    if _SEAT_LEDGER is None:
+        _SEAT_LEDGER = lhb.SeatReputationLedger.load()
+    return _SEAT_LEDGER
+
+def _recent_pool_days(kind: str, n: int = 2, end=None):
+    """按交易日回溯涨停/炸板池，周末与节假日不占位、也不把回吐快照当成两天。"""
+    try:
+        import trading_calendar as tcal
+        fetcher = lambda ymd: sd._pool(kind, ymd)
+        rows = tcal.get_recent_trading_days(n, end_ymd=end, pool_fetcher=fetcher)
+        if rows:
+            return rows
+    except Exception:
+        pass
+    base = dt.date.today() if not end else dt.datetime.strptime(str(end), '%Y%m%d').date()
+    found = []
+    seen = set()
+    for i in range(0, 16):
+        dd = base - dt.timedelta(days=i)
+        if dd.weekday() >= 5:
+            continue
+        ymd = dd.strftime('%Y%m%d')
+        pool = sd._pool(kind, ymd) or []
+        if not pool:
+            continue
+        fp = tuple(sorted(str(z.get('c') or '') for z in pool if isinstance(z, dict)))
+        if fp in seen:
+            continue
+        seen.add(fp)
+        found.append((ymd, pool))
+        if len(found) >= n:
+            break
+    return found
 
 def _format_fbt(val: Any) -> Optional[str]:
     """格式化首次封板时间，支持整型(如 92500)、带冒号字符串('09:25:00')等形态。"""
@@ -70,7 +114,11 @@ def get_today_lhb_list() -> List[Dict[str, Any]]:
             c = str(r.get('SECURITY_CODE') or '').strip().zfill(6)
             if c and c not in seen:
                 seen.add(c)
-                market = 'SH' if c.startswith('6') else 'SZ'
+                market = (
+                    'BJ' if c.startswith('920') or c.startswith(('4', '8'))
+                    else 'SH' if c.startswith(('6', '5', '9'))
+                    else 'SZ'
+                )
                 items.append({
                     'code': c,
                     'symbol': f"{c}.{market}",
@@ -161,9 +209,23 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
     total_s = sum(x['sellAmount'] for x in sell_items)
     net_amt = total_b - total_s
     
-    # 正交算子验身
+    # 正交算子验身：持久账本 + 席位性质静态先验。空账本走中性 gamma，不再恒为 0。
     try:
-        ledger = lhb.SeatReputationLedger()
+        ledger = _shared_ledger()
+        priors = {}
+        for seat_row in buy_items + sell_items:
+            priors[seat_row['branchName']] = _NATURE_PRIOR.get(seat_row['nature'], lhb.NEUTRAL_GAMMA)
+        ledger.register_static_priors(priors)  # 每次请求覆盖同一先验表，幂等无害
+        try:
+            px = float(buy_seats_raw[0].get('CLOSE_PRICE') or 0.0)
+            ledger.observe_board(str(day)[:10], [(x['branchName'], px) for x in buy_items])
+            # 账本节流落盘：60s 才写一次，避免并发请求 last-write-wins 互相覆盖。
+            global _SEAT_LEDGER_LAST_SAVE
+            if time.time() - _SEAT_LEDGER_LAST_SAVE >= 60.0:
+                ledger.save()
+                _SEAT_LEDGER_LAST_SAVE = time.time()
+        except Exception:
+            pass
         evaluator = lhb.LHBOrthogonalEvaluator(ledger)
         B = np.array([x['buyAmount'] / 1e4 for x in buy_items])
         buy_sells = np.array([x['sellAmount'] / 1e4 for x in buy_items])
@@ -171,40 +233,54 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
         sell_buys = np.array([x['buyAmount'] / 1e4 for x in sell_items])
         is_retail = np.array([x['nature'] == 'RETAIL_CAMP' for x in buy_items])
         
-        # --- P0-3 修复: 从真实数据计算盘中微观维度，不再硬编码 ---
+        # --- P0-3 修复: 严格校验榜单交易日与盘中微观维度日期对齐，杜绝跨日张冠李戴 ---
+        day_ymd = str(day or '').replace('-', '')[:8]
+        today_ymd = dt.date.today().strftime('%Y%m%d')
+        try:
+            pool_ymd = (_ultra_pool_index() or {}).get('ymd') or today_ymd
+        except Exception:
+            pool_ymd = today_ymd
+        is_current_board = bool(day_ymd and day_ymd in (today_ymd, pool_ymd))
+
         # 中性默认值: vw_dvr=0.5 (低于0.58翻转中心，无方向性偏差)
-        vw_dvr, vw_dvr_src = 0.5, 'estimated_neutral'
+        vw_dvr = 0.5
+        vw_dvr_src = 'estimated_neutral' if is_current_board else 'historical_board_neutral'
         # limit_strength=0.0 (无封单强度信号); float_cap=极大值 (禁用垄断误报)
-        limit_strength, limit_strength_src = 0.0, 'estimated_neutral'
+        limit_strength = 0.0
+        limit_strength_src = 'estimated_neutral' if is_current_board else 'historical_board_neutral'
         float_cap, float_cap_src = 1e12, 'estimated_neutral'
 
-        # 尝试从分时数据计算真实 VW-DVR
-        try:
-            trends = df_feed.get_intraday_trends(clean_code)
-            if trends and trends.get('prices') and float(trends.get('pre_close', 0)) > 0:
-                close_1m = np.array(trends['prices'], dtype=float)
-                pc = float(trends['pre_close'])
-                # 分时数据无分钟高低价，用close近似;
-                # DVR核心(rv_down/rv_total)仅依赖close收益率，结果准确
-                dvr_res = usm.calc_intraday_dvr(close_1m, close_1m, close_1m, pc)
-                if dvr_res and dvr_res.dvr is not None:
-                    vw_dvr = float(dvr_res.dvr)
-                    vw_dvr_src = 'intraday_realtime'
-        except Exception:
-            pass
+        # 仅当龙虎榜交易日为当前最新交易日时，才用当日分时计算真实 VW-DVR
+        if is_current_board:
+            try:
+                trends = df_feed.get_intraday_trends(clean_code)
+                if trends and trends.get('prices') and float(trends.get('pre_close', 0)) > 0:
+                    close_1m = np.array(trends['prices'], dtype=float)
+                    pc = float(trends['pre_close'])
+                    v_1m = np.asarray(trends.get('volumes') or [], dtype=float)
+                    dvr_res = usm.calc_intraday_dvr(
+                        close_1m, close_1m, close_1m, pc,
+                        volume_1m=v_1m if len(v_1m) == len(close_1m) else None,
+                    )
+                    if dvr_res and dvr_res.dvr is not None:
+                        vw_dvr = float(dvr_res.dvr)
+                        vw_dvr_src = 'intraday_realtime'
+            except Exception:
+                pass
 
-        # 尝试从涨停池获取封单强度与流通市值
+        # 尝试从涨停池获取封单强度（仅限当日榜）与流通市值参考
         try:
             profile = get_ultra_short_profile(symbol, None)
             if profile:
-                seal_amt = float(profile.get('sealOrderAmount', 0) or 0)
-                if seal_amt > 0 and total_turnover > 0:
-                    limit_strength = min(1.0, seal_amt / total_turnover)
-                    limit_strength_src = 'limit_pool_realtime'
+                if is_current_board:
+                    seal_amt = float(profile.get('sealOrderAmount', 0) or 0)
+                    if seal_amt > 0 and total_turnover > 0:
+                        limit_strength = min(1.0, seal_amt / total_turnover)
+                        limit_strength_src = 'limit_pool_realtime'
                 ltsz = float(profile.get('ltsz', 0) or 0)
                 if ltsz > 0:
                     float_cap = ltsz / 1e4  # 元 → 万元
-                    float_cap_src = 'limit_pool_realtime'
+                    float_cap_src = 'limit_pool_realtime' if is_current_board else 'float_cap_reference'
         except Exception:
             pass
 
@@ -215,12 +291,25 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
             'limitStrengthSource': limit_strength_src,
             'floatCap': round(float_cap, 2),
             'floatCapSource': float_cap_src,
+            'isCurrentDayBoard': is_current_board,
             'microDimensionsActive': (
-                vw_dvr_src != 'estimated_neutral'
-                or limit_strength_src != 'estimated_neutral'
+                vw_dvr_src == 'intraday_realtime'
+                or limit_strength_src == 'limit_pool_realtime'
                 or float_cap_src != 'estimated_neutral'
             ),
         }
+
+        head_row = buy_seats_raw[0] if buy_seats_raw else (sell_seats_raw[0] if sell_seats_raw else {})
+        board_chg_rate = float(head_row.get('CHANGE_RATE') or 0.0)
+        zt_thresh = (
+            29.0 if clean_code.startswith(('4', '8', '920'))
+            else 19.5 if clean_code.startswith(('300', '301', '688', '689'))
+            else 9.5
+        )
+        board_is_limit_up = bool(
+            board_chg_rate >= zt_thresh
+            or ('涨停' in str(reason or '') and board_chg_rate > 0)
+        )
 
         eval_res = evaluator.evaluate_board(
             buy_seats=[x['branchName'] for x in buy_items],
@@ -232,21 +321,41 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
             float_cap=float_cap,
             vw_dvr=vw_dvr,
             limit_strength=limit_strength,
-            is_limit_up=True,
+            is_limit_up=board_is_limit_up,
             sell_seats=[x['branchName'] for x in sell_items],
             sell_side_buys=sell_buys
         )
         lhb_score = eval_res.get('total_lhb_score', 0.0)
         lhb_imbalance = eval_res.get('lhb_net_imbalance', 0.0)
         gate_passed = eval_res.get('gate_passed', True)
+        veto_tags = eval_res.get('veto_tags', [])
+
+        # 将真实账本统计（后验信誉 gamma、上榜次数、真实胜率与溢价）挂载到买卖席位
+        for seat_item in buy_items + sell_items:
+            sname = seat_item['branchName']
+            gamma_v, is_nuc = ledger.get_dynamic_reputation(sname)
+            hist_arr = ledger.history.get(sname)
+            if hist_arr is not None and len(hist_arr) > 0:
+                r_col = hist_arr[:, 0]
+                seat_item['ledgerAppearances'] = int(len(r_col))
+                seat_item['ledgerWinRatePercent'] = round(float(np.mean(r_col > 0) * 100.0), 1)
+                seat_item['ledgerAvgPremiumPercent'] = round(float(np.mean(r_col) * 100.0), 2)
+            else:
+                seat_item['ledgerAppearances'] = 1
+                seat_item['ledgerWinRatePercent'] = None
+                seat_item['ledgerAvgPremiumPercent'] = None
+            seat_item['reputationGamma'] = round(float(gamma_v), 3)
+            seat_item['isNuclearHarvester'] = bool(is_nuc)
     except Exception as e:
         lhb_score = 0.0
         lhb_imbalance = 0.0
         gate_passed = True
+        veto_tags = []
         micro_dims = {
             'vwDvr': 0.5, 'vwDvrSource': 'error_fallback',
             'limitStrength': 0.0, 'limitStrengthSource': 'error_fallback',
             'floatCap': 1e12, 'floatCapSource': 'error_fallback',
+            'isCurrentDayBoard': False,
             'microDimensionsActive': False,
         }
 
@@ -310,7 +419,7 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
         'name': buy_seats_raw[0].get('SECURITY_NAME_ABBR') or clean_code,
         'sector': 'A股主板/成长股',
         'price': float(buy_seats_raw[0].get('CLOSE_PRICE') or 0.0),
-        'changePercent': float(buy_seats_raw[0].get('CHANGE_RATE') or 0.0) * 100,
+        'changePercent': float(buy_seats_raw[0].get('CHANGE_RATE') or 0.0),
         'dailyAmount': total_turnover,
         'boardType': board_type,
         'listingReason': reason or '龙虎榜公开信息',
@@ -332,6 +441,7 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
         'totalLhbScore': round(lhb_score, 2),
         'lhbNetImbalance': round(lhb_imbalance, 4),
         'gatePassed': gate_passed,
+        'vetoTags': veto_tags,
         'microDimensions': micro_dims
     }
 
@@ -343,25 +453,21 @@ def get_real_dragon_tiger(symbol: str) -> Dict[str, Any]:
     }
 
 def get_real_ladder() -> Dict[str, Any]:
-    # 取最新可用交易日的涨停池
-    zt = []
-    target_ymd = dt.date.today().strftime('%Y%m%d')
-    for i in range(5):
-        dd = dt.date.today() - dt.timedelta(days=i)
-        if dd.weekday() >= 5:
-            continue
-        ymd = dd.strftime('%Y%m%d')
-        pool = sd._pool('ZT', ymd)
-        if pool:
-            zt = pool
-            target_ymd = ymd
-            break
+    # 取最近两个真实交易日的涨停池（跳过周末/节假日回吐）
+    recent = _recent_pool_days('ZT', n=2)
+    zt = recent[0][1] if recent else []
+    target_ymd = recent[0][0] if recent else dt.date.today().strftime('%Y%m%d')
+    _prev_zt = recent[1][1] if len(recent) > 1 else []
             
     ladder_grouped: Dict[int, List[Dict[str, Any]]] = {}
     for x in zt:
         lbc = int(x.get('lbc') or 1)
         c = str(x.get('c') or '').strip().zfill(6)
-        market = 'SH' if c.startswith('6') else 'SZ'
+        market = (
+            'BJ' if c.startswith('920') or c.startswith(('4', '8'))
+            else 'SH' if c.startswith(('6', '5', '9'))
+            else 'SZ'
+        )
         p_raw = float(x.get('p') or 0.0)
         price = p_raw / 1000.0 if p_raw > 100.0 else p_raw
         ladder_grouped.setdefault(lbc, []).append({
@@ -459,16 +565,6 @@ def get_real_ladder() -> Dict[str, Any]:
     broken_cnt = len(zb_pool)
     limit_down_cnt = len(dt_pool)
 
-    # 晋级率：用上一交易日的池子与今日对比（真实计算，不再硬编码）
-    _prev_zt = []
-    _base = dt.datetime.strptime(target_ymd, '%Y%m%d').date()
-    for i in range(1, 8):
-        _pd = (_base - dt.timedelta(days=i)).strftime('%Y%m%d')
-        _p = sd._pool('ZT', _pd)
-        if _p:
-            _prev_zt = _p
-            break
-
     def _promotion_rate(prev_board, today_board):
         """昨日 prev_board 板 -> 今日 today_board 板的晋级率（%），无基数返回 None。"""
         if not _prev_zt:
@@ -534,30 +630,56 @@ def get_real_ladder() -> Dict[str, Any]:
     }
 
 
+_CONCEPT_MEMBER_CACHE: Dict[str, Any] = {}
+
+def _concept_limit_members(board_code: str, zt_by_code: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """概念板块不能用行业名 hybk 去对。拉东财板块成分再与涨停池交集。"""
+    if not board_code:
+        return []
+    now = time.time()
+    hit = _CONCEPT_MEMBER_CACHE.get(board_code)
+    if hit and now - hit[0] < 300:
+        codes = hit[1]
+    else:
+        codes = []
+        try:
+            u = (
+                'http://push2.eastmoney.com/api/qt/clist/get?pn=1&pz=400&po=1&np=1'
+                f'&fltt=2&fid=f3&fs=b:{board_code}&fields=f12'
+            )
+            req = urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
+            raw = urllib.request.urlopen(req, timeout=2.5).read().decode('utf-8')
+            diff = (json.loads(raw).get('data') or {}).get('diff') or []
+            codes = [str(x.get('f12') or '').zfill(6) for x in diff if x.get('f12')]
+        except Exception:
+            codes = []
+        _CONCEPT_MEMBER_CACHE[board_code] = (now, codes)
+    return [zt_by_code[c] for c in codes if c in zt_by_code]
+
+
 def get_real_theme_resonance() -> Dict[str, Any]:
     """获取全市场真实题材/行业主力资金共振与领涨龙头联动数据，彻底淘汰 np.random 与写死假题材"""
     import urllib.request
 
-    # 1. 取最新可用交易日的涨停池
+    # 1. 取最新可用交易日的涨停池（走 _recent_pool_days 的真实交易日回溯，
+    #    不再按自然日 weekday 猜测，B-P1-7 收尾）
     zt = []
     target_ymd = dt.date.today().strftime('%Y%m%d')
-    for i in range(5):
-        dd = dt.date.today() - dt.timedelta(days=i)
-        if dd.weekday() >= 5:
-            continue
-        ymd = dd.strftime('%Y%m%d')
-        pool = sd._pool('ZT', ymd)
-        if pool:
-            zt = pool
-            target_ymd = ymd
-            break
+    _rows = _recent_pool_days('ZT', 1)
+    if _rows:
+        target_ymd, zt = _rows[0][0], _rows[0][1]
 
     zt_by_hy: Dict[str, List[Dict[str, Any]]] = {}
     zt_by_code: Dict[str, Dict[str, Any]] = {}
     for x in zt:
         hy = x.get('hybk') or '其他'
         c = str(x.get('c') or '').strip().zfill(6)
-        mkt = 'SH' if c.startswith(('6', '9')) else ('BJ' if c.startswith(('4', '8')) else 'SZ')
+        if c.startswith('920') or c.startswith(('4', '8')):
+            mkt = 'BJ'
+        elif c.startswith(('6', '5', '9')):
+            mkt = 'SH'
+        else:
+            mkt = 'SZ'
         p_raw = float(x.get('p') or 0.0)
         price = p_raw / 1000.0 if p_raw > 100.0 else p_raw
         lbc = int(x.get('lbc') or 1)
@@ -614,9 +736,10 @@ def get_real_theme_resonance() -> Dict[str, Any]:
                         'f3': float(parts[5]),
                         'f6': float(parts[7]),
                         'f62': float(parts[7]) * (float(parts[5]) / 100.0) * 0.15,
-                        'f104': int(float(parts[2]) * 0.6),
-                        'f105': int(float(parts[2]) * 0.3),
-                        'f106': int(float(parts[2]) * 0.1),
+                        'f104': None,
+                        'f105': None,
+                        'f106': None,
+                        'estimated_breadth': True,
                         'f128': parts[12],
                         'f140': parts[8].replace('sz', '').replace('sh', ''),
                         'f136': float(parts[9]),
@@ -634,20 +757,28 @@ def get_real_theme_resonance() -> Dict[str, Any]:
         pct = round(float(d.get('f3') or 0.0), 2)
         net_flow = float(d.get('f62') or 0.0)
         turnover = float(d.get('f6') or 0.0)
-        up_cnt = int(d.get('f104') or 0)
-        down_cnt = int(d.get('f105') or 0)
-        flat_cnt = int(d.get('f106') or 0)
+        estimated_breadth = bool(d.get('estimated_breadth'))
+        up_cnt = int(d.get('f104') or 0) if d.get('f104') is not None else 0
+        down_cnt = int(d.get('f105') or 0) if d.get('f105') is not None else 0
+        flat_cnt = int(d.get('f106') or 0) if d.get('f106') is not None else 0
         total_stk = up_cnt + down_cnt + flat_cnt
-        if total_stk == 0:
-            total_stk = 50
-        up_ratio = round((up_cnt / total_stk) * 100.0, 1)
+        if estimated_breadth or total_stk == 0:
+            up_ratio = None
+            total_stk_for_density = total_stk if total_stk > 0 else None  # 真实板块成员数；估算时 None
+        else:
+            up_ratio = round((up_cnt / total_stk) * 100.0, 1)
+            total_stk_for_density = total_stk
 
-        # 匹配真实涨停股
-        zt_members = zt_by_hy.get(name, [])
+        # 行业用涨停池 hybk；概念板块名称对不上行业名，改拉东财板块成分再交集
+        if d.get('category') == '概念':
+            zt_members = _concept_limit_members(str(d.get('f12') or ''), zt_by_code)
+        else:
+            zt_members = zt_by_hy.get(name, [])
         limit_up_cnt = len(zt_members)
-        density_pct = round((limit_up_cnt / max(1, total_stk)) * 100.0, 2)
+        # 估算板块（新浪降级）无真实成分数，density 置 None 避免 limit_up_cnt×100% 的荒谬值
+        density_pct = round((limit_up_cnt / total_stk_for_density) * 100.0, 2) if total_stk_for_density else None
 
-        if limit_up_cnt >= 4 or density_pct >= 4.0:
+        if limit_up_cnt >= 4 or (density_pct is not None and density_pct >= 4.0):
             density_level = '涨停潮高密区'
         elif limit_up_cnt >= 2:
             density_level = '梯队成型区'
@@ -674,8 +805,9 @@ def get_real_theme_resonance() -> Dict[str, Any]:
         leader_sealed = bool(leader_in_pool) or leader_p >= seal_threshold
 
         # 点面共振综合得分 (0~100)
+        breadth_term = 0.0 if up_ratio is None else (up_ratio - 50.0) * 0.35
         resonance_score = min(100.0, max(20.0, round(
-            50.0 + pct * 4.5 + (up_ratio - 50.0) * 0.35 + (net_flow / 1e9) * 1.8 + limit_up_cnt * 5.0,
+            50.0 + pct * 4.5 + breadth_term + (net_flow / 1e9) * 1.8 + limit_up_cnt * 5.0,
             1
         )))
 
@@ -687,7 +819,11 @@ def get_real_theme_resonance() -> Dict[str, Any]:
             resonance_status = '分歧兑现'
 
         # 龙头联动指数 (0~100)
-        if leader_sealed:
+        if leader_sealed and up_ratio is None:
+            dragon_linkage_score = None
+            dragon_linkage_status = '涨跌家数未核实'
+            dragon_linkage_desc = f"先锋龙头【{leader_n}】已封板，但本板块涨跌家数为估算或缺失，不参与跟风定性"
+        elif leader_sealed:
             if up_ratio >= 65.0:
                 dragon_linkage_score = min(100.0, round(80.0 + limit_up_cnt * 4.0, 1))
                 dragon_linkage_status = '先锋中军强联动'
@@ -754,8 +890,34 @@ def get_real_theme_resonance() -> Dict[str, Any]:
             'amount': None  # 不编造容量核心成交额（原 turnover*0.12 无数据依据）
         }
 
+        engine_tag = None
+        try:
+            import resonance_engine as _re
+            if zt_members:
+                snaps = [
+                    _re.StockTickSnapshot(
+                        symbol=m['symbol'], name=m['name'], timestamp='15:00:00',
+                        day_ret_pct=float(m.get('changePercent') or 0),
+                        ret_5m_pct=0.0, open_ret_pct=0.0, vol_ratio=1.0,
+                        is_limit_up=True,
+                        first_seal_time=m.get('firstSealTime'),
+                        prev_boards=max(0, int(m.get('consecutiveBoards') or 1) - 1),
+                        themes=[name],
+                    )
+                    for m in zt_members[:12]
+                ]
+                evaluated = _re.ResonanceEngine().evaluate(
+                    snaps[0],
+                    {name: snaps},
+                    _re.MarketSnapshot(timestamp='15:00:00', day_ret_pct=0.0, ret_5m_pct=0.0),
+                )
+                engine_tag = evaluated.primary_tag.value
+        except Exception:
+            engine_tag = None
+
         themes.append({
             'sectorName': name,
+            'resonanceEngineTag': engine_tag,
             'sectorChangePercent': pct,
             'limitUpCount': limit_up_cnt,
             'sectorConstituentCount': total_stk,
@@ -842,28 +1004,12 @@ def _ultra_pool_index() -> Optional[Dict[str, Any]]:
     if _US_INDEX_CACHE['data'] and now - _US_INDEX_CACHE['ts'] < _US_INDEX_TTL:
         return _US_INDEX_CACHE['data']
 
-    zt, ymd = [], None
-    for i in range(8):
-        dd = dt.date.today() - dt.timedelta(days=i)
-        if dd.weekday() >= 5:
-            continue
-        d = dd.strftime('%Y%m%d')
-        pool = sd._pool('ZT', d) or []
-        if pool:
-            zt, ymd = pool, d
-            break
-    if not zt:
+    recent = _recent_pool_days('ZT', n=2)
+    if not recent:
         # 取不到池子就返回 None —— 宁可不给 ultraShort，也不返回"0 连板"这种假结论
         return None
-
-    prev_zt, prev_ymd = [], None
-    base = dt.datetime.strptime(ymd, '%Y%m%d').date()
-    for i in range(1, 9):
-        pd = (base - dt.timedelta(days=i)).strftime('%Y%m%d')
-        pool = sd._pool('ZT', pd) or []
-        if pool:
-            prev_zt, prev_ymd = pool, pd
-            break
+    ymd, zt = recent[0]
+    prev_ymd, prev_zt = (recent[1] if len(recent) > 1 else (None, []))
 
     def _idx(rows):
         return {str(r.get('c') or '').strip().zfill(6): r for r in rows}
@@ -980,6 +1126,7 @@ def get_ultra_short_profile(symbol: str, quote: Optional[Dict[str, Any]] = None)
         'limitUpPrice': limit_px,
         'sealOrderAmount': round(seal_amt, 2),
         'sealRatioPct': round(seal_amt / float_cap * 100.0, 2) if float_cap > 0 else None,
+        'ltsz': float_cap,
         'brokenTimes': int(row.get('zbc') or 0) if row else 0,
         'sector': (row or prev_row or {}).get('hybk') or (zb_row or {}).get('hybk'),
         # 涨幅优先用实时报价（今天涨了多少），没有报价才退回池子口径（那个交易日的涨幅）

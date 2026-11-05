@@ -8,12 +8,15 @@ import os
 import sys
 import json
 
+import pytest
+
 # 引入项目 scripts
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 import strategic_decision as sd_engine
 import stock_dashboard as sd
 
 
+@pytest.fixture
 def real_defense_emotion_fixture():
     """
     真实 2026-10-08 盘面实测快照结构 (退潮期 / 接力低迷)
@@ -40,6 +43,7 @@ def real_defense_emotion_fixture():
     }
 
 
+@pytest.fixture
 def real_indices_fixture():
     """
     真实 tx_realtime(IDX_CODES) 结构
@@ -51,6 +55,7 @@ def real_indices_fixture():
     ]
 
 
+@pytest.fixture
 def real_sectors_fixture():
     """
     真实 sector_flow 结构

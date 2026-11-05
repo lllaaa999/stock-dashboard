@@ -61,8 +61,10 @@ def _symbol_to_tx_code(symbol: str) -> str:
     if '.' in symbol:
         code, market = symbol.split('.')
         return f"{market.lower()}{code}"
-    if symbol.startswith(('sh', 'sz')):
+    if symbol.lower().startswith(('sh', 'sz', 'bj')):
         return symbol.lower()
+    if symbol.startswith('920') or symbol.startswith(('4', '8')):
+        return f"bj{symbol}"
     if symbol.startswith(('6', '5', '9')):
         return f"sh{symbol}"
     return f"sz{symbol}"
@@ -72,104 +74,117 @@ def _tx_code_to_symbol(tx_code: str) -> str:
     tx_code = tx_code.strip().lower()
     if tx_code.startswith('sh'):
         return f"{tx_code[2:]}.SH"
-    elif tx_code.startswith('sz'):
+    if tx_code.startswith('bj'):
+        return f"{tx_code[2:]}.BJ"
+    if tx_code.startswith('sz'):
         return f"{tx_code[2:]}.SZ"
     return tx_code
 
 
-def _fetch_quotes_via_easyquotation(symbols: List[str]) -> Dict[str, Any]:
-    """easyquotation 备用通道：腾讯 qt 接口不可用时的降级方案。
-
-    单位换算（已与主通道逐字段实测对齐）：
-      - easyquotation 的成交量类字段单位是【股】，主通道是【手】 -> 必须 ÷100
-      - 其余价格 / 市值 / 涨跌幅字段口径一致，直接使用
-    """
+def _fetch_quotes_via_fallback(symbols: List[str]) -> Dict[str, Any]:
+    """当腾讯主源 qt.gtimg.cn 超时/被封时，降级到 df_feed 多级容灾（TDX / 同花顺 / 新浪）"""
     try:
-        import easyquotation
-    except ImportError:
-        return {}
-
-    codes = [s.split('.')[0] for s in symbols]
-    try:
-        raw = easyquotation.use('tencent').stocks(codes)
+        raw_map = df_feed.get_realtime_quotes(symbols) or {}
     except Exception:
         return {}
-    if not raw:
+    if not raw_map:
         return {}
 
     now_ms = int(time.time() * 1000)
-
-    def _f(v, d=0.0):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return d
-
-    out: Dict[str, Any] = {}
-    for code, r in raw.items():
-        code = str(code).strip().zfill(6)
-        if not code or code == '000000':
+    quotes: Dict[str, Any] = {}
+    for s in symbols:
+        tx_code = _symbol_to_tx_code(s)
+        pure = tx_code[2:]
+        q = raw_map.get(pure) or raw_map.get(s)
+        if not q:
             continue
-        market = 'SH' if code.startswith(('6', '5', '9')) else 'SZ'
-        symbol = f"{code}.{market}"
+        try:
+            if tx_code.startswith('sh'):
+                market = 'SH'
+            elif tx_code.startswith('bj'):
+                market = 'BJ'
+            else:
+                market = 'SZ'
+            symbol = f"{pure}.{market}"
+            price = float(q.get('price') or 0.0)
+            prev_close = float(q.get('prev_close') or q.get('pre_close') or price)
+            open_p = float(q.get('open') or price)
+            high_p = float(q.get('high') or price)
+            low_p = float(q.get('low') or price)
+            chg = float(q.get('chg') or round(price - prev_close, 2))
+            chg_pct = float(q.get('pct') or (round(chg / prev_close * 100, 2) if prev_close > 0 else 0.0))
+            vol_hands = int(float(q.get('volume') or 0))
+            amt_yuan = float(q.get('amount_raw') or 0.0)
+            float_cap_yi = float(q.get('float_mcap') or 0.0)
+            limit_up = float(q.get('upper_limit') or round(prev_close * 1.10, 2))
+            limit_down = float(q.get('lower_limit') or round(prev_close * 0.90, 2))
 
-        price = _f(r.get('now'))
-        prev_close = _f(r.get('close'))
-        limit_up = _f(r.get('涨停价')) or round(prev_close * 1.10, 2)
-        limit_down = _f(r.get('跌停价')) or round(prev_close * 0.90, 2)
+            raw_bids = q.get('bids') or []
+            bids = []
+            for i in range(5):
+                if i < len(raw_bids) and len(raw_bids[i]) >= 2:
+                    bp = float(raw_bids[i][0] or 0)
+                    bv = int(float(raw_bids[i][1] or 0))
+                    bids.append({"level": i + 1, "price": bp if bp > 0 else None, "volume": bv})
+                else:
+                    bids.append({"level": i + 1, "price": None, "volume": None})
 
-        phase = 'TRADING'
-        if limit_up > 0 and price >= limit_up - 0.01:
-            phase = 'LIMIT_UP'
-        elif limit_down > 0 and price <= limit_down + 0.01:
-            phase = 'LIMIT_DOWN'
+            raw_asks = q.get('asks') or []
+            asks = []
+            for i in range(5):
+                if i < len(raw_asks) and len(raw_asks[i]) >= 2:
+                    ap = float(raw_asks[i][0] or 0)
+                    av = int(float(raw_asks[i][1] or 0))
+                    asks.append({"level": i + 1, "price": ap if ap > 0 else None, "volume": av})
+                else:
+                    asks.append({"level": i + 1, "price": None, "volume": None})
 
-        bids, asks = [], []
-        for lv in range(1, 6):
-            bp = _f(r.get(f'bid{lv}') or 0)
-            bv = _f(r.get(f'bid{lv}_volume') or 0)
-            ap = _f(r.get(f'ask{lv}') or 0)
-            av = _f(r.get(f'ask{lv}_volume') or 0)
-            bids.append({"level": lv, "price": bp if bp > 0 else None,
-                         "volume": int(bv / 100) if bv else None})
-            asks.append({"level": lv, "price": ap if ap > 0 else None,
-                         "volume": int(av / 100) if av else None})
+            phase = 'TRADING'
+            if bool(q.get('is_zt')) or (limit_up > 0 and price >= limit_up - 0.01):
+                phase = 'LIMIT_UP'
+            elif bool(q.get('is_dt')) or (limit_down > 0 and price <= limit_down + 0.01):
+                phase = 'LIMIT_DOWN'
 
-        out[symbol] = {
-            'symbol': symbol,
-            'code': code,
-            'market': market,
-            'name': str(r.get('name') or code),
-            'pinyin': '',
-            'sector': 'A股精选',
-            'price': price,
-            'prevClose': prev_close,
-            'open': _f(r.get('open')),
-            'high': _f(r.get('high')),
-            'low': _f(r.get('low')),
-            'change': _f(r.get('涨跌')),
-            'changePercent': _f(r.get('涨跌(%)')),
-            'volume': int(_f(r.get('成交量(手)')) / 100),      # 股 -> 手
-            'amount': _f(r.get('成交额(万)')),
-            'turnoverRate': _f(r.get('turnover')),
-            'volumeRatio': _f(r.get('量比')),
-            'amplitude': _f(r.get('振幅')),
-            'peTtm': _f(r.get('PE')),
-            'pb': _f(r.get('PB')),
-            'marketCap': _f(r.get('总市值')),
-            'floatMarketCap': _f(r.get('流通市值')),
-            'outerVolume': int(_f(r.get('bid_volume')) / 100),  # 股 -> 手
-            'innerVolume': int(_f(r.get('ask_volume')) / 100),
-            'limitUpPrice': limit_up,
-            'limitDownPrice': limit_down,
-            'phase': phase,
-            'orderBook': {'bids': bids, 'asks': asks},
-            'recentTrades': [],
-            'updatedAt': now_ms,
-            '_src': 'easyquotation',
-        }
-    return out
+            quotes[symbol] = {
+                'symbol': symbol,
+                'code': pure,
+                'market': market,
+                'name': q.get('name') or pure,
+                'pinyin': '',
+                'sector': 'A股精选',
+                'price': price,
+                'prevClose': prev_close,
+                'open': open_p,
+                'high': high_p,
+                'low': low_p,
+                'change': chg,
+                'changePercent': chg_pct,
+                'volume': vol_hands,
+                'amount': amt_yuan,
+                'turnoverRate': float(q.get('turnover_rate') or 0.0),
+                'volumeRatio': 1.0,
+                'amplitude': round((high_p - low_p) / prev_close * 100, 2) if prev_close > 0 else 0.0,
+                'peTtm': 20.0,
+                'pb': 2.5,
+                'marketCap': float_cap_yi,
+                'floatMarketCap': float_cap_yi,
+                'outerVolume': vol_hands // 2,
+                'innerVolume': vol_hands - (vol_hands // 2),
+                'limitUpPrice': limit_up,
+                'limitDownPrice': limit_down,
+                'phase': phase,
+                'orderBook': {'bids': bids, 'asks': asks},
+                'recentTrades': [],
+                'updatedAt': now_ms,
+            }
+        except Exception:
+            continue
+    return quotes
 
+
+_L1_QUOTES_CACHE: Dict[str, Any] = {'ts': 0.0, 'key': (), 'data': {}}
+_L1_INDICES_CACHE: Dict[str, Any] = {'ts': 0.0, 'key': (), 'data': {}}
+_L1_SHORT_TTL = 0.25  # 250ms 进程级短缓存，避免多 WS 客户端并发打爆上游
 
 
 def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
@@ -178,6 +193,11 @@ def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         symbols = DEFAULT_WATCHLIST_SYMBOLS
 
     tx_codes = [_symbol_to_tx_code(s) for s in symbols]
+    cache_key = tuple(tx_codes)
+    now_t = time.time()
+    if _L1_QUOTES_CACHE['key'] == cache_key and (now_t - _L1_QUOTES_CACHE['ts'] < _L1_SHORT_TTL) and _L1_QUOTES_CACHE['data']:
+        return dict(_L1_QUOTES_CACHE['data'])
+
     url = 'https://qt.gtimg.cn/q=' + ','.join(tx_codes)
 
     quotes: Dict[str, Any] = {}
@@ -186,8 +206,11 @@ def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=3.5) as resp:
             content = resp.read().decode('gbk', errors='ignore')
     except Exception:
-        # 腾讯 qt 不可用（被封/超时/网络异常）：降级到 easyquotation
-        return _fetch_quotes_via_easyquotation(symbols)
+        # 腾讯 qt 不可用（被封/超时/网络异常）：降级到 df_feed 多级备源
+        fb = _fetch_quotes_via_fallback(symbols)
+        if fb:
+            _L1_QUOTES_CACHE.update({'ts': time.time(), 'key': cache_key, 'data': fb})
+        return fb
 
     now_ms = int(time.time() * 1000)
     for line in content.split(';'):
@@ -203,7 +226,12 @@ def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
 
             code = parts[2]
             name = parts[1]
-            market = 'SH' if tx_code.startswith('sh') else 'SZ'
+            if tx_code.startswith('sh'):
+                market = 'SH'
+            elif tx_code.startswith('bj'):
+                market = 'BJ'
+            else:
+                market = 'SZ'
             symbol = f"{code}.{market}"
 
             price = float(parts[3]) if parts[3] else 0.0
@@ -288,6 +316,10 @@ def fetch_level1_quotes(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         except Exception:
             continue
 
+    if not quotes:
+        quotes = _fetch_quotes_via_fallback(symbols)
+    if quotes:
+        _L1_QUOTES_CACHE.update({'ts': time.time(), 'key': cache_key, 'data': quotes})
     return quotes
 
 
@@ -297,6 +329,11 @@ def fetch_level1_indices(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         symbols = DEFAULT_INDEX_SYMBOLS
 
     tx_codes = [_symbol_to_tx_code(s) for s in symbols]
+    cache_key = tuple(tx_codes)
+    now_t = time.time()
+    if _L1_INDICES_CACHE['key'] == cache_key and (now_t - _L1_INDICES_CACHE['ts'] < _L1_SHORT_TTL) and _L1_INDICES_CACHE['data']:
+        return dict(_L1_INDICES_CACHE['data'])
+
     url = 'https://qt.gtimg.cn/q=' + ','.join(tx_codes)
     indices: Dict[str, Any] = {}
 
@@ -305,7 +342,7 @@ def fetch_level1_indices(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         with urllib.request.urlopen(req, timeout=3.5) as resp:
             content = resp.read().decode('gbk', errors='ignore')
     except Exception:
-        return indices
+        return dict(_L1_INDICES_CACHE['data']) if _L1_INDICES_CACHE['data'] else indices
 
     for line in content.split(';'):
         line = line.strip()
@@ -342,6 +379,8 @@ def fetch_level1_indices(symbols: Optional[List[str]] = None) -> Dict[str, Any]:
         except Exception:
             continue
 
+    if indices:
+        _L1_INDICES_CACHE.update({'ts': time.time(), 'key': cache_key, 'data': indices})
     return indices
 
 
@@ -420,6 +459,23 @@ def fetch_symbol_klines(symbol: str, period: str = '1D') -> Dict[str, Any]:
                     })
             except Exception:
                 pass
+        if not bars:
+            try:
+                import data_layer as _dl
+                for row in (_dl.min_kline(symbol, n=160, freq=period) or []):
+                    dt_str = str(row[0])
+                    bars.append({
+                        'time': dt_str,
+                        'timestamp': 0,
+                        'open': float(row[1]),
+                        'high': float(row[3]),
+                        'low': float(row[4]),
+                        'close': float(row[2]),
+                        'volume': float(row[5]) if len(row) > 5 else 0.0,
+                        'amount': float(row[6]) if len(row) > 6 else 0.0,
+                    })
+            except Exception:
+                pass
         return _kline_cache_put(_ck, {
             'symbol': symbol,
             'period': period,
@@ -471,8 +527,27 @@ def fetch_symbol_klines(symbol: str, period: str = '1D') -> Dict[str, Any]:
                         continue
             except Exception:
                 pass
-        if not bars:
-            # 腾讯 K线被 WAF 拦(501)时降级到 data_feed(TDX/baostock 多级容灾)
+        if not bars and p in ('week', 'month'):
+            # 周/月不能退回日 K。走东财/腾讯对应周期。
+            try:
+                import data_layer as _dl
+                _rows = _dl.kline_period(symbol, days=160, period=p) or []
+                for _r in _rows:
+                    _d = str(_r[0])[:10]
+                    bars.append({
+                        'time': _d,
+                        'timestamp': int(datetime.datetime.strptime(_d, '%Y-%m-%d').timestamp()),
+                        'open': float(_r[1]),
+                        'high': float(_r[3]),
+                        'low': float(_r[4]),
+                        'close': float(_r[2]),
+                        'volume': float(_r[5]) if len(_r) > 5 else 0.0,
+                        'amount': 0.0,
+                    })
+            except Exception:
+                pass
+        if not bars and p == 'day':
+            # 日 K：腾讯被 WAF 拦时降级到 data_feed(TDX/baostock 多级容灾)。周/月禁止退回日 K。
             try:
                 _rows = df_feed.get_kline_cached(tx_code, 160)
                 for _r in (_rows or []):

@@ -96,21 +96,47 @@ class TestCoreChan(unittest.TestCase):
     def test_chan_second_buy_sell_signals(self):
         """专项测试：第二类买点（次笔回抽不破前低）与第二类卖点（次笔反弹不破前高）"""
         import math
-        # 1. 次笔回抽不破前低 -> 二买候选
+        # 1. 先走出底背驰一买，再反弹后回抽不破该低点 -> 二买候选
         kl_buy2 = []
-        for i in range(80):
-            p = 10.0 + (i * 0.1) + math.sin(i / 3.0) * 2.0
-            kl_buy2.append([f"2026-01-{i+1:02d}", round(p - 0.1, 2), round(p, 2), round(p + 0.5, 2), round(p - 0.5, 2), 1000])
+        prices = []
+        for i in range(120):
+            amp = 5.0 if i < 70 else 2.0
+            trend = 50 - (i * 0.05 if i < 70 else 70 * 0.05 + (i - 70) * 0.02)
+            prices.append(trend + math.sin(i / 3.0) * amp)
+        last = prices[-1]
+        for i in range(18):
+            prices.append(last + (i + 1) * 0.45)
+        top = prices[-1]
+        for i in range(16):
+            prices.append(top - (i + 1) * 0.28)
+        low = prices[-1]
+        for i in range(8):
+            prices.append(low + (i + 1) * 0.2)
+        for i, p in enumerate(prices):
+            kl_buy2.append([f"2026-01-{i+1:03d}", round(p, 2), round(p, 2), round(p + 0.4, 2), round(p - 0.4, 2), 1000])
         res_buy2 = chan_analysis_structured(kl_buy2, 'sh600003')
         sig_types_buy2 = [s['type'] for s in res_buy2.get('signals', [])]
         self.assertIn('二买候选', sig_types_buy2)
         self.assertIn('二买候选', res_buy2.get('hint', ''))
 
-        # 2. 次笔反弹不破前高 -> 二卖警戒
+        # 2. 先走出顶背驰一卖，再下跌后反弹不破该高点 -> 二卖警戒
         kl_sell2 = []
-        for i in range(80):
-            p = 50.0 - (i * 0.1) + math.sin(i / 3.0) * 2.0
-            kl_sell2.append([f"2026-01-{i+1:02d}", round(p - 0.1, 2), round(p, 2), round(p + 0.5, 2), round(p - 0.5, 2), 1000])
+        prices = []
+        for i in range(120):
+            amp = 5.0 if i < 70 else 2.5
+            trend = 10 + (i * 0.02 if i < 70 else 70 * 0.02 + (i - 70) * 0.05)
+            prices.append(trend - math.sin(i / 3.5) * amp)
+        last = prices[-1]
+        for i in range(18):
+            prices.append(last - (i + 1) * 0.4)
+        bot = prices[-1]
+        for i in range(16):
+            prices.append(bot + (i + 1) * 0.22)
+        hi = prices[-1]
+        for i in range(8):
+            prices.append(hi - (i + 1) * 0.15)
+        for i, p in enumerate(prices):
+            kl_sell2.append([f"2026-01-{i+1:03d}", round(p, 2), round(p, 2), round(p + 0.4, 2), round(p - 0.4, 2), 1000])
         res_sell2 = chan_analysis_structured(kl_sell2, 'sh600004')
         sig_types_sell2 = [s['type'] for s in res_sell2.get('signals', [])]
         self.assertIn('二卖警戒', sig_types_sell2)
