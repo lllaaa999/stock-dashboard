@@ -645,6 +645,50 @@ def api_quant_intraday_radar(symbol: str = "000530.SZ", limit: int = 50):
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
 
+_FOCUS_CACHE_TTL = 30.0
+_focus_cache = {"data": None, "ts": 0.0}
+_FOCUS_DISCLAIMER = "仅供研究，不构成投资建议"
+
+
+def _build_focus_response():
+    """规则引擎结果 + 已缓存的 LLM 解读；LLM 刷新放后台线程，绝不阻塞请求。"""
+    import focus_engine as fe
+    import focus_narrator as fn
+    res = fe.build_focus()
+    items, mode = fn.apply_cached(res["items"])
+    try:
+        fn.refresh_async(res["items"])
+    except Exception:
+        pass
+    by_cat = {"risks": [], "themes": [], "anomalies": [], "news": []}
+    for it in items:
+        by_cat[fe.CATEGORY_TO_KEY.get(it["category"], "news")].append(it)
+    return {
+        "status": "ok",
+        "marketTone": res["marketTone"],
+        **by_cat,
+        "narrativeMode": mode,
+        "operatorsOk": res.get("operatorsOk", {}),
+        "disclaimer": _FOCUS_DISCLAIMER,
+        "updatedAt": res["updatedAt"],
+    }
+
+
+@app.get("/api/quant/focus")
+def api_quant_focus():
+    """AI 今日关注：风险优先的统一 FocusItem 列表（规则 + 可选 LLM 解读）。"""
+    now = time.time()
+    if _focus_cache["data"] is not None and now - _focus_cache["ts"] < _FOCUS_CACHE_TTL:
+        return JSONResponse(_focus_cache["data"])
+    try:
+        data = _build_focus_response()
+        _focus_cache["data"] = data
+        _focus_cache["ts"] = now
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.get("/api/quant/chan/{symbol}")
 def api_quant_chan(symbol: str, days: int = 200, period: str = "1D"):
     """缠论结构（分型/笔/中枢/背驰/买卖点）。

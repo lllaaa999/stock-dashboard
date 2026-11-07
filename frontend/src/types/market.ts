@@ -830,6 +830,7 @@ export interface FullMarketScanData {
 }
 
 export type QuantModuleTabId =
+  | 'focus'
   | 'overview'
   | 'auction'
   | 'ladder'
@@ -999,3 +1000,36 @@ export interface IntradayRadarResponse {
 }
 
 
+
+/** 「AI 今日关注」条目：facts 由程序填写，narrative 由 AI/模板生成 */
+export interface FocusFact {
+  label: string;
+  value: number | string;
+  unit?: string;
+}
+
+export interface FocusItem {
+  id: string;
+  category: 'RISK' | 'THEME' | 'ANOMALY' | 'MARKET' | 'NEWS';
+  level: 'RED' | 'YELLOW' | 'GREEN' | 'INFO';
+  title: string;
+  facts: FocusFact[];
+  symbols: string[];
+  narrative: string;
+  narrativeSource: 'llm' | 'template';
+  evidence: string[];
+  score: number;
+  updatedAt: number;
+}
+
+export interface FocusResponse {
+  status: string;
+  marketTone: { phase: string; text: string; level: FocusItem['level'] };
+  risks: FocusItem[];
+  themes: FocusItem[];
+  anomalies: FocusItem[];
+  news: FocusItem[];
+  narrativeMode: 'llm' | 'template' | 'mixed';
+  disclaimer: string;
+  updatedAt: number;
+}

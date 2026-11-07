@@ -48,6 +48,7 @@ import {
   type LadderScenarioPreset,
 } from '../utils/ultraShortQuant';
 import { DragonTigerNetworkGraph } from './DragonTigerNetworkGraph';
+import { TodayFocusPanel } from './TodayFocusPanel';
 import { RegulatoryMonitorPanel } from './RegulatoryMonitorPanel';
 import { ThemeResonanceMonitorPanel } from './ThemeResonanceMonitorPanel';
 import { fmtRate, getAuctionSignalBadgeClass, getSeatNatureBadgeClass } from '../utils/workbenchHelpers';
@@ -393,6 +394,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
     label: string;
     shortLabel: string;
   }[] = [
+    { id: 'focus', label: '今日关注', shortLabel: '今日关注' },
     { id: 'overview', label: '六维实战总览', shortLabel: '总览' },
     { id: 'auction', label: '09:25 竞价雷达', shortLabel: '09:25竞价' },
     { id: 'ladder', label: '连板梯队与断层', shortLabel: '连板梯队' },
@@ -441,6 +443,7 @@ export const UltraShortQuantWorkbench: React.FC<{ compact?: boolean }> = ({
 
       {/* 主体内容滚动区 */}
       <div className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
+        {quantModuleTab === 'focus' && <TodayFocusPanel />}
         {/* ==================== 模块一：09:25 集合竞价雷达 ==================== */}
         {(quantModuleTab === 'overview' || quantModuleTab === 'auction') && (
           <section

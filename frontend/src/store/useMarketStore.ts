@@ -175,7 +175,8 @@ export interface MarketStoreState {
   isCommandPaletteOpen: boolean;
   commandPaletteInitialQuery: string;
   quantModuleTab:
-    | 'overview'
+    | 'focus'
+| 'overview'
     | 'auction'
     | 'ladder'
     | 'resonance'
@@ -207,7 +208,8 @@ export interface MarketStoreState {
   togglePeriodIntradayDaily: () => void;
   setQuantModuleTab: (
     tab:
-      | 'overview'
+      | 'focus'
+| 'overview'
       | 'auction'
       | 'ladder'
       | 'resonance'
@@ -217,7 +219,8 @@ export interface MarketStoreState {
   ) => void;
   openQuantModule: (
     tab:
-      | 'overview'
+      | 'focus'
+| 'overview'
       | 'auction'
       | 'ladder'
       | 'resonance'
@@ -411,7 +414,7 @@ export const useMarketStore = create<MarketStoreState>((set, get) => ({
   isArchModalOpen: false,
 
   workspaceMode: 'chart',
-  quantModuleTab: 'overview',
+  quantModuleTab: 'focus',
   isCommandPaletteOpen: false,
   commandPaletteInitialQuery: '',
 

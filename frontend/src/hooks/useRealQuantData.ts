@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   AuctionRadarMetrics,
   BoardLadderSummary,
+  FocusResponse,
   IntradayRadarResponse,
   RegulatoryEngineResult,
   RegulatoryHistory,
@@ -383,3 +384,75 @@ export function useRealIntradayRadar(
   return { radar, loading, refresh };
 }
 
+
+// ==================== AI 今日关注 ====================
+
+const FOCUS_TTL_MS = 60_000;
+let focusCache: { data: FocusResponse | null; ts: number } = { data: null, ts: 0 };
+
+/** 北京时间交易时段（工作日 09:15-15:05）粗判，用于决定是否轮询 */
+function isChinaTradingHours(now: Date = new Date()): boolean {
+  const bj = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60_000);
+  const day = bj.getDay();
+  if (day === 0 || day === 6) return false;
+  const minutes = bj.getHours() * 60 + bj.getMinutes();
+  return minutes >= 9 * 60 + 15 && minutes <= 15 * 60 + 5;
+}
+
+export function useRealFocus(): {
+  focus: FocusResponse | null;
+  loading: boolean;
+  error: boolean;
+  refresh: () => void;
+} {
+  const [focus, setFocus] = useState<FocusResponse | null>(focusCache.data);
+  const [loading, setLoading] = useState<boolean>(focusCache.data === null);
+  const [error, setError] = useState(false);
+  const [refreshCount, setRefreshCount] = useState(0);
+
+  const refresh = useCallback(() => {
+    focusCache = { data: focusCache.data, ts: 0 };
+    setRefreshCount((c) => c + 1);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const doFetch = async () => {
+      if (focusCache.data && Date.now() - focusCache.ts < FOCUS_TTL_MS) {
+        setFocus(focusCache.data);
+        setLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/quant/focus');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (!alive) return;
+        if (json && json.status === 'ok') {
+          focusCache = { data: json as FocusResponse, ts: Date.now() };
+          setFocus(focusCache.data);
+          setError(false);
+        } else {
+          setError(true);
+        }
+      } catch (e) {
+        console.error('[useRealFocus] 获取今日关注失败:', e);
+        if (alive) setError(true);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    };
+
+    doFetch();
+    const timer = setInterval(() => {
+      if (isChinaTradingHours()) doFetch();
+    }, FOCUS_TTL_MS);
+
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [refreshCount]);
+
+  return { focus, loading, error, refresh };
+}
