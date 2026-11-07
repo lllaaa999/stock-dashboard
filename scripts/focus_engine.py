@@ -248,10 +248,110 @@ def _items_from_regulatory(rows: List[Dict[str, Any]], now_ms: int) -> List[Dict
     return out
 
 
+def _items_from_global_radar(d: Dict[str, Any], now_ms: int) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not isinstance(d, dict) or d.get("status") not in (None, "ok"):
+        return out
+    ymd = _dt.date.today().strftime("%Y%m%d")
+
+    # 1. 跨市场传导链显著信号
+    chains = d.get("transmissionChains") or []
+    for chain in chains:
+        score = _num(chain.get("resonanceScore"))
+        cid = str(chain.get("id") or "chain")
+        cname = str(chain.get("name") or "跨市场传导")
+        mapped_symbols = [s.get("symbol") for s in (chain.get("mappedSymbols") or []) if isinstance(s, dict) and s.get("symbol")]
+        mapped_sectors = chain.get("mappedSectors") or []
+        sectors_str = "/".join(str(s) for s in mapped_sectors)
+
+        if score is None:
+            continue
+
+        if score >= 35.0:
+            facts = [_fact("共振分", _clean(score), "分")]
+            for drv in (chain.get("driverAssets") or [])[:3]:
+                dname = drv.get("name") or drv.get("symbol")
+                dpct = _num(drv.get("changePercent"))
+                if dpct is not None:
+                    facts.append(_fact(f"{dname}涨幅", _clean(dpct), "%"))
+            sectors_desc = f"映射A股{sectors_str}等板块" if sectors_str else "映射A股关联产业链"
+            out.append(_make_item(
+                id=f"theme-global-{cid}-{ymd}",
+                category="THEME",
+                level="GREEN",
+                title=f"全球传导：{cname}共振走强",
+                facts=facts,
+                symbols=mapped_symbols,
+                evidence=["global_radar", cid],
+                score=min(100.0, 50.0 + abs(score) * 0.45),
+                tail=f"外盘驱动共振走强，{sectors_desc}有望获得估值提振与情绪共振。",
+                now_ms=now_ms,
+            ))
+        elif score <= -35.0:
+            level = "RED" if score <= -55.0 else "YELLOW"
+            facts = [_fact("共振分", _clean(score), "分")]
+            for drv in (chain.get("driverAssets") or [])[:3]:
+                dname = drv.get("name") or drv.get("symbol")
+                dpct = _num(drv.get("changePercent"))
+                if dpct is not None:
+                    facts.append(_fact(f"{dname}涨幅", _clean(dpct), "%"))
+            sectors_desc = f"映射A股{sectors_str}等板块" if sectors_str else "映射A股关联产业链"
+            out.append(_make_item(
+                id=f"risk-global-{cid}-{ymd}",
+                category="RISK",
+                level=level,
+                title=f"全球传导：{cname}共振走弱",
+                facts=facts,
+                symbols=mapped_symbols,
+                evidence=["global_radar", cid],
+                score=min(100.0, 55.0 + abs(score) * 0.4),
+                tail=f"外盘资产下行共振，需警惕对{sectors_desc}的情绪与估值压制风险。",
+                now_ms=now_ms,
+            ))
+
+    # 2. 7x24 全球财经快讯 -> NEWS
+    live_news = d.get("liveNews") or []
+    sorted_news = sorted(live_news, key=lambda x: (0 if x.get("importance") == "HIGH" else 1))[:5]
+    for idx, news in enumerate(sorted_news):
+        nid = str(news.get("id") or idx)
+        title = str(news.get("title") or "").strip()
+        if not title:
+            continue
+        importance = news.get("importance")
+        polarity = news.get("polarity")
+        imp_score = 85 if importance == "HIGH" else 60
+        facts = [_fact("重要度", imp_score, "分")]
+        t_str = str(news.get("time") or "")
+        if ":" in t_str:
+            t_parts = t_str.split(" ")[-1].split(":")
+            if len(t_parts) >= 2 and t_parts[0].isdigit() and t_parts[1].isdigit():
+                facts.append(_fact("发布时间", int(t_parts[0]) * 100 + int(t_parts[1]), "分"))
+
+        level = "INFO"
+        if importance == "HIGH":
+            level = "YELLOW" if polarity == "BEARISH" else ("GREEN" if polarity == "BULLISH" else "INFO")
+
+        out.append(_make_item(
+            id=f"news-live-{nid}-{ymd}",
+            category="NEWS",
+            level=level,
+            title=title,
+            facts=facts,
+            symbols=[],
+            evidence=["global_radar", "live_news"],
+            score=imp_score,
+            tail="全球财经快讯，关注消息面对关联板块的短线情绪催化。",
+            now_ms=now_ms,
+        ))
+
+    return out
+
+
 # ----------------------------------------------------------------- 默认算子（延迟导入，避免测试时拉网）
 
 def _default_operators() -> Dict[str, Callable]:
     import quant_data_service as qds
+    import global_market_radar as gmr
 
     def _regulatory(ladder: Optional[Dict[str, Any]]):
         import regulatory_service as reg
@@ -275,6 +375,7 @@ def _default_operators() -> Dict[str, Callable]:
         "theme_resonance": qds.get_real_theme_resonance,
         "intraday_radar": qds.get_real_intraday_radar,
         "regulatory": _regulatory,
+        "global_radar": gmr.get_global_market_radar,
     }
 
 
@@ -339,11 +440,14 @@ def build_focus(operators: Optional[Dict[str, Callable]] = None, now_ms: Optiona
     data["theme"] = run("theme_resonance")
     data["radar"] = run("intraday_radar")
     reg_rows = run("regulatory", ladder)
+    data["global_radar"] = run("global_radar")
 
     items: List[Dict[str, Any]] = []
-    for name, fn, arg in (("ladder", _items_from_ladder, ladder), ("theme_resonance", _items_from_themes, data["theme"]),
+    for name, fn, arg in (("ladder", _items_from_ladder, ladder),
+                          ("theme_resonance", _items_from_themes, data["theme"]),
                           ("intraday_radar", _items_from_radar, data["radar"]),
-                          ("regulatory", _items_from_regulatory, reg_rows)):
+                          ("regulatory", _items_from_regulatory, reg_rows),
+                          ("global_radar", _items_from_global_radar, data["global_radar"])):
         if arg is None:
             continue
         try:

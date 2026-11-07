@@ -58,7 +58,7 @@ def chat(messages: List[Dict[str, str]], cfg: Optional[Dict[str, Any]] = None, t
         "model": cfg["model"],
         "messages": messages,
         "temperature": cfg.get("temperature", 0.3) if temperature is None else temperature,
-        "max_tokens": cfg.get("max_tokens", 2000) if max_tokens is None else max_tokens,
+        "max_tokens": cfg.get("max_tokens", 8192) if max_tokens is None else max_tokens,
     }
     req = urllib.request.Request(
         url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",

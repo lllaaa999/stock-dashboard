@@ -3,6 +3,7 @@ import type {
   AuctionRadarMetrics,
   BoardLadderSummary,
   FocusResponse,
+  GlobalMarketRadarResponse,
   IntradayRadarResponse,
   RegulatoryEngineResult,
   RegulatoryHistory,
@@ -455,4 +456,70 @@ export function useRealFocus(): {
   }, [refreshCount]);
 
   return { focus, loading, error, refresh };
+}
+
+
+// ==================== 全球宏观与跨市场传导雷达 ====================
+
+const GLOBAL_RADAR_TTL_MS = 10_000;
+const GLOBAL_RADAR_POLL_MS = 15_000;
+let globalRadarCache: { data: GlobalMarketRadarResponse | null; ts: number } = { data: null, ts: 0 };
+
+export function useRealGlobalRadar(): {
+  radar: GlobalMarketRadarResponse | null;
+  loading: boolean;
+  refresh: () => void;
+} {
+  const [radar, setRadar] = useState<GlobalMarketRadarResponse | null>(globalRadarCache.data);
+  const [loading, setLoading] = useState<boolean>(globalRadarCache.data === null);
+  const [refreshCount, setRefreshCount] = useState(0);
+
+  const refresh = useCallback(() => {
+    globalRadarCache = { data: globalRadarCache.data, ts: 0 };
+    setRefreshCount((c) => c + 1);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    const doFetch = async () => {
+      if (globalRadarCache.data && Date.now() - globalRadarCache.ts < GLOBAL_RADAR_TTL_MS) {
+        setRadar(globalRadarCache.data);
+        setLoading(false);
+        return;
+      }
+      try {
+        const res = await fetch('/api/market/global_radar');
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+        if (!alive) return;
+        if (json && json.status === 'ok') {
+          globalRadarCache = { data: json as GlobalMarketRadarResponse, ts: Date.now() };
+          setRadar(globalRadarCache.data);
+        } else {
+          setRadar(null);
+        }
+      } catch (e) {
+        console.error('[useRealGlobalRadar] 获取全球宏观与跨市场雷达失败:', e);
+        if (alive) {
+          setRadar(null);
+        }
+      } finally {
+        if (alive) {
+          setLoading(false);
+        }
+      }
+    };
+
+    doFetch();
+    const timer = setInterval(() => {
+      doFetch();
+    }, GLOBAL_RADAR_POLL_MS);
+
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [refreshCount]);
+
+  return { radar, loading, refresh };
 }

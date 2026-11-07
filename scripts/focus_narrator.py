@@ -98,9 +98,28 @@ def parse_llm_json(text: str) -> Dict[str, str]:
     try:
         data = json.loads(s)
     except ValueError:
-        m = re.search(r"\[.*\]", s, re.S) or re.search(r"\{.*\}", s, re.S)
+        m = re.search(r"\[.*\]", s, re.S)
         if m:
-            data = json.loads(m.group(0))  # 仍非法则抛 ValueError
+            try:
+                data = json.loads(m.group(0))
+            except ValueError:
+                data = None
+        if data is None:
+            # 容错提取已完成的对象 {"id": "...", "narrative": "..."}（防长思考模型截断整批丢弃）
+            partial: List[Dict[str, Any]] = []
+            for obj_m in re.finditer(r"\{[^{}]+\}", s):
+                try:
+                    obj = json.loads(obj_m.group(0))
+                    if isinstance(obj, dict) and "id" in obj and "narrative" in obj:
+                        partial.append(obj)
+                except ValueError:
+                    continue
+            if partial:
+                data = partial
+            else:
+                m_obj = re.search(r"\{.*\}", s, re.S)
+                if m_obj:
+                    data = json.loads(m_obj.group(0))
     if isinstance(data, dict) and isinstance(data.get("items"), list):
         data = data["items"]
     out: Dict[str, str] = {}

@@ -313,6 +313,26 @@ def api_market_snapshot():
 def api_market_klines(symbol: str, period: str = "1D"):
     return JSONResponse(mg.fetch_intraday_and_klines(symbol, period))
 
+
+_GLOBAL_RADAR_CACHE_TTL = 10.0
+_global_radar_cache = {"data": None, "ts": 0.0}
+
+
+@app.get("/api/market/global_radar")
+def api_market_global_radar():
+    """全球全资产监控与跨市场传导链 + 7×24 快讯（带 10 秒内存缓存）"""
+    now = time.time()
+    if _global_radar_cache["data"] is not None and now - _global_radar_cache["ts"] < _GLOBAL_RADAR_CACHE_TTL:
+        return JSONResponse(_global_radar_cache["data"])
+    try:
+        import global_market_radar as gmr
+        data = gmr.get_global_market_radar()
+        _global_radar_cache["data"] = data
+        _global_radar_cache["ts"] = now
+        return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
 _SCENARIO_OVERRIDES: dict = {}
 
 

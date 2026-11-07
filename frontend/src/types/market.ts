@@ -831,6 +831,7 @@ export interface FullMarketScanData {
 
 export type QuantModuleTabId =
   | 'focus'
+  | 'global'
   | 'overview'
   | 'auction'
   | 'ladder'
@@ -1032,4 +1033,75 @@ export interface FocusResponse {
   narrativeMode: 'llm' | 'template' | 'mixed';
   disclaimer: string;
   updatedAt: number;
+}
+
+
+export type GlobalAssetCategory =
+  | 'ASIA_CORE'
+  | 'US_EU_INDICES'
+  | 'TECH_GIANTS'
+  | 'COMMODITIES'
+  | 'FOREX';
+
+export interface GlobalAssetQuote {
+  symbol: string;
+  name: string;
+  category: GlobalAssetCategory;
+  price: number;
+  change: number;
+  changePercent: number;
+  high?: number;
+  low?: number;
+  updatedTime?: string;
+  source?: string;
+}
+
+export interface MappedStockTarget {
+  symbol: string;
+  name: string;
+}
+
+export interface CrossMarketTransmissionChain {
+  id: string;
+  name: string;
+  direction: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  intensity: 'STRONG' | 'MODERATE' | 'MILD';
+  resonanceScore: number; // -100 ~ +100
+  drivers: {
+    symbol: string;
+    name: string;
+    price: number;
+    changePercent: number;
+  }[];
+  mappedSectors: string[];
+  mappedSymbols: MappedStockTarget[];
+  transmissionLogic: string;
+}
+
+export interface GlobalLiveNewsItem {
+  id: string;
+  time: string;
+  title: string;
+  content: string;
+  category: 'GLOBAL_MACRO' | 'TECH_INDUSTRY' | 'COMMODITY_FX' | 'A_SHARE_POLICY';
+  polarity: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  importance: 'HIGH' | 'NORMAL';
+}
+
+export interface GlobalMarketRadarResponse {
+  status: 'ok' | 'error';
+  updatedAt: number;
+  summary: {
+    globalRiskAppetite: 'RISK_ON' | 'RISK_OFF' | 'MIXED';
+    riskAppetiteLabel: string;
+    a50ChangePercent: number;
+    usdcnhPrice: number;
+    usdcnhChangePercent: number;
+    topBullishChain: string;
+    topBearishChain: string;
+  };
+  assets: GlobalAssetQuote[];
+  groups: Record<GlobalAssetCategory, GlobalAssetQuote[]>;
+  transmissionChains: CrossMarketTransmissionChain[];
+  liveNews: GlobalLiveNewsItem[];
 }

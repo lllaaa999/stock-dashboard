@@ -15,6 +15,7 @@ import type {
   MarketIndexQuote,
   MarketScenario,
   PriceAlertRule,
+  QuantModuleTabId,
   SubIndicator,
   TickData,
   TriggeredAlertEvent,
@@ -29,7 +30,7 @@ type TickListener = (tick: TickData) => void;
 const symbolTickListeners = new Map<string, Set<TickListener>>();
 
 type SubscriptionListener = (symbol: string) => void;
-let onSymbolSubscribed: SubscriptionListener | null = null;
+var onSymbolSubscribed: SubscriptionListener | null = null;
 export function setSymbolSubscriptionHandler(fn: SubscriptionListener) {
   onSymbolSubscribed = fn;
 }
@@ -105,6 +106,7 @@ const DEFAULT_ALERT_RULES: PriceAlertRule[] = [
 
 function loadSavedWatchlist(): string[] {
   try {
+    if (typeof localStorage === 'undefined') return DEFAULT_WATCHLIST;
     const saved = localStorage.getItem('alphapulse_watchlist_v1');
     if (saved) {
       const parsed = JSON.parse(saved);
@@ -120,6 +122,7 @@ function loadSavedWatchlist(): string[] {
 
 function loadSavedAlerts(): PriceAlertRule[] {
   try {
+    if (typeof localStorage === 'undefined') return DEFAULT_ALERT_RULES;
     const saved = localStorage.getItem('alphapulse_alerts_v1');
     if (saved) {
       const parsed = JSON.parse(saved);
@@ -135,6 +138,7 @@ function loadSavedAlerts(): PriceAlertRule[] {
 
 function persistAlerts(rules: PriceAlertRule[]): void {
   try {
+    if (typeof localStorage === 'undefined') return;
     localStorage.setItem('alphapulse_alerts_v1', JSON.stringify(rules));
   } catch (e) {
     console.error('[persistAlerts] localStorage 写入失败:', e);
@@ -174,15 +178,7 @@ export interface MarketStoreState {
   workspaceMode: 'chart' | 'auction' | 'quant' | 'screener';
   isCommandPaletteOpen: boolean;
   commandPaletteInitialQuery: string;
-  quantModuleTab:
-    | 'focus'
-| 'overview'
-    | 'auction'
-    | 'ladder'
-    | 'resonance'
-    | 'regulatory'
-    | 'vwdvr'
-    | 'dragon_tiger';
+  quantModuleTab: QuantModuleTabId;
 
   // WebSocket 连接与节流监控状态
   connectionStatus: ConnectionStatus;
@@ -206,29 +202,8 @@ export interface MarketStoreState {
   setCommandPaletteOpen: (open: boolean, initialQuery?: string) => void;
   stepSelectedSymbol: (delta: 1 | -1) => void;
   togglePeriodIntradayDaily: () => void;
-  setQuantModuleTab: (
-    tab:
-      | 'focus'
-| 'overview'
-      | 'auction'
-      | 'ladder'
-      | 'resonance'
-      | 'regulatory'
-      | 'vwdvr'
-      | 'dragon_tiger'
-  ) => void;
-  openQuantModule: (
-    tab:
-      | 'focus'
-| 'overview'
-      | 'auction'
-      | 'ladder'
-      | 'resonance'
-      | 'regulatory'
-      | 'vwdvr'
-      | 'dragon_tiger',
-    symbol?: string
-  ) => void;
+  setQuantModuleTab: (tab: QuantModuleTabId) => void;
+  openQuantModule: (tab: QuantModuleTabId, symbol?: string) => void;
   setConnectionStatus: (status: ConnectionStatus) => void;
   setBatchWindowMs: (ms: number) => void;
   injectQuote: (quote: TickData) => void;
