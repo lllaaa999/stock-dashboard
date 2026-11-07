@@ -122,6 +122,17 @@ def _items_from_ladder(d: Dict[str, Any], now_ms: int) -> List[Dict[str, Any]]:
             facts=[_fact("最高板", _clean(max_h), "板"), _fact("次高板", _clean(second), "板")],
             symbols=[dragon_sym], evidence=["ladder"], score=55,
             tail="最高标缺少梯队呼应，空间高度的持续性存疑。", now_ms=now_ms))
+
+    # 普涨兑现空仓风控线（封板率 < 55% 或炸板 > 50 家）
+    if seal is not None and seal < 55.0:
+        facts_seal = [_fact("封板成功率", _clean(seal), "%")]
+        if broken is not None:
+            facts_seal.append(_fact("炸板数", _clean(broken), "家"))
+        out.append(_make_item(
+            id=f"risk-seal-collapse-{ymd}", category="RISK", level="RED",
+            title="封板率跌破五成五风控线", facts=facts_seal, symbols=[dragon_sym],
+            evidence=["ladder", "emotion"], score=85,
+            tail="封板率过低代表打板溢价恶化与量化炸板兑现加剧，注意防守控仓。", now_ms=now_ms))
     return out
 
 
