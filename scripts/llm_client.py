@@ -62,7 +62,11 @@ def chat(messages: List[Dict[str, str]], cfg: Optional[Dict[str, Any]] = None, t
     }
     req = urllib.request.Request(
         url, data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AlphaPulse/1.1",
+        })
     t = float(timeout if timeout is not None else cfg.get("timeout", 60))
     try:
         with urllib.request.urlopen(req, timeout=t) as resp:
