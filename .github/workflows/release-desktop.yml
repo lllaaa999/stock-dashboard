@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -43,7 +47,7 @@ jobs:
       - name: Compress Desktop Package (.zip)
         shell: pwsh
         run: |
-          Compress-Archive -Path "dist/AlphaPulse股票看盘/*" -DestinationPath "AlphaPulse-Windows-x64.zip" -Force
+          Compress-Archive -Path "dist/AlphaPulse/*" -DestinationPath "AlphaPulse-Windows-x64.zip" -Force
 
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4

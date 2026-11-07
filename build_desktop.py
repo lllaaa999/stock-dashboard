@@ -11,13 +11,20 @@ import sys
 import shutil
 import subprocess
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
 def main() -> None:
     web_dist = os.path.join(ROOT, "web", "dist", "index.html")
     if not os.path.isfile(web_dist):
-        print("[!] 未检测到 web/dist/index.html，请先在 frontend 目录执行 bun run build")
+        print("[!] Missing web/dist/index.html, run bun run build in frontend first")
         sys.exit(1)
 
     cmd = [
@@ -29,7 +36,7 @@ def main() -> None:
         "--onedir",
         "--windowed",
         "--name",
-        "AlphaPulse股票看盘",
+        "AlphaPulse",
         "--add-data",
         f"web{os.pathsep}web",
         "--add-data",
@@ -59,11 +66,11 @@ def main() -> None:
         "desktop_app.py",
     ]
 
-    print("[1/2] 正在执行 PyInstaller 打包 ...")
+    print("[1/2] Running PyInstaller build ...")
     subprocess.check_call(cmd, cwd=ROOT)
 
     # 将基础数据字典复制到输出目录外层，方便用户持久化保存自选股、龙虎榜账本与配置
-    out_dir = os.path.join(ROOT, "dist", "AlphaPulse股票看盘")
+    out_dir = os.path.join(ROOT, "dist", "AlphaPulse")
     out_data = os.path.join(out_dir, "data")
     os.makedirs(out_data, exist_ok=True)
     for fname in ("stock_list.json", "stock_names.json", "ths_concepts.json", "lhb_seat_ledger.json"):
@@ -77,8 +84,8 @@ def main() -> None:
     if os.path.isfile(example_cfg):
         shutil.copy2(example_cfg, os.path.join(out_cfg, "llm.local.json.example"))
 
-    print(f"\n[2/2] 打包完成！输出目录：{out_dir}")
-    print(f"可执行文件：{os.path.join(out_dir, 'AlphaPulse股票看盘.exe')}")
+    print(f"\n[2/2] Build complete! Output dir: {out_dir}")
+    print(f"Executable: {os.path.join(out_dir, 'AlphaPulse.exe')}")
 
 
 if __name__ == "__main__":
