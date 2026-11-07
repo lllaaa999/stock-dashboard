@@ -21,15 +21,37 @@ A股综合看盘工具，覆盖大盘行情、隔夜外盘、情绪指数、板�
 
 ---
 
-## 快速开始
+## 快速开始（支持免安装桌面版 `.exe` 与源码运行）
 
-### 1. 安装依赖
+本项目为不同使用习惯的用户提供了 **3 种开箱即用的运行方式**：
+
+### 方式一：普通股民 / 免安装桌面软件版（零门槛推荐）
+无需安装 Python 或任何编程环境：
+1. 前往仓库右侧的 **[Releases 页面](https://github.com/lllaaa999/stock-dashboard/releases)** 下载最新版的 `AlphaPulse-Windows-x64.zip`；
+2. 解压到任意文件夹，双击 **`AlphaPulse股票看盘.exe`** 即可直接弹出独立桌面软件窗口；
+3. 自选股、龙虎榜游资账本与本地配置保存在同级 `data/` 与 `config/` 目录下，后续升级覆盖程序不会丢失个人数据。
+
+### 方式二：本地桌面独立窗口模式（已安装 Python 3.10+）
+如果电脑已安装 Python，安装完依赖后直接启动原生无边框桌面端（自动寻找空闲端口、内置 `pywebview` / Edge App 独立窗口）：
 
 ```bash
 pip install -r requirements.txt
+# 可选安装原生窗口组件（不装也会自动调用系统 Edge/Chrome 的独立 App 窗口模式）
+pip install pywebview
+
+# 一键启动独立桌面看盘窗口
+py -3.12 desktop_app.py
 ```
 
-### 2. 启动 Web 仪表盘
+如需在本地自己打包生成独立 `.exe` 软件目录：
+
+```bash
+pip install pywebview pyinstaller
+py -3.12 build_desktop.py
+# 生成产物位于：dist/AlphaPulse股票看盘/AlphaPulse股票看盘.exe
+```
+
+### 方式三：开发者 Web 仪表盘模式
 
 需要 **Python 3.10+**（3.9 会因 dataclass slots 报错）。本机实测可用解释器是 `py -3.12`：
 

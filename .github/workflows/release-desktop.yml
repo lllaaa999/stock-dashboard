@@ -1,0 +1,59 @@
+name: Build & Release Windows Desktop App
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun & build frontend
+        uses: oven-sh/setup-bun@v2
+      - name: Build frontend dist
+        working-directory: frontend
+        run: |
+          bun install
+          bun run build
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies & PyWebView + PyInstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pywebview pyinstaller
+
+      - name: Build Windows Desktop Bundle (.exe)
+        run: |
+          python build_desktop.py
+
+      - name: Compress Desktop Package (.zip)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/AlphaPulse股票看盘/*" -DestinationPath "AlphaPulse-Windows-x64.zip" -Force
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AlphaPulse-Windows-x64
+          path: AlphaPulse-Windows-x64.zip
+
+      - name: Publish to GitHub Releases (on tag push)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: AlphaPulse-Windows-x64.zip
+          generate_release_notes: true
