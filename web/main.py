@@ -612,6 +612,39 @@ def api_quant_theme_resonance():
     except Exception as e:
         return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
 
+_intraday_radar_cache = {}
+_INTRADAY_RADAR_CACHE_TTL = 3.0
+
+@app.get("/api/quant/intraday_radar")
+def api_quant_intraday_radar(symbol: str = "000530.SZ", limit: int = 50):
+    """全市场盘中异动与资金流向共振雷达"""
+    clean_sym = (symbol or "000530.SZ").strip().upper()
+    if clean_sym and '.' not in clean_sym:
+        suffix = '.SH' if clean_sym.startswith(('6', '9')) else ('.BJ' if clean_sym.startswith(('4', '8')) else '.SZ')
+        clean_sym = f"{clean_sym}{suffix}"
+    try:
+        safe_limit = max(1, min(200, int(limit)))
+    except (TypeError, ValueError):
+        safe_limit = 50
+
+    cache_key = (clean_sym, safe_limit)
+    now = time.time()
+    hit = _intraday_radar_cache.get(cache_key)
+    if hit and (now - hit[0] < _INTRADAY_RADAR_CACHE_TTL):
+        return JSONResponse(hit[1])
+
+    try:
+        res = qds.get_real_intraday_radar(symbol=clean_sym, limit=safe_limit)
+        _intraday_radar_cache[cache_key] = (now, res)
+        if len(_intraday_radar_cache) > 200:
+            old_keys = sorted(_intraday_radar_cache.keys(), key=lambda k: _intraday_radar_cache[k][0])[:50]
+            for ok in old_keys:
+                _intraday_radar_cache.pop(ok, None)
+        return JSONResponse(res)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=500)
+
+
 @app.get("/api/quant/chan/{symbol}")
 def api_quant_chan(symbol: str, days: int = 200, period: str = "1D"):
     """缠论结构（分型/笔/中枢/背驰/买卖点）。

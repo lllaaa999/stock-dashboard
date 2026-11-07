@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type {
   AuctionRadarMetrics,
   BoardLadderSummary,
+  IntradayRadarResponse,
   RegulatoryEngineResult,
   RegulatoryHistory,
 } from '../types/market';
@@ -266,3 +267,119 @@ export function useRegulatoryHistories(symbols: string[]): RealRegulatoryHistori
 
   return state;
 }
+
+/**
+ * ============================================================
+ * 盘中异动与资金流向监控 (Intraday Anomaly & Capital Flow Radar)
+ * ============================================================
+ */
+export interface RealIntradayRadarState {
+  radar: IntradayRadarResponse | null;
+  loading: boolean;
+  refresh: () => void;
+}
+
+const INTRADAY_RADAR_TTL_MS = 4_000;
+const intradayRadarCache = new Map<string, { data: IntradayRadarResponse; ts: number }>();
+const MAX_INTRADAY_RADAR_CACHE = 30;
+
+function setIntradayRadarCache(key: string, data: IntradayRadarResponse) {
+  intradayRadarCache.set(key, { data, ts: Date.now() });
+  if (intradayRadarCache.size > MAX_INTRADAY_RADAR_CACHE) {
+    let oldestKey = '';
+    let oldestTs = Infinity;
+    for (const [k, v] of intradayRadarCache) {
+      if (v.ts < oldestTs) {
+        oldestTs = v.ts;
+        oldestKey = k;
+      }
+    }
+    if (oldestKey) intradayRadarCache.delete(oldestKey);
+  }
+}
+
+export function useRealIntradayRadar(
+  symbol?: string | null,
+  limit: number = 40
+): RealIntradayRadarState {
+  const cleanSym = (symbol || '').trim();
+  const cacheKey = `${cleanSym.toUpperCase()}::${limit}`;
+
+  const [radar, setRadar] = useState<IntradayRadarResponse | null>(() => {
+    const hit = intradayRadarCache.get(cacheKey);
+    return hit ? hit.data : null;
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    const hit = intradayRadarCache.get(cacheKey);
+    return !hit;
+  });
+  const [refreshCount, setRefreshCount] = useState(0);
+
+  const refresh = useCallback(() => {
+    intradayRadarCache.delete(cacheKey);
+    setRefreshCount((c) => c + 1);
+  }, [cacheKey]);
+
+  useEffect(() => {
+    let alive = true;
+
+    const hit = intradayRadarCache.get(cacheKey);
+    if (hit && Date.now() - hit.ts < INTRADAY_RADAR_TTL_MS) {
+      setRadar(hit.data);
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
+
+    const doFetch = async () => {
+      try {
+        const cached = intradayRadarCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < INTRADAY_RADAR_TTL_MS) {
+          if (alive) {
+            setRadar(cached.data);
+            setLoading(false);
+          }
+          return;
+        }
+
+        const url = cleanSym
+          ? `/api/quant/intraday_radar?symbol=${encodeURIComponent(cleanSym)}&limit=${limit}`
+          : `/api/quant/intraday_radar?limit=${limit}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const json = await res.json();
+        if (!alive) return;
+        if (json && json.status === 'ok') {
+          const data = json as IntradayRadarResponse;
+          setIntradayRadarCache(cacheKey, data);
+          setRadar(data);
+        } else {
+          setRadar(null);
+        }
+      } catch (e) {
+        console.error('[useRealIntradayRadar] 获取盘中异动与资金流向失败:', e);
+        if (alive) {
+          setRadar((prev) => prev ?? null);
+        }
+      } finally {
+        if (alive) {
+          setLoading(false);
+        }
+      }
+    };
+
+    doFetch();
+
+    const intervalTimer = setInterval(() => {
+      doFetch();
+    }, 6_000);
+
+    return () => {
+      alive = false;
+      clearInterval(intervalTimer);
+    };
+  }, [cacheKey, cleanSym, limit, refreshCount]);
+
+  return { radar, loading, refresh };
+}
+

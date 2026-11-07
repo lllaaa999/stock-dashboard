@@ -17,6 +17,7 @@ import lhb_orthogonal_evaluator as lhb
 import abnormal_volatility as av
 import data_feed as df_feed
 import ultrashort_metrics as usm
+import intraday_radar as ir
 
 _LHB_LIST_CACHE = None
 _LHB_LIST_CACHE_TIME = 0.0
@@ -1138,3 +1139,9 @@ def get_ultra_short_profile(symbol: str, quote: Optional[Dict[str, Any]] = None)
         'yesterdayPerformanceNote': note,
         'source': 'eastmoney_pool',
     }
+
+
+def get_real_intraday_radar(symbol: str = "000530.SZ", limit: int = 50) -> Dict[str, Any]:
+    """获取全市场盘中异动与个股资金流向共振雷达"""
+    return ir.get_intraday_radar(symbol=symbol, limit=limit)
+

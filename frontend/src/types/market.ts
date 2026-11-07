@@ -916,3 +916,86 @@ export type WSClientMessage =
       windowMs: number;
     };
 
+/**
+ * ============================================================
+ * 盘中异动与资金流向监控模块 (Intraday Anomaly & Capital Flow Radar)
+ * ============================================================
+ */
+export type AnomalyPolarity = 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+
+export type IntradayRadarBasis =
+  | 'live_eastmoney'
+  | 'intraday_trend_mined'
+  | 'snapshot_fallback';
+
+export type SynergyLevel =
+  | 'STRONG_RESONANCE'
+  | 'MILD_RESONANCE'
+  | 'DIVERGENCE_WARNING'
+  | 'BEARISH_DUMP';
+
+export interface MarketAnomalyItem {
+  id: string;
+  time: string;
+  symbol: string;
+  code: string;
+  name: string;
+  typeCode: number;
+  typeName: string;
+  polarity: AnomalyPolarity;
+  price: number;
+  changePercent: number;
+  volumeHands: number;
+  amountCNY: number;
+  anomalyStrength: number;
+  detailText: string;
+}
+
+export interface SymbolCapitalFlowDetail {
+  symbol: string;
+  code: string;
+  name: string;
+  price: number;
+  changePercent: number;
+  mainNetInflow: number;
+  superLargeNetInflow: number;
+  largeNetInflow: number;
+  mediumNetInflow: number;
+  smallNetInflow: number;
+  mainNetRatio: number;
+  synergyScore: number;
+  synergyLevel: SynergyLevel;
+  synergyVerdict: string;
+  recent5DaysMainNet?: number[];
+}
+
+export interface TopInflowStockItem {
+  symbol: string;
+  code: string;
+  name: string;
+  price: number;
+  changePercent: number;
+  mainNetInflow: number;
+  mainNetRatio: number;
+  latestAnomalyType: string | null;
+  synergyScore: number;
+}
+
+export interface IntradayRadarResponse {
+  status: 'ok' | 'error';
+  basis: IntradayRadarBasis;
+  basisLabel?: string;
+  updatedAt: number;
+  summary: {
+    totalCount: number;
+    bullishCount: number;
+    bearishCount: number;
+    dominantSignal: string;
+    marketTemperament: 'BULLISH_ATTACK' | 'BEARISH_DEFENSE' | 'BALANCED_ROTATION';
+  };
+  symbolCapitalFlow: SymbolCapitalFlowDetail | null;
+  anomalies: MarketAnomalyItem[];
+  topInflowStocks: TopInflowStockItem[];
+}
+
+
