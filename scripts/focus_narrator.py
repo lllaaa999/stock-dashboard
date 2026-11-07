@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import llm_client
+import a_share_playbook
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LLM_LOG_DIR = os.path.join(BASE_DIR, "data", "llm")
@@ -168,17 +169,21 @@ def reset_state() -> None:
 
 # ----------------------------------------------------------------- 提示词
 
-SYSTEM_PROMPT = (
-    "你是 A 股行情研究助手，为每条『关注事项』写一句 40~90 字的中文解读。严格规则："
-    "1) 只允许引用该条 facts 与 title 中已有的数字，不得新增、换算或推测任何数字；"
-    "2) 禁止出现 买入、卖出、必涨、翻倍、稳赚、满仓 等荐股或收益承诺用语，不给操作指令；"
-    "3) 写明依据，并说明不确定性；风险级别为 RED/YELLOW 的条目不得弱化风险措辞；"
-    "4) 只输出 JSON 数组，每个元素形如 {\"id\": \"...\", \"narrative\": \"...\"}，不要输出其他文字。")
+SYSTEM_PROMPT = a_share_playbook.VETERAN_SYSTEM_PROMPT
 
 
 def _build_messages(items: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    payload = [{"id": i["id"], "level": i["level"], "category": i["category"], "title": i["title"],
-                "facts": i["facts"]} for i in items]
+    payload = [
+        {
+            "id": i["id"],
+            "level": i["level"],
+            "category": i["category"],
+            "title": i["title"],
+            "facts": i["facts"],
+            "tacticalHint": a_share_playbook.match_tactical_hint(i),
+        }
+        for i in items
+    ]
     return [{"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}]
 

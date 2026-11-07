@@ -1,20 +1,20 @@
 ---
 name: finance-stock-dashboard
-description: 股票综合看盘系统·七层雷达+多主体模拟：大盘行情/隔夜外盘(A50期货)/情绪指数/板块资金/两融/快讯/个股体检/K线图/缠论/情绪周期定位/九方势力世界模拟。用户说"看盘""盘前""个股 XXX"时使用。
-version: 2.0.0
-author: Hermes Agent
+description: 股票综合看盘系统·七层雷达+全球跨市场传导+盘中异动雷达+AI今日关注：覆盖A股大盘/全球33资产与八大传导链/情绪周期/盘口异动与资金流向协同/连板梯队/题材点面共振/监管异动/龙虎榜/缠论/AI防割韭菜解读。用户说"看盘""今日关注""全球传导""异动""个股 XXX"时使用。
+version: 3.0.0
+author: Hermes & Antigravity Agent
 metadata:
   hermes:
-    tags: [finance, stock, china-market, dashboard, agent-simulation]
+    tags: [finance, stock, china-market, global-macro, intraday-radar, ai-focus, dashboard]
 ---
 
-# 股票综合看盘 · 七层雷达 + 多主体模拟
+# 股票综合看盘 · 七层雷达 + 全球跨市场传导 + AI今日关注 (v3.0)
 
 ## 何时使用
-- 用户说"看盘/股票看盘/盘前/复盘/情绪怎么样"
-- 用户问某只个股（"XX股票怎么样"/直接给代码）
-- 用户问情绪周期阶段、多空博弈、资金推演
-- cron 定时任务（盘前 8:30、收盘 15:30）的数据采集步骤
+- 用户说"看盘/股票看盘/今日关注/盘前/复盘/情绪怎么样/外盘怎么样"
+- 用户问某只个股（"XX股票怎么样"/直接给代码/盘口异动与主力资金协同）
+- 用户问全球市场（美股科技七巨头/A50期指/恒生科技/黄金原油/离岸人民币）对 A 股板块的映射
+- cron 定时任务（盘前 8:30、盘中盯盘、收盘 15:30）的数据采集与 AI 归因步骤
 
 ## 核心工具
 `scripts/stock_dashboard.py` — 一键采集，纯文本分区输出，单源失败不影响其他分区。
@@ -171,3 +171,17 @@ python "<skill_dir>/scripts/strategies_lib.py" all    # 全策略跑一遍（复
 - **「打脸账本」曾整体前视偏差（2026-10-26 实锤）**：`auction_audit.audit_auction_for_day` 在快照缺失时会**拿当前雷达现场补一份**，而 `auction_radar` 的快照又是用 `dt.date.today()` 归档的。结果：①快照全是**收盘后**抓的（`recorded_at` 全在 15:00 之后/深夜），里面 12 只"竞价爆量"推荐 `pct` 全是 +10、`is_zt=True` —— **用收盘已涨停的票去核验"9:25 的推荐"，封板率 100% 是自证**；②周六 20261025 也生成了一条"封板率33.3%/胜率33.3%"的假对账并进了账本。**这套账本过去不能用于阈值校准。**
 - **现在的四条护栏**：①非交易日 `not_trading_day` 直接拒绝对账（`_is_trading_day`）；②快照缺失**不许**用当前雷达补录（除非显式 `allow_synthetic=True`）；③`save_auction_candidates_snapshot(phase=...)` 只有 9:15~9:35 抓的才是 `auction`，其余时点一律 `phase='post_close'` + `synthetic=True`；④账本统计只算 `synthetic=False` 的样本，并返回 `excluded_synthetic_days`。现有历史档案已全部标记为合成样本（备份在 `scratch/backup_audit_cleanup_20261026/`），**真实样本目前为 0，需从下一个交易日的 9:15~9:35 开始重新积累**。
 - **归档日期必须用 t_date 不能用 today**：`auction_radar` 的快照归档原来用 `dt.date.today()`，休市日会把最近交易日的盘面存成"今天"。与情绪存档 20261001 假记录同源——**默认怀疑"今天"**。
+
+## 收口更新（2026-11-06 · v3.0 全链路升级：盘中异动雷达 + 全球跨市场传导 + AI今日关注 + 实战心法库）
+1. **盘中异动与资金流向监控模块 (`scripts/intraday_radar.py` & `GET /api/quant/intraday_radar`)**：
+   - **三级真实数据源降级（零假数据）**：Tier 1 东财 `push2ex.eastmoney.com/getAllStockChanges`（火箭发射 `8201`、快速反弹 `8202`、大笔买入 `8193`、封涨停板 `4`、打开涨停 `32`、加速下跌 `8204` 等 10 类异动）$\rightarrow$ Tier 2 真实分时序列形态挖掘（`intraday_trend_mined`）$\rightarrow$ Tier 3 Level-1 快照内外盘差兜底（`snapshot_fallback`）。
+   - **异动-资金协同度算子 `compute_synergy_score`**（$[-100, +100]$）：融合盘口异动极性强度与五档资金流（超大单/大单/中单/小单净额），自动识别 `STRONG_RESONANCE`（强共振抢筹）、`MILD_RESONANCE`（温和配合）、`DIVERGENCE_WARNING`（异动拉升但主力流出=诱多骗线预警）、`BEARISH_DUMP`（大单流出叠加空头异动=派发核按钮预警）。
+2. **全球 33 资产双源监控与八大跨市场关联传导链 (`scripts/global_market_radar.py` & `GET /api/market/global_radar`)**：
+   - **免 Key 双通道互备**：新浪 `hq.sinajs.cn` + 腾讯 `qt.gtimg.cn` 实时采集五大类 33 个全球核心资产（`ASIA_CORE` 富时A50/恒指/恒科/日经、`US_EU_INDICES` 纳指/标普/道指及期指/德指/英富时、`TECH_GIANTS` 英伟达/台积电/特斯拉/苹果/微软/AMD/博通/阿斯麦/阿里/拼多多/腾讯、`COMMODITIES` 黄金/白银/美铜/原油/天然气/大豆/玉米、`FOREX` 离岸人民币/欧元/日元）及新浪 7×24 全球财经快讯。
+   - **八大跨市场传导链 (`TRANSMISSION_CHAINS`)**：自动计算外盘驱动共振分 `resonanceScore` 并映射到具体 A 股板块与代表龙头（A股开盘流动性链、AI算力半导体链、特斯拉机器人链、苹果端侧链、中概内需链、贵金属有色链、地缘能源航运链、国际粮价种业链）。
+3. **AI「今日关注」三层流水线与实战心法库 (`scripts/focus_engine.py` / `scripts/focus_narrator.py` / `scripts/a_share_playbook.py` / `scripts/llm_client.py`)**：
+   - **算法筛选 + AI 解读**：`focus_engine.build_focus()` 聚合连板梯队、题材共振、盘中异动、监管异动、全球跨市场传导链与 7×24 快讯，按「风险优先于机会（RED > YELLOW > GREEN）」排序输出 Top 15 结构化 `FocusItem`（`GET /api/quant/focus`）。
+   - **A股实战战法提示词库 (`scripts/a_share_playbook.py`)**：内置六大 A 股超短与跨市场防割韭菜心法（情绪周期与连板断层控仓法则、盘口异动量价背离防诱多法则、临近监管异动阈值控速法则、外盘大涨「买在分歧/防高开量化兑现」法则、题材先锋龙+中军点面共振法则、快讯去伪存真法则），按条目类型动态生成无阿拉伯数字的 `tacticalHint` 注入大模型（如 Inception Labs `mercury-3` 或 DeepSeek）。
+   - **零幻觉与合规硬护栏**：`focus_narrator.py` 强制执行阿拉伯数字白名单校验（`numbers_consistent`，任何未在 `facts/title` 出现的数字一律拒绝并回退规则模板）与荐股违禁词过滤（`BANNED_WORDS`），确保 AI 既有游资风控老手的深度，又 100% 忠于真实算子数据。
+4. **桌面端原生软件与一键打包 (`desktop_app.py` / `build_desktop.py` / `.github/workflows/release-desktop.yml`)**：
+   - 支持 `py -3.12 desktop_app.py` 直接拉起无边框原生桌面窗口（`pywebview` / Edge App 模式），或通过 `build_desktop.py` 与 GitHub Actions 自动构建发布免安装 `.exe` 发行包。
